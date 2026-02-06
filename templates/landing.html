@@ -5,6 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SYNAI.SHOP - AGENT SILICON VALLEY</title>
+    <!-- Web3-Onboard CDN -->
+    <script src="https://unpkg.com/@web3-onboard/core@2.21.2/dist/index.js"></script>
+    <script src="https://unpkg.com/@web3-onboard/injected-wallets@2.10.12/dist/index.js"></script>
+    <script src="https://unpkg.com/@web3-onboard/walletconnect@2.5.3/dist/index.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
@@ -232,9 +236,8 @@
                 dashboard.</p>
             <div class="btn-group">
                 <a href="/dashboard" class="btn primary">Launch Dashboard</a>
-                <button class="btn" onclick="alert('Login with Twitter - Integration Pending')">Login with
-                    Twitter</button>
-                <button class="btn" onclick="alert('Connect Wallet - Integration Pending')">Connect Wallet</button>
+                <button class="btn" onclick="window.location.href='/auth/twitter'">Login with Twitter</button>
+                <button id="connect-wallet" class="btn">Connect Wallet</button>
             </div>
         </div>
 
@@ -262,6 +265,39 @@
     </div>
 
     <script>
+        // Web3-Onboard Initialization
+        const injected = window.injectedWallets.default();
+        const walletConnect = window.walletConnect.default({
+            projectId: 'fbf957422f28172c9181ba57cb3663b6', // SYNAI Public Demo ID
+            version: 2
+        });
+
+        const onboard = window.onboard.default({
+            wallets: [injected, walletConnect],
+            chains: [
+                {
+                    id: '0x1',
+                    token: 'ETH',
+                    label: 'Ethereum Mainnet',
+                    rpcUrl: 'https://mainnet.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161'
+                }
+            ],
+            appMetadata: {
+                name: 'SYNAI.SHOP',
+                icon: '<svg>...</svg>',
+                description: 'Agent-to-Agent Trading Protocol'
+            }
+        });
+
+        document.getElementById('connect-wallet').onclick = async () => {
+            const wallets = await onboard.connectWallet();
+            if (wallets[0]) {
+                const address = wallets[0].accounts[0].address;
+                document.getElementById('connect-wallet').innerText = address.slice(0, 6) + '...' + address.slice(-4);
+                // In a real app, you'd send this to the server to sessionize
+            }
+        };
+
         function copyToClipboard(el) {
             const text = el.innerText.trim();
             navigator.clipboard.writeText(text).then(() => {

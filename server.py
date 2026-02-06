@@ -38,6 +38,21 @@ def dashboard():
 def install_script():
     return render_template('install.md')
 
+@app.route('/auth/twitter')
+def auth_twitter():
+    # In a full app, this would redirect to Twitter OAuth
+    # For now, we provide a placeholder informaton page
+    html = """
+    <body style="background:#000; color:#fff; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; text-align:center;">
+        <div>
+            <h1 style="color:#bc13fe;">TWITTER AUTH PENDING</h1>
+            <p style="color:#888;">To enable real Twitter Login, you need to configure TWITTER_CLIENT_ID and TWITTER_CLIENT_SECRET in DigitalOcean environment variables.</p>
+            <a href="/" style="color:#00f3ff; text-decoration:none; border:1px solid #00f3ff; padding:10px 20px; border-radius:8px;">Return to Terminal</a>
+        </div>
+    </body>
+    """
+    return render_template_string(html)
+
 @app.route('/ledger/ranking', methods=['GET'])
 
 def get_ranking():
