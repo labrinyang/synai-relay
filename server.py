@@ -27,8 +27,16 @@ def health_check():
     return jsonify({"status": "healthy", "service": "synai-relay"}), 200
 
 @app.route('/')
-def index():
+def landing():
+    return render_template('landing.html')
+
+@app.route('/dashboard')
+def dashboard():
     return render_template('index.html')
+
+@app.route('/install.md')
+def install_script():
+    return render_template('install.md')
 
 @app.route('/ledger/ranking', methods=['GET'])
 
