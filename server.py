@@ -13,8 +13,18 @@ db.init_app(app)
 
 
 # Initialize Database
+print("[Relay] Starting SYNAI Relay Protocol Service...")
 with app.app_context():
-    db.create_all()
+    try:
+        print(f"[Relay] Testing Database Connection...")
+        db.create_all()
+        print("[Relay] Database check passed.")
+    except Exception as e:
+        print(f"[FATAL ERROR] Database initialization failed: {e}")
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "service": "synai-relay"}), 200
 
 @app.route('/')
 def index():
