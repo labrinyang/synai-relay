@@ -266,6 +266,39 @@ def confirm_job(task_id):
         "fee": float(platform_fee)
     }), 200
 
+@app.route('/agents/adopt', methods=['POST'])
+def adopt_agent():
+    data = request.json
+    agent_id = data.get('agent_id')
+    twitter_handle = data.get('twitter_handle')
+    tweet_url = data.get('tweet_url')
+
+    if not agent_id or not twitter_handle:
+        return jsonify({"error": "agent_id and twitter_handle are required"}), 400
+
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if not agent:
+        return jsonify({"error": "Agent not found"}), 404
+
+    # Find or create Owner
+    owner = Owner.query.filter_by(twitter_handle=twitter_handle).first()
+    if not owner:
+        owner_id = f"owner_{uuid.uuid4().hex[:8]}"
+        owner = Owner(
+            owner_id=owner_id,
+            username=twitter_handle,
+            twitter_handle=twitter_handle
+        )
+        db.session.add(owner)
+    
+    agent.owner_id = owner.owner_id
+    agent.adoption_tweet_url = tweet_url
+    agent.adopted_at = datetime.datetime.utcnow()
+    
+    db.session.commit()
+    print(f"[Relay] Agent {agent_id} adopted by @{twitter_handle}")
+    return jsonify({"status": "success", "message": f"Agent {agent_id} adopted by @{twitter_handle}"}), 200
+
 @app.route('/jobs', methods=['GET'])
 def list_jobs():
     all_jobs = Job.query.all()

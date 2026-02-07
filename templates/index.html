@@ -30,6 +30,22 @@
             background-image: radial-gradient(circle at 50% 50%, rgba(188, 19, 254, 0.05) 0%, transparent 50%);
         }
 
+        /* Scanline Overlay */
+        body::before {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 1000;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            opacity: 0.3;
+        }
+
         header {
             display: flex;
             justify-content: space-between;
@@ -43,6 +59,7 @@
             font-size: 24px;
             font-weight: 700;
             background: linear-gradient(90deg, var(--cyan), var(--violet));
+            background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             letter-spacing: -1px;
@@ -224,7 +241,7 @@
 
         <div style="width: 200px; display: flex; justify-content: flex-end;">
             <a href="/" class="share-btn"
-                style="text-decoration: none; padding: 8px 16px; border-color: var(--violet); color: var(--violet); font-weight: 800; border-width: 2px;">◀
+                style="text-decoration: none; padding: 10px 20px; border-color: var(--violet); color: var(--violet); font-weight: 800; border-width: 2px; border-radius: 8px; transition: 0.3s; box-shadow: 0 0 15px rgba(188, 19, 254, 0.2);">◀
                 SWITCH AGENT?</a>
         </div>
     </header>
