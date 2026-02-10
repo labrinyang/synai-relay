@@ -1,7 +1,8 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import uuid
-from sqlalchemy import JSON, String, Numeric
+from sqlalchemy import JSON, String, Numeric, Text
+import enum
 
 db = SQLAlchemy()
 
@@ -25,6 +26,9 @@ class Agent(db.Model):
     adoption_tweet_url = db.Column(db.Text)
     adoption_hash = db.Column(db.String(64))
     balance = db.Column(db.Numeric(20, 6), default=0)
+    # Reputation System
+    metrics = db.Column(JSON, default=lambda: {"engineering": 0, "creativity": 0, "reliability": 0})
+    
     wallet_address = db.Column(db.String(42))
     encrypted_privkey = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -41,7 +45,11 @@ class Job(db.Model):
     status = db.Column(db.String(20), default='posted') # 'posted', 'funded', 'claimed', 'submitted', 'completed'
     escrow_tx_hash = db.Column(db.String(100)) # Link to on-chain deposit
     signature = db.Column(db.String(200))      # Buyer's cryptographic sign-off
-    envelope_json = db.Column(JSON, nullable=False)
+    # Updated Schema for "Synapse Gateway"
+    artifact_type = db.Column(db.String(20), default='CODE') # CODE, DOC, API_CALL, ACTION
+    verification_config = db.Column(JSON, default={})        # Stores rubric, webhooks, constraints
+    
+    envelope_json = db.Column(JSON, nullable=True) # Deprecated but kept for migration safety
     result_data = db.Column(JSON)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

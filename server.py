@@ -8,6 +8,8 @@ from decimal import Decimal
 from wallet_manager import wallet_manager
 from sqlalchemy import text, inspect
 
+from core.verifier_factory import VerifierFactory
+
 app = Flask(__name__)
 app.config.from_object(Config)
 
@@ -33,6 +35,24 @@ with app.app_context():
             if 'encrypted_privkey' not in existing_columns:
                 print("[Relay] Adding encrypted_privkey column to agents table...")
                 conn.execute(text("ALTER TABLE agents ADD COLUMN encrypted_privkey TEXT"))
+            
+
+            
+            # Check Job table columns
+            existing_job_columns = [col['name'] for col in inspector.get_columns('jobs')]
+            if 'artifact_type' not in existing_job_columns:
+                print("[Relay] Adding artifact_type to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN artifact_type VARCHAR(20) DEFAULT 'CODE'"))
+
+            if 'verification_config' not in existing_job_columns:
+                print("[Relay] Adding verification_config to jobs table...")
+                # SQLite doesn't support JSON type natively in ALTER TABLE easily, use TEXT
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN verification_config JSON"))
+
+            # Check Agent table columns for metrics
+            if 'metrics' not in existing_columns:
+                print("[Relay] Adding metrics to agents table...")
+                conn.execute(text("ALTER TABLE agents ADD COLUMN metrics JSON"))
             
             conn.commit()
             
@@ -134,6 +154,12 @@ def post_job():
             description=data.get('description', ''),
             price=Decimal(str(data.get('terms', {}).get('price', 0))),
             buyer_id=data.get('buyer_id', 'unknown'),
+
+            
+            # New Fields
+            artifact_type=data.get('artifact_type', 'CODE'),
+            verification_config=data.get('verification_config', {}),
+            
             envelope_json=data.get('envelope_json', {}),
             status='posted'
         )
@@ -190,21 +216,112 @@ def claim_job(task_id):
     return jsonify({"status": "success", "message": f"Job claimed by {agent_id}"}), 200
 
 
-@app.route('/jobs/<task_id>/submit', methods=['POST'])
-def submit_job(task_id):
-    agent_id = request.json.get('agent_id')
-    result = request.json.get('result')
-    job = Job.query.filter_by(task_id=task_id).first()
-    
-    if not job or job.claimed_by != agent_id:
-        return jsonify({"error": "Unauthorized or not found"}), 403
-    
+    # Updated to trigger Auto-Verification
     job.status = 'submitted'
     job.result_data = result
     db.session.commit()
     
-    print(f"[Relay] Task {task_id} result submitted by {agent_id}. Awaiting Proxy verification...")
-    return jsonify({"status": "submitted", "message": "Result pending verification"}), 200
+    print(f"[Relay] Task {task_id} submitted. Dispatching to Verifier...")
+    
+    # Dispatch Verification
+    try:
+        verification_result = VerifierFactory.verify(job, result)
+        
+        if verification_result['success']:
+            print(f"[Relay] Verification PASSED for {task_id}. Triggering Settlement...")
+            # Auto-Settlement
+            payout_info = _settle_job(job)
+            return jsonify({
+                "status": "completed", 
+                "verification": verification_result,
+                "settlement": payout_info
+            }), 200
+        else:
+            print(f"[Relay] Verification FAILED for {task_id}: {verification_result.get('reason')}")
+            # Reset status to 'claimed' or keep 'submitted' depending on logic?
+            # For now, let's keep it 'submitted' but return failure info.
+            return jsonify({
+                "status": "submitted", 
+                "message": "Verification Failed",
+                "verification": verification_result
+            }), 200
+
+    except Exception as e:
+        print(f"[Relay] Verification System Error: {e}")
+        return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
+
+def _settle_job(job):
+    """
+    Internal helper to execute atomic settlement.
+    """
+    if job.status == 'completed':
+        return {"error": "Already settled"}
+        
+    price = job.price
+    platform_fee = price * Decimal('0.20')
+    seller_payout = price * Decimal('0.80')
+    agent_id = job.claimed_by
+    
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if agent:
+        agent.balance += seller_payout
+        
+        # Log Ledger Entries
+        payout_entry = LedgerEntry(
+            source_id='platform', target_id=agent_id,
+            amount=seller_payout, transaction_type='task_payout', task_id=job.task_id
+        )
+        fee_entry = LedgerEntry(
+            source_id='platform', target_id='platform_admin',
+            amount=platform_fee, transaction_type='platform_fee', task_id=job.task_id
+        )
+        db.session.add(payout_entry)
+        db.session.add(fee_entry)
+        
+        # Reputation Updates (Simple Logic)
+        metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
+        
+        # Update specific metric based on artifact type or config
+        # Simply incrementing reliability for now
+        metrics['reliability'] = metrics.get('reliability', 0) + 1
+        agent.metrics = metrics
+
+    job.status = 'completed'
+    db.session.commit()
+    
+    return {"payout": float(seller_payout), "fee": float(platform_fee)}
+
+
+@app.route('/v1/verify/webhook/<task_id>', methods=['POST'])
+def webhook_callback(task_id):
+    job = Job.query.filter_by(task_id=task_id).first()
+    if not job:
+        return jsonify({"error": "Task not found"}), 404
+        
+    if job.status not in ['claimed', 'submitted', 'funded']:
+        return jsonify({"error": "Task not in executable state"}), 400
+
+    # Payload from external source
+    payload = request.json or {}
+    
+    # Construct a result object that mimics a worker submission but marks source
+    submission_data = {
+        "source": "webhook_callback",
+        "payload": payload
+    }
+    
+    # Dispatch to Verifier
+    try:
+        verification_result = VerifierFactory.verify(job, submission_data)
+        
+        if verification_result['success']:
+            _settle_job(job)
+            return jsonify({"status": "verified", "message": "Callback accepted, task settled."}), 200
+        else:
+            return jsonify({"status": "rejected", "reason": verification_result.get('reason')}), 400
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/jobs/<task_id>/confirm', methods=['POST'])
 def confirm_job(task_id):
