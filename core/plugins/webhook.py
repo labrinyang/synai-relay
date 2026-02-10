@@ -1,26 +1,23 @@
+from core.verifier_base import BaseVerifier
 import secrets
 
-class WebhookVerifier:
-    def verify(self, job, result_data):
-        """
-        For Webhooks, the initial 'verification' is just a status check.
-        Real verification happens when the callback endpoint is hit.
-        """
-        # If this is called from the submission flow, we just return Pending
-        # unless the result_data contains the special 'callback_payload' from the API
-        if result_data.get('source') == 'webhook_callback':
-             expected = job.verification_config.get('expected_payload', {})
-             received = result_data.get('payload', {})
-             
-             # Simple equality check for prototype
-             # In production, use JSONSchema or flexible matching
-             if expected == received:
-                 return {"success": True, "reason": "Webhook payload matched expected data."}
-             else:
-                 return {"success": False, "reason": f"Payload mismatch. Expected {expected}, got {received}"}
-
-        return {"success": False, "reason": "Waiting for external webhook event."}
-
+class WebhookVerifier(BaseVerifier):
+    def verify(self, job, submission, config=None):
+        config = config or job.verification_config
+        
+        # Check if persistent data contains the payload
+        received = submission.get('webhook_payload')
+        
+        if received:
+            expected = config.get('expected_payload', {})
+            # Simple match
+            if expected == received:
+                return 100.0, "Webhook payload matched exactly."
+            else:
+                return 0.0, f"Mismatch. Exp: {expected}, Got: {received}"
+        
+        return 0.0, "Pending external callback."
+        
     @staticmethod
     def generate_token():
         return secrets.token_urlsafe(16)

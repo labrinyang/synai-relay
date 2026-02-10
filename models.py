@@ -26,6 +26,7 @@ class Agent(db.Model):
     adoption_tweet_url = db.Column(db.Text)
     adoption_hash = db.Column(db.String(64))
     balance = db.Column(db.Numeric(20, 6), default=0)
+    locked_balance = db.Column(db.Numeric(20, 6), default=0) # Staked funds
     # Reputation System
     metrics = db.Column(JSON, default=lambda: {"engineering": 0, "creativity": 0, "reliability": 0})
     
@@ -42,14 +43,19 @@ class Job(db.Model):
     price = db.Column(db.Numeric(20, 6), nullable=False)
     buyer_id = db.Column(db.String(100))
     claimed_by = db.Column(db.String(100), db.ForeignKey('agents.agent_id'))
-    status = db.Column(db.String(20), default='posted') # 'posted', 'funded', 'claimed', 'submitted', 'completed'
+    status = db.Column(db.String(20), default='posted') 
+    # Statuses: 'posted' (PENDING), 'funded', 'claimed' (STAKED), 'submitted' (VERIFYING), 'completed' (RELEASED), 'slashed', 'paused'
     escrow_tx_hash = db.Column(db.String(100)) # Link to on-chain deposit
     signature = db.Column(db.String(200))      # Buyer's cryptographic sign-off
-    # Updated Schema for "Synapse Gateway"
+    # Updated Schema for "Synapse Gateway" 2.0
     artifact_type = db.Column(db.String(20), default='CODE') # CODE, DOC, API_CALL, ACTION
-    verification_config = db.Column(JSON, default={})        # Stores rubric, webhooks, constraints
+    verification_config = db.Column(JSON, default={})        # Legacy single config
+    verifiers_config = db.Column(JSON, default=[])           # List of {type, weight, config}
     
-    envelope_json = db.Column(JSON, nullable=True) # Deprecated but kept for migration safety
+    deposit_amount = db.Column(db.Numeric(20, 6), default=0) # Required Stake
+    failure_count = db.Column(db.Integer, default=0)         # Circuit Breaker
+    
+    envelope_json = db.Column(JSON, nullable=True) 
     result_data = db.Column(JSON)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

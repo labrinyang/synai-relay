@@ -1,5 +1,4 @@
-import importlib
-import logging
+from core.verifier_base import BaseVerifier
 
 class VerifierFactory:
     _plugins = {}
@@ -9,18 +8,12 @@ class VerifierFactory:
         VerifierFactory._plugins[verifier_type] = plugin_class
 
     @staticmethod
-    def get_verifier(verifier_type):
-        """
-        Returns an instance of the requested verifier plugin.
-        """
-        # Lazy load plugins to avoid circular imports or heavy startup
+    def get_verifier(verifier_type) -> BaseVerifier:
         if not VerifierFactory._plugins:
             VerifierFactory._load_default_plugins()
-            
         plugin_class = VerifierFactory._plugins.get(verifier_type)
         if not plugin_class:
             raise ValueError(f"Verifier type '{verifier_type}' not supported.")
-        
         return plugin_class()
 
     @staticmethod
@@ -34,13 +27,50 @@ class VerifierFactory:
         VerifierFactory.register_plugin('sandbox', SandboxVerifier)
 
     @staticmethod
-    def verify(job, payload):
+    def verify_composite(job, submission):
         """
-        Dispatches verification to the appropriate plugin.
+        Executes all configured verifiers and calculates weighted score.
         """
-        verifier_type = job.verification_config.get('type')
-        if not verifier_type:
-            raise ValueError("Verification type not specified in job config.")
+        # Default to legacy config if new one is empty
+        verifiers_config = job.verifiers_config or []
+        if not verifiers_config:
+            # Fallback to single verifier logic for backward compatibility
+            v_type = job.verification_config.get('type')
+            if v_type:
+                verifiers_config = [{"type": v_type, "weight": 1.0, "config": job.verification_config}]
+            else:
+                return {"success": False, "score": 0, "reason": "No verification config found"}
+
+        total_score = 0.0
+        total_weight = 0.0
+        details = []
+
+        for v_conf in verifiers_config:
+            v_type = v_conf.get('type')
+            weight = v_conf.get('weight', 1.0)
+            instance_config = v_conf.get('config', {})
             
-        verifier = VerifierFactory.get_verifier(verifier_type)
-        return verifier.verify(job, payload)
+            try:
+                verifier = VerifierFactory.get_verifier(v_type)
+                # Pass instance config merged with job verification config if needed, 
+                # but better to assume instances are configured in 'verifiers_config'
+                score, detail = verifier.verify(job, submission, instance_config)
+                
+                weighted_score = score * weight
+                total_score += weighted_score
+                total_weight += weight
+                
+                details.append(f"[{v_type.upper()}] Score: {score} * {weight} = {weighted_score:.2f} | {detail}")
+            except Exception as e:
+                # If a verifier crashes, it counts as 0 score
+                total_weight += weight
+                details.append(f"[{v_type.upper()}] CRASH: {str(e)}")
+
+        final_score = total_score / total_weight if total_weight > 0 else 0
+        is_passing = final_score >= 80.0
+
+        return {
+            "success": is_passing,
+            "score": final_score,
+            "reason": "\n".join(details)
+        }

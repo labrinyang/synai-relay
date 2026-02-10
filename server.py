@@ -9,6 +9,7 @@ from wallet_manager import wallet_manager
 from sqlalchemy import text, inspect
 
 from core.verifier_factory import VerifierFactory
+from core.escrow_manager import EscrowManager
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -49,10 +50,26 @@ with app.app_context():
                 # SQLite doesn't support JSON type natively in ALTER TABLE easily, use TEXT
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN verification_config JSON"))
 
+            if 'verifiers_config' not in existing_job_columns:
+                print("[Relay] Adding verifiers_config to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN verifiers_config JSON"))
+
+            if 'deposit_amount' not in existing_job_columns:
+                print("[Relay] Adding deposit_amount to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN deposit_amount DECIMAL(20,6) DEFAULT 0"))
+
+            if 'failure_count' not in existing_job_columns:
+                print("[Relay] Adding failure_count to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN failure_count INTEGER DEFAULT 0"))
+
             # Check Agent table columns for metrics
             if 'metrics' not in existing_columns:
                 print("[Relay] Adding metrics to agents table...")
                 conn.execute(text("ALTER TABLE agents ADD COLUMN metrics JSON"))
+                
+            if 'locked_balance' not in existing_columns:
+                print("[Relay] Adding locked_balance to agents table...")
+                conn.execute(text("ALTER TABLE agents ADD COLUMN locked_balance DECIMAL(20,6) DEFAULT 0"))
             
             conn.commit()
             
@@ -159,10 +176,16 @@ def post_job():
             # New Fields
             artifact_type=data.get('artifact_type', 'CODE'),
             verification_config=data.get('verification_config', {}),
+            verifiers_config=data.get('verifiers_config', []),
             
             envelope_json=data.get('envelope_json', {}),
             status='posted'
         )
+        
+        # Calculate required stake (e.g. 10% of price)
+        if not new_job.deposit_amount:
+            new_job.deposit_amount = new_job.price * Decimal('0.10')
+            
         db.session.add(new_job)
         db.session.commit()
         return jsonify({"status": "posted", "task_id": str(new_job.task_id)}), 201
@@ -194,7 +217,19 @@ def claim_job(task_id):
     
     # Strictly enforce funding check
     if job.status != 'funded':
-        return jsonify({"error": "Job not yet funded"}), 403
+        # Allow retry if status is 'failed' but not 'paused' or 'slashed'
+        # Actually, if status is 'failed', it resets to 'funded' or stays 'failed'?
+        # Let's say we allow claiming 'failed' tasks if failure_count < 3
+        if job.status == 'failed' and job.failure_count < 3:
+            pass # Allow retry
+        else:
+            return jsonify({"error": f"Job not available (Status: {job.status})"}), 403
+
+    # Circuit Breaker Check
+    if job.failure_count >= 3:
+        job.status = 'paused'
+        db.session.commit()
+        return jsonify({"error": "Job paused due to too many failures. Contact Requester."}), 403
     
     # Auto-register agent if not exists
     agent = Agent.query.filter_by(agent_id=agent_id).first()
@@ -209,11 +244,19 @@ def claim_job(task_id):
             encrypted_privkey=enc_key
         )
         db.session.add(agent)
-        
-    job.status = 'claimed'
+    
+    # Financial: Require Stake
+    required_stake = job.deposit_amount
+    try:
+        EscrowManager.stake_funds(agent.agent_id, required_stake, job.task_id)
+        print(f"[Relay] Agent {agent_id} staked {required_stake} for task {task_id}")
+    except ValueError as e:
+        return jsonify({"error": f"Staking failed: {str(e)}"}), 400
+
+    job.status = 'claimed' # In 2.0 this conceptually maps to 'STAKED'
     job.claimed_by = agent_id
     db.session.commit()
-    return jsonify({"status": "success", "message": f"Job claimed by {agent_id}"}), 200
+    return jsonify({"status": "success", "message": f"Job claimed & staked by {agent_id}"}), 200
 
 
     # Updated to trigger Auto-Verification
@@ -225,71 +268,104 @@ def claim_job(task_id):
     
     # Dispatch Verification
     try:
-        verification_result = VerifierFactory.verify(job, result)
+        # Use Composite Verification
+        verification_result = VerifierFactory.verify_composite(job, result)
         
-        if verification_result['success']:
-            print(f"[Relay] Verification PASSED for {task_id}. Triggering Settlement...")
-            # Auto-Settlement
-            payout_info = _settle_job(job)
+        score = verification_result['score']
+        is_passing = verification_result['success']
+        print(f"[Relay] Verification Result for {task_id}: Score={score}, Pass={is_passing}")
+
+        if is_passing:
+            print(f"[Relay] Verification PASSED. Triggering Settlement...")
+            payout_info = _settle_job(job, success=True)
             return jsonify({
                 "status": "completed", 
                 "verification": verification_result,
                 "settlement": payout_info
             }), 200
         else:
-            print(f"[Relay] Verification FAILED for {task_id}: {verification_result.get('reason')}")
-            # Reset status to 'claimed' or keep 'submitted' depending on logic?
-            # For now, let's keep it 'submitted' but return failure info.
+            print(f"[Relay] Verification FAILED (Score {score}). executing Failure Logic...")
+            # For now, treat low score as 'Ordinary Failure' -> Refund Stake minus Fee
+            payout_info = _settle_job(job, success=False)
             return jsonify({
-                "status": "submitted", 
-                "message": "Verification Failed",
-                "verification": verification_result
+                "status": "failed", 
+                "message": "Verification Failed - Stake Penalized",
+                "verification": verification_result,
+                "settlement": payout_info
             }), 200
 
     except Exception as e:
         print(f"[Relay] Verification System Error: {e}")
         return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
 
-def _settle_job(job):
+def _settle_job(job, success=True):
     """
-    Internal helper to execute atomic settlement.
+    Internal helper to execute atomic settlement with Staking logic.
     """
-    if job.status == 'completed':
+    if job.status in ['completed', 'slashed', 'failed']:
         return {"error": "Already settled"}
         
-    price = job.price
-    platform_fee = price * Decimal('0.20')
-    seller_payout = price * Decimal('0.80')
     agent_id = job.claimed_by
-    
     agent = Agent.query.filter_by(agent_id=agent_id).first()
-    if agent:
-        agent.balance += seller_payout
-        
-        # Log Ledger Entries
-        payout_entry = LedgerEntry(
-            source_id='platform', target_id=agent_id,
-            amount=seller_payout, transaction_type='task_payout', task_id=job.task_id
-        )
-        fee_entry = LedgerEntry(
-            source_id='platform', target_id='platform_admin',
-            amount=platform_fee, transaction_type='platform_fee', task_id=job.task_id
-        )
-        db.session.add(payout_entry)
-        db.session.add(fee_entry)
-        
-        # Reputation Updates (Simple Logic)
-        metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
-        
-        # Update specific metric based on artifact type or config
-        # Simply incrementing reliability for now
-        metrics['reliability'] = metrics.get('reliability', 0) + 1
-        agent.metrics = metrics
-
-    job.status = 'completed'
-    db.session.commit()
     
-    return {"payout": float(seller_payout), "fee": float(platform_fee)}
+    if success:
+        # 1. Release Reward
+        price = job.price
+        platform_fee = price * Decimal('0.20')
+        seller_payout = price * Decimal('0.80')
+        
+        if agent:
+            agent.balance += seller_payout
+            
+            # Ledger: Payout
+            db.session.add(LedgerEntry(
+                source_id='platform', target_id=agent_id,
+                amount=seller_payout, transaction_type='task_payout', task_id=job.task_id
+            ))
+            # Ledger: Fee
+            db.session.add(LedgerEntry(
+                source_id='platform', target_id='platform_admin',
+                amount=platform_fee, transaction_type='platform_fee', task_id=job.task_id
+            ))
+            
+            # 2. Release Stake
+            EscrowManager.release_stake(agent_id, job.deposit_amount, job.task_id)
+
+            # Reputation
+            metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
+            metrics['reliability'] = metrics.get('reliability', 0) + 1
+            agent.metrics = metrics
+
+        job.status = 'completed'
+        
+        return {"payout": float(seller_payout), "fee": float(platform_fee), "stake_return": float(job.deposit_amount)}
+
+    else:
+        # Failure Logic
+        # Refund Stake minus 5% Penalty
+        stake_amount = job.deposit_amount
+        penalty = stake_amount * Decimal('0.05')
+        refund = stake_amount - penalty
+        
+        if agent:
+            # Release Refund
+            EscrowManager.release_stake(agent_id, refund, job.task_id)
+            # Slash Penalty (Technically this part of locked balance is just moved to treasury)
+            # But release_stake only moves what we ask. The remaining 'penalty' matches locked_balance?
+            # Creating a slash entry for the penalty to keep ledger clean? 
+            # Actually EscrowManager.release_stake moves FROM locked. 
+            # We need to explicitly Slash the penalty.
+            EscrowManager.slash_stake(agent_id, penalty, job.task_id, reason="Verification Failure Penalty")
+            
+            # Reputation Hit
+            metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
+            metrics['reliability'] = max(0, metrics.get('reliability', 0) - 1)
+            agent.metrics = metrics
+            
+        job.status = 'failed' # Or 'open' to retry? Let's say failed for now.
+        job.failure_count += 1
+        
+        return {"payout": 0, "fee": 0, "stake_return": float(refund), "penalty": float(penalty)}
 
 
 @app.route('/v1/verify/webhook/<task_id>', methods=['POST'])
@@ -304,20 +380,31 @@ def webhook_callback(task_id):
     # Payload from external source
     payload = request.json or {}
     
-    # Construct a result object that mimics a worker submission but marks source
-    submission_data = {
-        "source": "webhook_callback",
-        "payload": payload
-    }
+    # Update Job Result with Webhook Data (Persist for Composite Verifier)
+    current_result = dict(job.result_data or {})
+    current_result['webhook_payload'] = payload
+    job.result_data = current_result
+    db.session.commit()
     
     # Dispatch to Verifier
     try:
-        verification_result = VerifierFactory.verify(job, submission_data)
+        # Use Composite Verification
+        verification_result = VerifierFactory.verify_composite(job, current_result)
         
-        if verification_result['success']:
-            _settle_job(job)
+        score = verification_result['score']
+        is_passing = verification_result['success']
+        
+        if is_passing:
+            _settle_job(job, success=True)
             return jsonify({"status": "verified", "message": "Callback accepted, task settled."}), 200
         else:
+            # Logic: Webhook arrived, but maybe score is still low (e.g. other verifiers failed previously?)
+            # Or maybe the payload didn't match?
+            # We should probably treat this as a failure attempt if it was meant to be the final trigger.
+            # Let's settle as fail to penalize if appropriate, or just return status.
+            # User requirement: "Timeout if not received" -> Slash.
+            # If received but wrong -> Simple fail?
+            _settle_job(job, success=False)
             return jsonify({"status": "rejected", "reason": verification_result.get('reason')}), 400
             
     except Exception as e:
@@ -325,6 +412,9 @@ def webhook_callback(task_id):
 
 @app.route('/jobs/<task_id>/confirm', methods=['POST'])
 def confirm_job(task_id):
+    # Legacy / Manual Confirm endpoint
+    # ... (existing code, maybe deprecated?)
+    pass
     buyer_id = request.json.get('buyer_id')
     signature = request.json.get('signature')
     job = Job.query.filter_by(task_id=task_id).first()
