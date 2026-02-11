@@ -40,8 +40,9 @@ contracts/cache/
 # OS
 .DS_Store
 
-# Docs (internal plans / design docs)
-docs/
+# Docs — track analysis/deliverable docs, ignore internal design docs
+docs/design/
+docs/design.zip
 
 # Logs
 *.log
