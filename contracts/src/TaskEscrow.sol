@@ -2,9 +2,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/ITaskEscrow.sol";
 
-contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
+contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable, Pausable {
     using SafeERC20 for IERC20;
 
     IERC20 public immutable usdc;
@@ -39,7 +40,15 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
         defaultFeeBps = _feeBps;
     }
 
-    function createTask(uint96 amount, uint64 expiry, bytes32 contentHash, uint8 maxRetries) external nonReentrant returns (bytes32 taskId) {
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    function createTask(uint96 amount, uint64 expiry, bytes32 contentHash, uint8 maxRetries) external nonReentrant whenNotPaused returns (bytes32 taskId) {
         require(expiry > block.timestamp, "Expiry in past");
         require(amount > 0, "Amount zero");
 
@@ -59,7 +68,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
         emit TaskCreated(taskId, msg.sender, amount);
     }
 
-    function fundTask(bytes32 taskId) external nonReentrant {
+    function fundTask(bytes32 taskId) external nonReentrant whenNotPaused {
         Task storage task = tasks[taskId];
         require(task.boss == msg.sender, "Only boss");
         require(task.status == TaskStatus.CREATED, "Not created");
@@ -70,7 +79,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
         emit TaskFunded(taskId, task.amount);
     }
 
-    function claimTask(bytes32 taskId) external nonReentrant {
+    function claimTask(bytes32 taskId) external nonReentrant whenNotPaused {
         Task storage task = tasks[taskId];
         require(task.status == TaskStatus.FUNDED, "Not funded");
         require(block.timestamp <= task.expiry, "Expired");
@@ -81,7 +90,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
         emit TaskClaimed(taskId, msg.sender);
     }
 
-    function submitResult(bytes32 taskId, bytes32 resultHash) external nonReentrant {
+    function submitResult(bytes32 taskId, bytes32 resultHash) external nonReentrant whenNotPaused {
         Task storage task = tasks[taskId];
         require(task.status == TaskStatus.CLAIMED || task.status == TaskStatus.REJECTED, "Not claim/rej");
         require(task.worker == msg.sender, "Only worker");
@@ -91,7 +100,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
         emit TaskSubmitted(taskId, resultHash);
     }
 
-    function onVerdictReceived(bytes32 taskId, bool accepted, uint8 score) external override onlyOracle {
+    function onVerdictReceived(bytes32 taskId, bool accepted, uint8 score) external override onlyOracle nonReentrant {
         Task storage task = tasks[taskId];
         require(task.status == TaskStatus.SUBMITTED, "Not submitted");
 
@@ -104,6 +113,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
 
             if (task.retryCount >= task.maxRetries) {
                 task.status = TaskStatus.EXPIRED; // Treat as expired for refund logic, or implement PAUSED
+                emit TaskExpired(taskId);
                 emit TaskPaused(taskId);
             }
         }
@@ -111,7 +121,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable {
         emit VerdictReceived(taskId, accepted, score);
     }
 
-    function settle(bytes32 taskId) external nonReentrant {
+    function settle(bytes32 taskId) external nonReentrant whenNotPaused {
         Task storage task = tasks[taskId];
         require(task.status == TaskStatus.ACCEPTED, "Not accepted");
 
