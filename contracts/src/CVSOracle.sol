@@ -38,9 +38,11 @@ contract CVSOracle is Ownable {
     }
 
     function submitVerdict(bytes32 taskId, bool accepted, uint8 score, bytes32 evidenceHash) external onlyOracle {
-        require(verdicts[taskId].timestamp == 0, "Already verdict");
+        uint8 retryCount = ITaskEscrow(taskEscrow).getTask(taskId).retryCount;
+        bytes32 verdictKey = keccak256(abi.encodePacked(taskId, retryCount));
+        require(verdicts[verdictKey].timestamp == 0, "Already verdict for this retry");
         
-        verdicts[taskId] = Verdict({
+        verdicts[verdictKey] = Verdict({
             taskId: taskId,
             accepted: accepted,
             score: score,
@@ -54,6 +56,20 @@ contract CVSOracle is Ownable {
     }
 
     function getVerdict(bytes32 taskId) external view returns (Verdict memory) {
-        return verdicts[taskId];
+        uint8 retryCount = ITaskEscrow(taskEscrow).getTask(taskId).retryCount;
+        bytes32 verdictKey = keccak256(abi.encodePacked(taskId, retryCount));
+        Verdict memory verdict = verdicts[verdictKey];
+
+        if (verdict.timestamp == 0 && retryCount > 0) {
+            bytes32 previousVerdictKey = keccak256(abi.encodePacked(taskId, retryCount - 1));
+            verdict = verdicts[previousVerdictKey];
+        }
+
+        return verdict;
+    }
+
+    function getVerdictByRetry(bytes32 taskId, uint8 retryCount) external view returns (Verdict memory) {
+        bytes32 verdictKey = keccak256(abi.encodePacked(taskId, retryCount));
+        return verdicts[verdictKey];
     }
 }

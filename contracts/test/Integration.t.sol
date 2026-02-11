@@ -72,18 +72,15 @@ contract IntegrationTest is Test {
         escrow.fundTask(taskId);
         vm.prank(worker);
         escrow.claimTask(taskId);
-        
-        // Mock oracle to allow multiple verdicts (since actual CVSOracle is strict)
-        escrow.setOracle(address(this));
-        
-        for(int i=0; i<3; i++) {
+
+        for (uint8 i = 0; i < 3; i++) {
             vm.prank(worker);
             escrow.submitResult(taskId, bytes32("R"));
-            
-            // Rejects
-            escrow.onVerdictReceived(taskId, false, 0);
+
+            vm.prank(oracleSigner);
+            oracleContract.submitVerdict(taskId, false, 0, bytes32("E"));
         }
-        
+
         Task memory t = escrow.getTask(taskId);
         assertEq(uint(t.status), uint(TaskStatus.EXPIRED));
     }
