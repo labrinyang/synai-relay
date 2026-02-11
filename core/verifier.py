@@ -14,8 +14,8 @@ class Verifier:
         try:
             # Run the command in the specified workspace
             result = subprocess.run(
-                entrypoint,
-                shell=True,
+                entrypoint.split(),
+                shell=False,
                 cwd=self.workspace_dir,
                 capture_output=True,
                 text=True,

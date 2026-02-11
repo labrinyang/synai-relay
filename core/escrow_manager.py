@@ -24,7 +24,7 @@ class EscrowManager:
             amount=amount, transaction_type='stake_lock', task_id=task_id
         )
         db.session.add(entry)
-        db.session.commit()
+        db.session.flush()
         return True
 
     @staticmethod
@@ -47,7 +47,7 @@ class EscrowManager:
             amount=amount, transaction_type='stake_release', task_id=task_id
         )
         db.session.add(entry)
-        db.session.commit()
+        db.session.flush()
 
     @staticmethod
     def slash_stake(agent_id, amount, task_id, reason="Slash"):
@@ -68,4 +68,4 @@ class EscrowManager:
             amount=amount, transaction_type='stake_slash', task_id=task_id
         )
         db.session.add(entry)
-        db.session.commit()
+        db.session.flush()

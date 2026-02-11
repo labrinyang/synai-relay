@@ -4,6 +4,8 @@ from config import Config
 import os
 import uuid
 import datetime
+import hmac
+import hashlib
 from decimal import Decimal
 from wallet_manager import wallet_manager
 from sqlalchemy import text, inspect
@@ -13,6 +15,7 @@ from core.escrow_manager import EscrowManager
 
 app = Flask(__name__)
 app.config.from_object(Config)
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'dev-secret-change-in-production')
 
 db.init_app(app)
 
@@ -299,43 +302,48 @@ def claim_job(task_id):
     return jsonify({"status": "success", "message": f"Job claimed & staked by {agent_id}"}), 200
 
 
-    # Updated to trigger Auto-Verification
+@app.route('/jobs/<task_id>/submit', methods=['POST'])
+def submit_result(task_id):
+    """Worker submits task result for verification."""
+    job = Job.query.filter_by(task_id=task_id).first()
+    if not job:
+        return jsonify({"error": "Task not found"}), 404
+    if job.status != 'claimed':
+        return jsonify({"error": f"Task not in claimable state, current: {job.status}"}), 400
+
+    data = request.json or {}
+    agent_id = data.get('agent_id')
+    result = data.get('result', {})
+    if not agent_id:
+        return jsonify({"error": "agent_id required"}), 400
+    if agent_id != job.claimed_by:
+        return jsonify({"error": "Only the assigned agent can submit"}), 403
+
     job.status = 'submitted'
     job.result_data = result
     db.session.commit()
-    
-    print(f"[Relay] Task {task_id} submitted. Dispatching to Verifier...")
-    
-    # Dispatch Verification
+    print(f"[Relay] Task {task_id} submitted by {agent_id}. Dispatching to Verifier...")
+
     try:
-        # Use Composite Verification
         verification_result = VerifierFactory.verify_composite(job, result)
-        
         score = verification_result['score']
         is_passing = verification_result['success']
-        print(f"[Relay] Verification Result for {task_id}: Score={score}, Pass={is_passing}")
-
         if is_passing:
-            print(f"[Relay] Verification PASSED. Triggering Settlement...")
             payout_info = _settle_job(job, success=True)
             return jsonify({
-                "status": "completed", 
+                "status": "completed",
                 "verification": verification_result,
                 "settlement": payout_info
             }), 200
         else:
-            print(f"[Relay] Verification FAILED (Score {score}). executing Failure Logic...")
-            # For now, treat low score as 'Ordinary Failure' -> Refund Stake minus Fee
             payout_info = _settle_job(job, success=False)
             return jsonify({
-                "status": "failed", 
-                "message": "Verification Failed - Stake Penalized",
+                "status": "failed",
+                "message": "Verification Failed",
                 "verification": verification_result,
                 "settlement": payout_info
             }), 200
-
     except Exception as e:
-        print(f"[Relay] Verification System Error: {e}")
         return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
 
 def _settle_job(job, success=True):
@@ -410,6 +418,12 @@ def _settle_job(job, success=True):
 
 @app.route('/v1/verify/webhook/<task_id>', methods=['POST'])
 def webhook_callback(task_id):
+    signature = request.headers.get('X-Signature', '')
+    body = request.get_data()
+    expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return jsonify({"error": "Invalid signature"}), 403
+
     job = Job.query.filter_by(task_id=task_id).first()
     if not job:
         return jsonify({"error": "Task not found"}), 404
@@ -545,6 +559,36 @@ def adopt_agent():
     db.session.commit()
     print(f"[Relay] Agent {agent_id} adopted by @{twitter_handle}")
     return jsonify({"status": "success", "message": f"Agent {agent_id} adopted by @{twitter_handle}"}), 200
+
+@app.route('/agents/<agent_id>/deposit', methods=['POST'])
+def deposit_funds(agent_id):
+    """Deposit funds into agent balance."""
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if not agent:
+        return jsonify({"error": "Agent not found"}), 404
+
+    data = request.json or {}
+    amount = data.get('amount')
+    if not amount or float(amount) <= 0:
+        return jsonify({"error": "Positive amount required"}), 400
+
+    amount = Decimal(str(amount))
+    agent.balance += amount
+    entry = LedgerEntry(
+        source_id='deposit',
+        target_id=agent_id,
+        amount=amount,
+        transaction_type='deposit',
+        task_id=None
+    )
+    db.session.add(entry)
+    db.session.commit()
+    return jsonify({
+        "status": "deposited",
+        "agent_id": agent_id,
+        "amount": str(amount),
+        "new_balance": str(agent.balance)
+    }), 200
 
 @app.route('/jobs', methods=['GET'])
 def list_jobs():

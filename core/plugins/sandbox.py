@@ -38,6 +38,7 @@ class SandboxVerifier(BaseVerifier):
                 
                 result = subprocess.run(
                     cmd, 
+                    shell=False,
                     capture_output=True, 
                     text=True, 
                     timeout=30 # Timeout -> Slash

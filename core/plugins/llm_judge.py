@@ -15,7 +15,7 @@ class LLMJudgeVerifier(BaseVerifier):
 
         config = config or job.verification_config
         rubric = config.get('rubric', 'No rubric provided.')
-        submission_content = submission.get('result_data', {}).get('content', '') # Adjusted path
+        submission_content = submission.get('content', '') or submission.get('result_data', {}).get('content', '')
         
         prompt = f"""
         Rate this submission on a scale of 0-100 against the rubric.
