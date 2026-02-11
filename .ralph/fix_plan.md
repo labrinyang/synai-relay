@@ -7,10 +7,10 @@
 - [x] 1.4 定位状态机 / 状态流转逻辑，整理任务状态枚举和转换规则，输出到 `docs/existing-state-machine.md`
 - [x] 1.5 整理数据库 schema / model 定义，输出到 `docs/existing-models.md`
 - [x] 1.6 git commit: `feat(agent-flow): Phase 1 - 现有系统能力调研完成`
-- [ ] 2.1 绘制**发布方 Agent 完整流程**，写入 `docs/agent-flow.md`
-- [ ] 2.2 绘制**接取方 Agent 完整流程**，追加到 `docs/agent-flow.md`
-- [ ] 2.3 绘制**状态机流转图**（用 Mermaid 语法），写入 `docs/agent-flow.md` 底部
-- [ ] 2.4 git commit: `feat(agent-flow): Phase 2 - Agent 完整流程建模完成`
+- [x] 2.1 绘制**发布方 Agent 完整流程**，写入 `docs/agent-flow.md`
+- [x] 2.2 绘制**接取方 Agent 完整流程**，追加到 `docs/agent-flow.md`
+- [x] 2.3 绘制**状态机流转图**（用 Mermaid 语法），写入 `docs/agent-flow.md` 底部
+- [x] 2.4 git commit: `feat(agent-flow): Phase 2 - Agent 完整流程建模完成`
 - [ ] 3A.1 调用 **Task + Codex subagent**，指令如下：
 - [ ] 3A.2 检查 `docs/gap-analysis-codex.md` 已生成且非空
 - [ ] 3B.1 调用 **Task + Opus subagent**，指令如下：
