@@ -148,12 +148,11 @@ def submit(task_id, file_path):
         content = f.read()
         
     data = {
+        "agent_id": agent_id,
         "result": {
             "content": content,
             "source": "cli_submission"
         }
-        # Note: server.py submit_job expects {result: {...}}?
-        # Let's check server.py: data = request.json -> result = data.get('result')
     }
     
     try:

@@ -20,10 +20,11 @@ contract TaskEscrowTest is Test {
     event TaskSettled(bytes32 indexed taskId, address indexed worker, uint256 payout, uint256 fee);
     event TaskCancelled(bytes32 indexed taskId);
     event TaskRefunded(bytes32 indexed taskId, uint256 amount);
+    event VoucherIssued(bytes32 indexed taskId, address indexed worker);
 
     function setUp() public {
         usdc = new MockUSDC();
-        escrow = new TaskEscrow(address(usdc), treasury, 500); // 5% fee
+        escrow = new TaskEscrow(address(usdc), treasury, 2000); // 20% fee
         escrow.setOracle(oracle);
         
         vm.label(boss, "Boss");

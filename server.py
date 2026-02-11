@@ -88,7 +88,21 @@ with app.app_context():
             if 'locked_balance' not in existing_columns:
                 print("[Relay] Adding locked_balance to agents table...")
                 conn.execute(text("ALTER TABLE agents ADD COLUMN locked_balance DECIMAL(20,6) DEFAULT 0"))
-            
+
+            # Phase 1 migrations
+            if 'expiry' not in existing_job_columns:
+                print("[Relay] Adding expiry to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN expiry DATETIME"))
+            if 'max_retries' not in existing_job_columns:
+                print("[Relay] Adding max_retries to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN max_retries INTEGER DEFAULT 3"))
+            if 'chain_task_id' not in existing_job_columns:
+                print("[Relay] Adding chain_task_id to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN chain_task_id VARCHAR(66)"))
+            if 'verdict_data' not in existing_job_columns:
+                print("[Relay] Adding verdict_data to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN verdict_data JSON"))
+
             conn.commit()
             
         print("[Relay] Database check and migrations passed.")
@@ -212,43 +226,52 @@ def get_balance(agent_id):
 def post_job():
     data = request.json
     try:
+        # Parse expiry (unix timestamp) if provided
+        expiry = None
+        if data.get('expiry'):
+            expiry = datetime.datetime.utcfromtimestamp(int(data['expiry']))
+
         new_job = Job(
             title=data.get('title', 'Untitled Task'),
             description=data.get('description', ''),
             price=Decimal(str(data.get('terms', {}).get('price', 0))),
             buyer_id=data.get('buyer_id', 'unknown'),
-
-            
-            # New Fields
             artifact_type=data.get('artifact_type', 'CODE'),
             verification_config=data.get('verification_config', {}),
             verifiers_config=data.get('verifiers_config', []),
-            
             envelope_json=data.get('envelope_json', {}),
-            status='posted'
+            expiry=expiry,
+            max_retries=data.get('max_retries', 3),
+            status='created'
         )
-        
-        # Calculate required stake (e.g. 10% of price)
+
+        # Calculate required stake (5% of price)
         if not new_job.deposit_amount:
-            new_job.deposit_amount = new_job.price * Decimal('0.10')
-            
+            new_job.deposit_amount = new_job.price * Decimal('0.05')
+
         db.session.add(new_job)
         db.session.commit()
-        return jsonify({"status": "posted", "task_id": str(new_job.task_id)}), 201
+        return jsonify({"status": "created", "task_id": str(new_job.task_id)}), 201
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
 
 @app.route('/jobs/<task_id>/fund', methods=['POST'])
 def fund_job(task_id):
-    tx_hash = request.json.get('escrow_tx_hash')
-    job = Job.query.filter_by(task_id=task_id).first()
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
-    
+    if job.status == 'expired':
+        return jsonify({"error": "Task expired", "status": "expired"}), 410
+    if job.status != 'created':
+        return jsonify({"error": f"Job not in created state (current: {job.status})"}), 400
+
+    tx_hash = request.json.get('escrow_tx_hash')
     if not tx_hash:
         return jsonify({"error": "Escrow transaction hash required"}), 400
-        
+
     job.status = 'funded'
     job.escrow_tx_hash = tx_hash
     db.session.commit()
@@ -256,41 +279,37 @@ def fund_job(task_id):
 
 @app.route('/jobs/<task_id>/claim', methods=['POST'])
 def claim_job(task_id):
+    from services.job_service import JobService
+
     agent_id = request.json.get('agent_id')
-    job = Job.query.filter_by(task_id=task_id).first()
+    job = JobService.get_job(task_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
-    
+
+    # Lazy expiry check (already done by JobService.get_job, but check result)
+    if job.status == 'expired':
+        return jsonify({"error": "Task expired", "status": "expired"}), 410
+
     # Strictly enforce funding check
     if job.status != 'funded':
-        # Allow retry if status is 'failed' but not 'paused' or 'slashed'
-        # Actually, if status is 'failed', it resets to 'funded' or stays 'failed'?
-        # Let's say we allow claiming 'failed' tasks if failure_count < 3
-        if job.status == 'failed' and job.failure_count < 3:
-            pass # Allow retry
+        # Allow retry if status is 'rejected' and retries remain
+        if job.status == 'rejected' and job.failure_count < (job.max_retries or 3):
+            pass  # Allow retry
         else:
             return jsonify({"error": f"Job not available (Status: {job.status})"}), 403
 
     # Circuit Breaker Check
-    if job.failure_count >= 3:
-        job.status = 'paused'
+    max_retries = job.max_retries or 3
+    if job.failure_count >= max_retries:
+        job.status = 'expired'
         db.session.commit()
-        return jsonify({"error": "Job paused due to too many failures. Contact Requester."}), 403
-    
-    # Auto-register agent if not exists
+        return jsonify({"error": "Job expired due to too many failures."}), 403
+
+    # Require agent to be registered (no auto-register)
     agent = Agent.query.filter_by(agent_id=agent_id).first()
     if not agent:
-        print(f"[Relay] New agent detected: {agent_id}. Registering with managed wallet...")
-        addr, enc_key = wallet_manager.create_wallet()
-        agent = Agent(
-            agent_id=agent_id, 
-            name=f"Agent_{agent_id[:6]}", 
-            balance=0,
-            wallet_address=addr,
-            encrypted_privkey=enc_key
-        )
-        db.session.add(agent)
-    
+        return jsonify({"error": "Agent not registered. Call POST /agents/register first."}), 400
+
     # Financial: Require Stake
     required_stake = job.deposit_amount
     try:
@@ -299,20 +318,22 @@ def claim_job(task_id):
     except ValueError as e:
         return jsonify({"error": f"Staking failed: {str(e)}"}), 400
 
-    job.status = 'claimed' # In 2.0 this conceptually maps to 'STAKED'
+    job.status = 'claimed'
     job.claimed_by = agent_id
     db.session.commit()
-    return jsonify({"status": "success", "message": f"Job claimed & staked by {agent_id}"}), 200
+    return jsonify({"status": "claimed", "message": f"Job claimed & staked by {agent_id}"}), 200
 
 
 @app.route('/jobs/<task_id>/submit', methods=['POST'])
 def submit_result(task_id):
     """Worker submits task result for verification."""
-    job = Job.query.filter_by(task_id=task_id).first()
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
     if not job:
         return jsonify({"error": "Task not found"}), 404
-    if job.status != 'claimed':
-        return jsonify({"error": f"Task not in claimable state, current: {job.status}"}), 400
+    if job.status not in ('claimed', 'rejected'):
+        return jsonify({"error": f"Task not submittable, current: {job.status}"}), 400
 
     data = request.json or {}
     agent_id = data.get('agent_id')
@@ -325,106 +346,46 @@ def submit_result(task_id):
     job.status = 'submitted'
     job.result_data = result
     db.session.flush()
-    print(f"[Relay] Task {task_id} submitted by {agent_id}. Dispatching to Verifier...")
+    print(f"[Relay] Task {task_id} submitted by {agent_id}.")
 
-    try:
-        verification_result = VerifierFactory.verify_composite(job, result)
-        score = verification_result['score']
-        is_passing = verification_result['success']
-        if is_passing:
-            payout_info = _settle_job(job, success=True)
-            return jsonify({
-                "status": "completed",
-                "verification": verification_result,
-                "settlement": payout_info
-            }), 200
-        else:
-            payout_info = _settle_job(job, success=False)
-            return jsonify({
-                "status": "failed",
-                "message": "Verification Failed",
-                "verification": verification_result,
-                "settlement": payout_info
-            }), 200
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
+    # Branch: auto-verify or manual
+    if job.verifiers_config:
+        try:
+            verification_result = VerifierFactory.verify_composite(job, result)
+            is_passing = verification_result['success']
+            if is_passing:
+                payout_info = _settle_job(job, success=True)
+                return jsonify({
+                    "status": "settled",
+                    "verification": verification_result,
+                    "settlement": payout_info
+                }), 200
+            else:
+                payout_info = _settle_job(job, success=False)
+                return jsonify({
+                    "status": payout_info.get("status", "rejected"),
+                    "message": "Verification Failed",
+                    "verification": verification_result,
+                    "settlement": payout_info
+                }), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
+    else:
+        # No verifiers: wait for manual /confirm
+        db.session.commit()
+        return jsonify({
+            "status": "submitted",
+            "message": "Awaiting manual confirmation via POST /jobs/:id/confirm"
+        }), 200
 
 def _settle_job(job, success=True):
-    """
-    Internal helper to execute atomic settlement with Staking logic.
-    """
-    if job.status in ['completed', 'slashed', 'failed']:
-        return {"error": "Already settled"}
-        
-    agent_id = job.claimed_by
-    agent = Agent.query.filter_by(agent_id=agent_id).first()
-
-    try:
-        if success:
-            # 1. Release Reward
-            price = job.price
-            platform_fee = price * Decimal('0.20')
-            seller_payout = price * Decimal('0.80')
-            
-            if agent:
-                agent.balance += seller_payout
-                
-                # Ledger: Payout
-                db.session.add(LedgerEntry(
-                    source_id='platform', target_id=agent_id,
-                    amount=seller_payout, transaction_type='task_payout', task_id=job.task_id
-                ))
-                # Ledger: Fee
-                db.session.add(LedgerEntry(
-                    source_id='platform', target_id='platform_admin',
-                    amount=platform_fee, transaction_type='platform_fee', task_id=job.task_id
-                ))
-                
-                # 2. Release Stake
-                EscrowManager.release_stake(agent_id, job.deposit_amount, job.task_id)
-
-                # Reputation
-                metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
-                metrics['reliability'] = metrics.get('reliability', 0) + 1
-                agent.metrics = metrics
-
-            job.status = 'completed'
-            db.session.commit()
-            
-            return {"payout": float(seller_payout), "fee": float(platform_fee), "stake_return": float(job.deposit_amount)}
-
-        else:
-            # Failure Logic
-            # Refund Stake minus 5% Penalty
-            stake_amount = job.deposit_amount
-            penalty = stake_amount * Decimal('0.05')
-            refund = stake_amount - penalty
-            
-            if agent:
-                # Release Refund
-                EscrowManager.release_stake(agent_id, refund, job.task_id)
-                # Slash Penalty (Technically this part of locked balance is just moved to treasury)
-                # But release_stake only moves what we ask. The remaining 'penalty' matches locked_balance?
-                # Creating a slash entry for the penalty to keep ledger clean? 
-                # Actually EscrowManager.release_stake moves FROM locked. 
-                # We need to explicitly Slash the penalty.
-                EscrowManager.slash_stake(agent_id, penalty, job.task_id, reason="Verification Failure Penalty")
-                
-                # Reputation Hit
-                metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
-                metrics['reliability'] = max(0, metrics.get('reliability', 0) - 1)
-                agent.metrics = metrics
-                
-            job.status = 'failed' # Or 'open' to retry? Let's say failed for now.
-            job.failure_count += 1
-            db.session.commit()
-            
-            return {"payout": 0, "fee": 0, "stake_return": float(refund), "penalty": float(penalty)}
-    except Exception as e:
-        db.session.rollback()
-        print(f"[Relay] Settlement failed, rolled back: {e}")
-        raise
+    """Thin wrapper delegating to SettlementService."""
+    from services.settlement import SettlementService
+    if success:
+        return SettlementService.settle_success(job)
+    else:
+        return SettlementService.settle_reject(job)
 
 
 @app.route('/v1/verify/webhook/<task_id>', methods=['POST'])
@@ -477,66 +438,29 @@ def webhook_callback(task_id):
 
 @app.route('/jobs/<task_id>/confirm', methods=['POST'])
 def confirm_job(task_id):
-    # Legacy / Manual Confirm endpoint
-    # ... (existing code, maybe deprecated?)
-    pass
+    """Manual confirmation endpoint (used when verifiers_config is empty)."""
+    from services.job_service import JobService
+    from services.settlement import SettlementService
+
     buyer_id = request.json.get('buyer_id')
     signature = request.json.get('signature')
-    job = Job.query.filter_by(task_id=task_id).first()
-    
+    job = JobService.get_job(task_id)
+
     if not job or job.buyer_id != buyer_id:
         return jsonify({"error": "Unauthorized"}), 403
-    
+
     if job.status != 'submitted':
         return jsonify({"error": "Job not in submitted state"}), 400
-        
+
     if not signature:
         return jsonify({"error": "Acceptance signature required for release"}), 400
 
-    # Settlement with 20% Platform Fee
-    price = job.price
-    platform_fee = price * Decimal('0.20')
-    seller_payout = price * Decimal('0.80')
-    agent_id = job.claimed_by
-    
     job.signature = signature
-    
-    print(f"[DEBUG] Settling Task {task_id}: Price={price}, Payout={seller_payout}, Fee={platform_fee}")
-    
-    agent = Agent.query.filter_by(agent_id=agent_id).first()
-    if agent:
-        print(f"[DEBUG] Old Balance for {agent_id}: {agent.balance}")
-        agent.balance += seller_payout
-        print(f"[DEBUG] New Balance for {agent_id}: {agent.balance}")
+    job.status = 'accepted'
+    result = SettlementService.settle_success(job)
 
-        
-        # Log Ledger Entries
-        payout_entry = LedgerEntry(
-            source_id='platform',
-            target_id=agent_id,
-            amount=seller_payout,
-            transaction_type='task_payout',
-            task_id=job.task_id
-        )
-        fee_entry = LedgerEntry(
-            source_id='platform',
-            target_id='platform_admin',
-            amount=platform_fee,
-            transaction_type='platform_fee',
-            task_id=job.task_id
-        )
-        db.session.add(payout_entry)
-        db.session.add(fee_entry)
-    
-    job.status = 'completed'
-    db.session.commit()
-    
-    print(f"[Relay] Proxy {buyer_id} confirmed task {task_id}. Settlement complete.")
-    return jsonify({
-        "status": "success", 
-        "payout": float(seller_payout),
-        "fee": float(platform_fee)
-    }), 200
+    print(f"[Relay] Boss {buyer_id} confirmed task {task_id}. Settlement complete.")
+    return jsonify({"status": "settled", **result}), 200
 
 @app.route('/agents/adopt', methods=['POST'])
 def adopt_agent():
@@ -571,12 +495,34 @@ def adopt_agent():
     print(f"[Relay] Agent {agent_id} adopted by @{twitter_handle}")
     return jsonify({"status": "success", "message": f"Agent {agent_id} adopted by @{twitter_handle}"}), 200
 
+@app.route('/agents/register', methods=['POST'])
+def register_agent():
+    """Explicit agent registration with wallet creation."""
+    from services.agent_service import AgentService
+    data = request.json or {}
+    agent_id = data.get('agent_id')
+    name = data.get('name')
+    if not agent_id:
+        return jsonify({"error": "agent_id required"}), 400
+    try:
+        profile = AgentService.register(agent_id, name)
+        return jsonify({"status": "registered", **profile}), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+
+@app.route('/agents/<agent_id>', methods=['GET'])
+def get_agent_profile(agent_id):
+    """Agent profile: balance, locked_balance, metrics, wallet."""
+    from services.agent_service import AgentService
+    profile = AgentService.get_profile(agent_id)
+    if not profile:
+        return jsonify({"error": "Agent not found"}), 404
+    return jsonify(profile), 200
+
 @app.route('/agents/<agent_id>/deposit', methods=['POST'])
 def deposit_funds(agent_id):
-    """Deposit funds into agent balance."""
-    agent = Agent.query.filter_by(agent_id=agent_id).first()
-    if not agent:
-        return jsonify({"error": "Agent not found"}), 404
+    """Deposit funds into agent balance. Auto-registers if not found."""
+    from services.agent_service import AgentService
 
     data = request.json or {}
     raw_amount = data.get('amount')
@@ -588,77 +534,121 @@ def deposit_funds(agent_id):
         return jsonify({"error": "Invalid amount"}), 400
 
     try:
-        agent.balance += amount
-        entry = LedgerEntry(
-            source_id='deposit',
-            target_id=agent_id,
-            amount=amount,
-            transaction_type='deposit',
-            task_id=None
-        )
-        db.session.add(entry)
-        db.session.commit()
+        result = AgentService.deposit(agent_id, amount)
+        return jsonify({"status": "deposited", **result}), 200
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Transaction failed"}), 500
-    return jsonify({
-        "status": "deposited",
-        "agent_id": agent_id,
-        "amount": str(amount),
-        "new_balance": str(agent.balance)
-    }), 200
 
 @app.route('/jobs', methods=['GET'])
 def list_jobs():
-    all_jobs = Job.query.all()
-    return jsonify([{
-        "task_id": str(j.task_id),
-        "title": j.title,
-        "price": float(j.price),
-        "status": j.status,
-        "claimed_by": j.claimed_by,
-        "artifact_type": j.artifact_type,
-        "deposit_amount": float(j.deposit_amount) if j.deposit_amount else 0,
-        "verifiers_config": j.verifiers_config,
-        "result_data": j.result_data,
-        "failure_count": j.failure_count
-    } for j in all_jobs]), 200
+    from services.job_service import JobService
+    status = request.args.get('status')
+    buyer_id = request.args.get('buyer_id')
+    claimed_by = request.args.get('claimed_by')
+    jobs = JobService.list_jobs(status=status, buyer_id=buyer_id, claimed_by=claimed_by)
+    return jsonify([JobService.to_dict(j) for j in jobs]), 200
 
 @app.route('/jobs/<task_id>', methods=['GET'])
 def get_job(task_id):
-    job = Job.query.filter_by(task_id=task_id).first()
-    if job:
-        # Knowledge Monetization: Access Control
-        can_access = True
-        buyer_id = request.args.get('buyer_id') or request.headers.get('X-Agent-ID')
-        
-        # Determine if result should be hidden
-        # 1. Job must be completed
-        # 2. If solution_price > 0, check access_list
-        if job.status == 'completed' and job.solution_price > 0:
-            access_list = job.access_list or []
-            is_owner = (buyer_id == job.buyer_id) or (buyer_id == job.claimed_by)
-            has_paid = buyer_id in access_list
-            
-            if not (is_owner or has_paid):
-                can_access = False
+    from services.job_service import JobService
+    job = JobService.get_job(task_id)  # includes lazy expiry check
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
 
-        result = job.result_data
-        if not can_access:
-            result = {"preview": "LOCKED CONTENT", "buy_to_unlock": float(job.solution_price)}
+    # Knowledge Monetization: Access Control
+    can_access = True
+    buyer_id = request.args.get('buyer_id') or request.headers.get('X-Agent-ID')
 
-        return jsonify({
-            "task_id": str(job.task_id),
-            "title": job.title,
-            "description": job.description,
-            "price": float(job.price),
-            "status": job.status,
-            "claimed_by": job.claimed_by,
-            "result": result,
-            "solution_price": float(job.solution_price),
-            "is_locked": not can_access
-        }), 200
-    return jsonify({"error": "Job not found"}), 404
+    if job.status in ('settled', 'completed') and job.solution_price and job.solution_price > 0:
+        access_list = job.access_list or []
+        is_owner = (buyer_id == job.buyer_id) or (buyer_id == job.claimed_by)
+        has_paid = buyer_id in access_list
+        if not (is_owner or has_paid):
+            can_access = False
+
+    result = job.result_data
+    if not can_access:
+        result = {"preview": "LOCKED CONTENT", "buy_to_unlock": float(job.solution_price)}
+
+    base = JobService.to_dict(job)
+    base["result"] = result
+    base["solution_price"] = float(job.solution_price) if job.solution_price else 0
+    base["is_locked"] = not can_access
+    return jsonify(base), 200
+
+@app.route('/jobs/<task_id>/cancel', methods=['POST'])
+def cancel_job(task_id):
+    """Boss cancels a pre-claim task."""
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
+    if not job:
+        return jsonify({"error": "Task not found"}), 404
+
+    buyer_id = request.json.get('buyer_id')
+    if not buyer_id or buyer_id != job.buyer_id:
+        return jsonify({"error": "Only the task creator can cancel"}), 403
+
+    if job.status not in ('created', 'funded'):
+        return jsonify({"error": f"Cannot cancel task in state: {job.status}"}), 400
+    if job.claimed_by:
+        return jsonify({"error": "Cannot cancel: task already claimed by a worker"}), 400
+
+    job.status = 'cancelled'
+    db.session.commit()
+    return jsonify({"status": "cancelled", "task_id": task_id}), 200
+
+@app.route('/jobs/<task_id>/refund', methods=['POST'])
+def refund_job(task_id):
+    """Boss reclaims funds from expired/cancelled task."""
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
+    if not job:
+        return jsonify({"error": "Task not found"}), 404
+
+    buyer_id = request.json.get('buyer_id')
+    if not buyer_id or buyer_id != job.buyer_id:
+        return jsonify({"error": "Only the task creator can request refund"}), 403
+
+    if job.status not in ('expired', 'cancelled'):
+        return jsonify({"error": f"Not refundable in state: {job.status}"}), 400
+
+    # Release any locked worker stake (if worker existed)
+    if job.claimed_by and job.deposit_amount:
+        try:
+            EscrowManager.release_stake(job.claimed_by, job.deposit_amount, job.task_id)
+        except Exception:
+            pass  # Stake may already have been released
+
+    job.status = 'refunded'
+    db.session.commit()
+    return jsonify({
+        "status": "refunded",
+        "task_id": task_id,
+        "amount": float(job.price),
+    }), 200
+
+@app.route('/jobs/<task_id>/verdict', methods=['GET'])
+def get_verdict(task_id):
+    """Query CVS verdict details for a task."""
+    from services.job_service import JobService
+    job = JobService.get_job(task_id)
+    if not job:
+        return jsonify({"error": "Task not found"}), 404
+    if not job.verdict_data:
+        return jsonify({"error": "No verdict available"}), 404
+    return jsonify(job.verdict_data), 200
+
+@app.route('/agents/<agent_id>/withdraw', methods=['POST'])
+def withdraw_funds(agent_id):
+    """Agent withdraws on-chain funds via TaskEscrow.withdraw()."""
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if not agent:
+        return jsonify({"error": "Agent not found"}), 404
+    # On-chain withdrawal will be wired in Phase B (chain_bridge)
+    return jsonify({"error": "Chain bridge not connected. On-chain withdrawal not yet available."}), 503
 
 @app.route('/jobs/<task_id>/unlock', methods=['POST'])
 def unlock_solution(task_id):

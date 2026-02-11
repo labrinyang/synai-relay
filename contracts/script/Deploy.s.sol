@@ -15,7 +15,7 @@ contract DeployScript is Script {
         vm.startBroadcast(deployerPrivateKey);
 
         // Deploy TaskEscrow
-        TaskEscrow escrow = new TaskEscrow(usdcAddress, treasuryAddress, 500);
+        TaskEscrow escrow = new TaskEscrow(usdcAddress, treasuryAddress, 2000);
 
         // Deploy CVSOracle
         CVSOracle oracle = new CVSOracle(oracleEOA, address(escrow));

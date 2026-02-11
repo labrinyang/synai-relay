@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -11,11 +14,13 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable, Pausable {
     IERC20 public immutable usdc;
     address public treasury;
     address public oracle;
-    uint16 public defaultFeeBps = 500; // 5%
+    uint16 public defaultFeeBps = 2000; // 20%
 
     mapping(bytes32 => Task) public tasks;
     mapping(address => uint256) public pendingWithdrawals;
     mapping(address => uint256) private _nonces;
+
+    mapping(bytes32 => address) public voucherHolder;
 
     modifier onlyOracle() {
         require(msg.sender == oracle, "Only oracle");
@@ -86,7 +91,9 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable, Pausable {
         
         task.worker = msg.sender;
         task.status = TaskStatus.CLAIMED;
-        
+        voucherHolder[taskId] = msg.sender;
+
+        emit VoucherIssued(taskId, msg.sender);
         emit TaskClaimed(taskId, msg.sender);
     }
 
@@ -124,14 +131,17 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable, Pausable {
     function settle(bytes32 taskId) external nonReentrant whenNotPaused {
         Task storage task = tasks[taskId];
         require(task.status == TaskStatus.ACCEPTED, "Not accepted");
+        require(voucherHolder[taskId] != address(0), "No voucher");
 
         uint256 fee = (uint256(task.amount) * defaultFeeBps) / 10000;
         uint256 payout = uint256(task.amount) - fee;
 
         task.status = TaskStatus.SETTLED;
-        
-        pendingWithdrawals[task.worker] += payout;
+
+        pendingWithdrawals[voucherHolder[taskId]] += payout;
         pendingWithdrawals[treasury] += fee;
+
+        delete voucherHolder[taskId];
 
         emit TaskSettled(taskId, task.worker, payout, fee);
     }
@@ -148,6 +158,7 @@ contract TaskEscrow is ITaskEscrow, ReentrancyGuard, Ownable, Pausable {
         );
 
         task.status = TaskStatus.EXPIRED;
+        delete voucherHolder[taskId];
         emit TaskExpired(taskId);
     }
 

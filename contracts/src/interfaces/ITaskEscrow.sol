@@ -40,6 +40,7 @@ interface ITaskEscrow {
     event TaskExpired(bytes32 indexed taskId);
     event TaskCancelled(bytes32 indexed taskId);
     event TaskRefunded(bytes32 indexed taskId, uint256 amount);
+    event VoucherIssued(bytes32 indexed taskId, address indexed worker);
 
     function createTask(uint96 amount, uint64 expiry, bytes32 contentHash, uint8 maxRetries) external returns (bytes32 taskId);
     function fundTask(bytes32 taskId) external;

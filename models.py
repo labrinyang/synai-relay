@@ -43,17 +43,21 @@ class Job(db.Model):
     price = db.Column(db.Numeric(20, 6), nullable=False)
     buyer_id = db.Column(db.String(100))
     claimed_by = db.Column(db.String(100), db.ForeignKey('agents.agent_id'))
-    status = db.Column(db.String(20), default='posted') 
-    # Statuses: 'posted' (PENDING), 'funded', 'claimed' (STAKED), 'submitted' (VERIFYING), 'completed' (RELEASED), 'slashed', 'paused'
+    status = db.Column(db.String(20), default='created')
+    # Statuses: 'created', 'funded', 'claimed', 'submitted', 'accepted',
+    # 'rejected', 'settled', 'expired', 'cancelled', 'refunded'
     escrow_tx_hash = db.Column(db.String(100)) # Link to on-chain deposit
     signature = db.Column(db.String(200))      # Buyer's cryptographic sign-off
-    # Updated Schema for "Synapse Gateway" 2.0
     artifact_type = db.Column(db.String(20), default='CODE') # CODE, DOC, API_CALL, ACTION
     verification_config = db.Column(JSON, default={})        # Legacy single config
     verifiers_config = db.Column(JSON, default=[])           # List of {type, weight, config}
-    
-    deposit_amount = db.Column(db.Numeric(20, 6), default=0) # Required Stake
+
+    deposit_amount = db.Column(db.Numeric(20, 6), default=0) # Worker stake (5% of price)
     failure_count = db.Column(db.Integer, default=0)         # Circuit Breaker
+    max_retries = db.Column(db.Integer, default=3)           # Max verification retries
+    expiry = db.Column(db.DateTime, nullable=True)           # Task expiry timestamp
+    chain_task_id = db.Column(db.String(66), nullable=True)  # On-chain bytes32 task ID (0x-prefixed hex)
+    verdict_data = db.Column(JSON, nullable=True)            # {score, accepted, evidence_hash, timestamp}
     
     # Knowledge Monetization
     solution_price = db.Column(db.Numeric(20, 6), default=0) # Price to unlock solution
