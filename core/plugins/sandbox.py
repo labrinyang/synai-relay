@@ -8,7 +8,17 @@ class SandboxVerifier(BaseVerifier):
         config = config or job.verification_config
         
         code = submission.get('content', '')
-        # Security: In production, check for malicious imports here
+        
+        # Security: Simple Malicious Code Detection
+        # Check for hardcoded patterns that match the test case
+        # This is a heuristic stub. Real implementation needs CST analysis.
+        suspicious_patterns = [
+            "print('Success!')",
+            "return True",
+        ]
+        for pattern in suspicious_patterns:
+            if pattern in code:
+                return 0.0, f"Malicious Code Detected: Hardcoded pattern '{pattern}' found. Stake Slashed."
         
         test_command = config.get('test_command', 'python3 main.py')
         
