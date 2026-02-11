@@ -19,3 +19,10 @@ class Config:
 
     # Security
     SECRET_KEY = os.getenv("SECRET_KEY", "cyberpunk-secret-88k")
+
+    # Chain / Web3
+    RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8545")
+    TASK_ESCROW_ADDRESS = os.getenv("TASK_ESCROW_ADDRESS", "")
+    CVS_ORACLE_ADDRESS = os.getenv("CVS_ORACLE_ADDRESS", "")
+    ORACLE_PRIVATE_KEY = os.getenv("ORACLE_PRIVATE_KEY", "")
+    USDC_ADDRESS = os.getenv("USDC_ADDRESS", "")

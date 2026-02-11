@@ -191,7 +191,7 @@ contract TaskEscrowTest is Test {
     }
 
     // Settlement Logic
-    function test_settle_happy_path_95_5_split() public {
+    function test_settle_happy_path_80_20_split() public {
         bytes32 id = _createTask();
         vm.prank(boss);
         escrow.fundTask(id);
@@ -199,27 +199,82 @@ contract TaskEscrowTest is Test {
         escrow.claimTask(id);
         vm.prank(worker);
         escrow.submitResult(id, bytes32("res"));
-        
+
         vm.prank(oracle);
         escrow.onVerdictReceived(id, true, 100);
-        
+
         escrow.settle(id);
-        
-        uint256 fee = 100 * 10**6 * 500 / 10000; // 5 * 10**6
-        uint256 payout = 100 * 10**6 - fee; // 95 * 10**6
-        
+
+        uint256 fee = 100 * 10**6 * 2000 / 10000; // 20 * 10**6
+        uint256 payout = 100 * 10**6 - fee; // 80 * 10**6
+
         assertEq(escrow.pendingWithdrawals(worker), payout);
         assertEq(escrow.pendingWithdrawals(treasury), fee);
     }
 
     function test_withdraw_transfers_correct_amount() public {
         // Setup pending withdrawals
-        test_settle_happy_path_95_5_split();
-        
+        test_settle_happy_path_80_20_split();
+
         uint256 balBefore = usdc.balanceOf(worker);
         vm.prank(worker);
         escrow.withdraw();
-        assertEq(usdc.balanceOf(worker) - balBefore, 95 * 10**6);
+        assertEq(usdc.balanceOf(worker) - balBefore, 80 * 10**6);
         assertEq(escrow.pendingWithdrawals(worker), 0);
+    }
+
+    // Voucher tests
+    function test_claimSetsVoucher() public {
+        bytes32 id = _createTask();
+        vm.prank(boss);
+        escrow.fundTask(id);
+
+        vm.prank(worker);
+        escrow.claimTask(id);
+
+        assertEq(escrow.voucherHolder(id), worker);
+    }
+
+    function test_settleUsesVoucher() public {
+        bytes32 id = _createTask();
+        vm.prank(boss);
+        escrow.fundTask(id);
+        vm.prank(worker);
+        escrow.claimTask(id);
+        vm.prank(worker);
+        escrow.submitResult(id, bytes32("res"));
+
+        vm.prank(oracle);
+        escrow.onVerdictReceived(id, true, 100);
+
+        // Verify voucher is set before settle
+        assertEq(escrow.voucherHolder(id), worker);
+
+        escrow.settle(id);
+
+        // pendingWithdrawals credited to voucher holder (worker)
+        uint256 payout = 80 * 10**6;
+        assertEq(escrow.pendingWithdrawals(worker), payout);
+
+        // Voucher cleared after settle
+        assertEq(escrow.voucherHolder(id), address(0));
+    }
+
+    function test_expireClearsVoucher() public {
+        bytes32 id = _createTask();
+        vm.prank(boss);
+        escrow.fundTask(id);
+        vm.prank(worker);
+        escrow.claimTask(id);
+
+        // Verify voucher is set
+        assertEq(escrow.voucherHolder(id), worker);
+
+        // Warp past deadline and mark expired
+        vm.warp(block.timestamp + 2 days);
+        escrow.markExpired(id);
+
+        // Voucher should be cleared
+        assertEq(escrow.voucherHolder(id), address(0));
     }
 }

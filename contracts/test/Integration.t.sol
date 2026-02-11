@@ -19,7 +19,7 @@ contract IntegrationTest is Test {
     
     function setUp() public {
         usdc = new MockUSDC();
-        escrow = new TaskEscrow(address(usdc), treasury, 500);
+        escrow = new TaskEscrow(address(usdc), treasury, 2000);
         oracleContract = new CVSOracle(oracleSigner, address(escrow));
         escrow.setOracle(address(oracleContract));
         
@@ -61,8 +61,8 @@ contract IntegrationTest is Test {
         vm.prank(worker);
         escrow.withdraw();
         
-        assertEq(usdc.balanceOf(worker), 95 ether);
-        assertEq(escrow.pendingWithdrawals(treasury), 5 ether);
+        assertEq(usdc.balanceOf(worker), 80 ether);
+        assertEq(escrow.pendingWithdrawals(treasury), 20 ether);
     }
 
     function test_circuit_breaker_pauses_at_max_retries() public {
