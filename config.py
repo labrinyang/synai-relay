@@ -1,28 +1,21 @@
 import os
 
 class Config:
-    # Database
-    # Format: postgresql://user:password@host:port/dbname
-    raw_uri = os.getenv("DATABASE_URL")
-    if raw_uri and raw_uri.startswith("postgres://"):
-        raw_uri = raw_uri.replace("postgres://", "postgresql://", 1)
-    
-    SQLALCHEMY_DATABASE_URI = raw_uri or ("sqlite:///" + os.path.join(os.getcwd(), "atp_dev.db"))
-
-
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///atp_dev.db')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
 
-    # Payments
-    # The Ethereum address where platform commissions (20%) will be settled
-    ADMIN_WALLET_ADDRESS = os.getenv("ADMIN_WALLET_ADDRESS", "0x8396e3ebf85d0d400045965f427d6bb5a12137b3")
+    # Chain (Base L2)
+    RPC_URL = os.environ.get('RPC_URL', '')
+    USDC_CONTRACT = os.environ.get('USDC_CONTRACT', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913')
+    OPERATIONS_WALLET_ADDRESS = os.environ.get('OPERATIONS_WALLET_ADDRESS', '')
+    OPERATIONS_WALLET_KEY = os.environ.get('OPERATIONS_WALLET_KEY', '')
+    FEE_WALLET_ADDRESS = os.environ.get('FEE_WALLET_ADDRESS', '')
+    MIN_TASK_AMOUNT = float(os.environ.get('MIN_TASK_AMOUNT', '0.1'))
 
-
-    # Security
-    SECRET_KEY = os.getenv("SECRET_KEY", "cyberpunk-secret-88k")
-
-    # Chain / Web3
-    RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8545")
-    TASK_ESCROW_ADDRESS = os.getenv("TASK_ESCROW_ADDRESS", "")
-    CVS_ORACLE_ADDRESS = os.getenv("CVS_ORACLE_ADDRESS", "")
-    ORACLE_PRIVATE_KEY = os.getenv("ORACLE_PRIVATE_KEY", "")
-    USDC_ADDRESS = os.getenv("USDC_ADDRESS", "")
+    # Oracle LLM (OpenAI-compatible)
+    ORACLE_LLM_BASE_URL = os.environ.get('ORACLE_LLM_BASE_URL', 'https://openrouter.ai/api/v1')
+    ORACLE_LLM_API_KEY = os.environ.get('ORACLE_LLM_API_KEY', '')
+    ORACLE_LLM_MODEL = os.environ.get('ORACLE_LLM_MODEL', 'openai/gpt-4o')
+    ORACLE_PASS_THRESHOLD = int(os.environ.get('ORACLE_PASS_THRESHOLD', '80'))
+    ORACLE_MAX_ROUNDS = int(os.environ.get('ORACLE_MAX_ROUNDS', '6'))
