@@ -4,6 +4,7 @@ Handles: deposit verification, payout, fee transfer, refund.
 Gracefully degrades when RPC/keys not configured (off-chain dev mode).
 """
 import os
+import threading
 from decimal import Decimal
 
 # Standard USDC ERC-20 ABI (only Transfer event + transfer function needed)
@@ -49,6 +50,8 @@ class WalletService:
         self.usdc_contract = None
         self.ops_address = os.environ.get('OPERATIONS_WALLET_ADDRESS', '')
         self.usdc_decimals = 6
+        # H5: Nonce lock for concurrent transactions
+        self._tx_lock = threading.Lock()
 
         if self.rpc_url and self.usdc_address:
             try:
@@ -83,6 +86,13 @@ class WalletService:
             if receipt['status'] != 1:
                 return {"valid": False, "error": "Transaction reverted"}
 
+            # M13: Require minimum 12 block confirmations
+            block_number = receipt.get('blockNumber', 0)
+            current_block = self.w3.eth.block_number
+            confirmations = current_block - block_number
+            if confirmations < 12:
+                return {"valid": False, "error": f"Insufficient confirmations: {confirmations}/12"}
+
             transfers = self.usdc_contract.events.Transfer().process_receipt(receipt)
             for t in transfers:
                 to_addr = t['args']['to']
@@ -111,15 +121,16 @@ class WalletService:
         raw_amount = int(amount * Decimal(10 ** self.usdc_decimals))
         to_addr = Web3.to_checksum_address(to_address)
 
-        tx = self.usdc_contract.functions.transfer(to_addr, raw_amount).build_transaction({
-            'from': self.ops_address,
-            'nonce': self.w3.eth.get_transaction_count(self.ops_address),
-            'gas': 100_000,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-
-        signed = self.w3.eth.account.sign_transaction(tx, self.ops_key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        # H5: Lock to prevent nonce collisions on concurrent transactions
+        with self._tx_lock:
+            tx = self.usdc_contract.functions.transfer(to_addr, raw_amount).build_transaction({
+                'from': self.ops_address,
+                'nonce': self.w3.eth.get_transaction_count(self.ops_address),
+                'gas': 100_000,
+                'gasPrice': self.w3.eth.gas_price,
+            })
+            signed = self.w3.eth.account.sign_transaction(tx, self.ops_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
 
         if receipt['status'] != 1:
@@ -133,7 +144,12 @@ class WalletService:
         fee_amount = task_price * Decimal('0.20')
 
         payout_tx = self.send_usdc(worker_address, worker_amount)
-        fee_tx = self.send_usdc(self.fee_address, fee_amount)
+        try:
+            fee_tx = self.send_usdc(self.fee_address, fee_amount)
+        except Exception as e:
+            # Worker paid but fee failed — log and return partial result
+            print(f"[WalletService] WARN: Fee transfer failed after payout: {e}")
+            return {"payout_tx": payout_tx, "fee_tx": None, "fee_error": str(e)}
 
         return {"payout_tx": payout_tx, "fee_tx": fee_tx}
 

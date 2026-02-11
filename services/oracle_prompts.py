@@ -62,6 +62,8 @@ STEP4_QUALITY = """You are assessing the quality of a task submission.
 
 ## Task
 Title: {title}
+Description:
+{description}
 
 ## Previous Analysis
 Step 2 (Comprehension): {step2_output}

@@ -9,8 +9,10 @@ Submission statuses: pending -> judging -> passed | failed
 from flask import Flask, request, jsonify
 from models import db, Owner, Agent, Job, Submission
 from config import Config
+from sqlalchemy.exc import IntegrityError
 
 import json
+import os
 import threading
 import datetime
 from decimal import Decimal, InvalidOperation
@@ -35,6 +37,19 @@ with app.app_context():
     except Exception as e:
         print(f"[FATAL] Database init failed: {e}")
 
+    # L11: Recover stuck judging submissions from previous crash
+    try:
+        stuck = Submission.query.filter_by(status='judging').count()
+        if stuck > 0:
+            Submission.query.filter_by(status='judging').update(
+                {'status': 'failed', 'oracle_reason': 'Server restarted during evaluation'},
+                synchronize_session='fetch'
+            )
+            db.session.commit()
+            print(f"[Relay] Recovered {stuck} stuck judging submissions")
+    except Exception as e:
+        print(f"[Relay] Crash recovery check failed: {e}")
+
 # ---------------------------------------------------------------------------
 # Oracle background thread
 # ---------------------------------------------------------------------------
@@ -47,85 +62,116 @@ def _run_oracle(app, submission_id):
         if not sub or sub.status != 'judging':
             return
 
-        job = Job.query.get(sub.task_id)
-        if not job:
-            return
+        try:
+            job = Job.query.get(sub.task_id)
+            if not job:
+                return
 
-        # Step 1: Guard
-        from services.oracle_guard import OracleGuard
-        guard = OracleGuard()
-        text_for_guard = (
-            json.dumps(sub.content, ensure_ascii=False)
-            if isinstance(sub.content, dict)
-            else str(sub.content)
-        )
-        guard_result = guard.check(text_for_guard)
+            # Step 1: Guard
+            from services.oracle_guard import OracleGuard
+            guard = OracleGuard()
+            text_for_guard = (
+                json.dumps(sub.content, ensure_ascii=False)
+                if isinstance(sub.content, dict)
+                else str(sub.content)
+            )
+            guard_result = guard.check(text_for_guard)
 
-        if guard_result['blocked']:
-            sub.status = 'failed'
-            sub.oracle_score = 0
-            sub.oracle_reason = f"Blocked by guard: {guard_result['reason']}"
-            sub.oracle_steps = [{"step": 1, "name": "guard", "output": guard_result}]
-            db.session.commit()
-            return
+            if guard_result['blocked']:
+                sub.status = 'failed'
+                sub.oracle_score = 0
+                sub.oracle_reason = f"Blocked by guard: {guard_result['reason']}"
+                sub.oracle_steps = [{"step": 1, "name": "guard", "output": guard_result}]
+                db.session.commit()
+                return
 
-        # Steps 2-6: Oracle evaluation
-        from services.oracle_service import OracleService
-        oracle = OracleService()
-        result = oracle.evaluate(job.title, job.description, job.rubric, sub.content)
+            # Steps 2-6: Oracle evaluation
+            from services.oracle_service import OracleService
+            oracle = OracleService()
+            result = oracle.evaluate(job.title, job.description, job.rubric, sub.content)
 
-        sub.oracle_score = result['score']
-        sub.oracle_reason = result['reason']
-        sub.oracle_steps = (
-            [{"step": 1, "name": "guard", "output": guard_result}] + result['steps']
-        )
+            sub.oracle_score = result['score']
+            sub.oracle_reason = result['reason']
+            sub.oracle_steps = (
+                [{"step": 1, "name": "guard", "output": guard_result}] + result['steps']
+            )
 
-        if result['verdict'] == 'RESOLVED':
-            sub.status = 'passed'
+            if result['verdict'] == 'RESOLVED':
+                sub.status = 'passed'
 
-            # Atomic resolve: only the first passer wins
-            updated = Job.query.filter_by(
-                task_id=sub.task_id, status='funded'
-            ).update({
-                'status': 'resolved',
-                'winner_id': sub.worker_id,
-                'result_data': sub.content,
-            })
+                # Atomic resolve: only the first passer wins
+                updated = Job.query.filter_by(
+                    task_id=sub.task_id, status='funded'
+                ).update({
+                    'status': 'resolved',
+                    'winner_id': sub.worker_id,
+                    'result_data': sub.content,
+                })
 
-            if updated:
-                # This submission won — attempt payout
-                worker = Agent.query.get(sub.worker_id)
-                if worker and worker.wallet_address:
-                    from services.wallet_service import get_wallet_service
-                    wallet = get_wallet_service()
-                    if wallet.is_connected():
-                        try:
-                            txs = wallet.payout(worker.wallet_address, job.price)
-                            job_obj = Job.query.get(sub.task_id)
-                            job_obj.payout_tx_hash = txs['payout_tx']
-                            job_obj.fee_tx_hash = txs['fee_tx']
-                            worker.total_earned = (
-                                (worker.total_earned or 0) + job.price * Decimal('0.80')
-                            )
-                        except Exception as e:
-                            print(f"[Oracle] Payout failed: {e}")
+                if updated:
+                    # H7: Discard other in-flight submissions
+                    Submission.query.filter(
+                        Submission.task_id == sub.task_id,
+                        Submission.id != sub.id,
+                        Submission.status.in_(['pending', 'judging']),
+                    ).update({'status': 'failed'}, synchronize_session='fetch')
 
-                # Update reputation
+                    # This submission won — attempt payout
+                    worker = Agent.query.get(sub.worker_id)
+                    if worker and worker.wallet_address:
+                        from services.wallet_service import get_wallet_service
+                        wallet = get_wallet_service()
+                        if wallet.is_connected():
+                            try:
+                                txs = wallet.payout(worker.wallet_address, job.price)
+                                job_obj = Job.query.get(sub.task_id)
+                                job_obj.payout_tx_hash = txs['payout_tx']
+                                job_obj.fee_tx_hash = txs.get('fee_tx')
+                                worker.total_earned = (
+                                    (worker.total_earned or 0) + job.price * Decimal('0.80')
+                                )
+                            except Exception as e:
+                                print(f"[Oracle] Payout failed: {e}")
+
+                    # Update reputation
+                    from services.agent_service import AgentService
+                    AgentService.update_reputation(sub.worker_id)
+            else:
+                sub.status = 'failed'
+                # Increment failure count
+                job_obj = Job.query.get(sub.task_id)
+                if job_obj:
+                    job_obj.failure_count = (job_obj.failure_count or 0) + 1
+
+                # Update reputation on failure too
                 from services.agent_service import AgentService
                 AgentService.update_reputation(sub.worker_id)
-        else:
-            sub.status = 'failed'
-            # Increment failure count
-            job_obj = Job.query.get(sub.task_id)
-            if job_obj:
-                job_obj.failure_count = (job_obj.failure_count or 0) + 1
 
-        db.session.commit()
+            db.session.commit()
+        except Exception as e:
+            sub.status = 'failed'
+            sub.oracle_reason = f"Internal error: {str(e)}"
+            sub.oracle_steps = [{"step": 0, "name": "error", "output": {"error": str(e)}}]
+            db.session.commit()
 
 
 # ---------------------------------------------------------------------------
 # Helper: submission serialiser
 # ---------------------------------------------------------------------------
+
+
+def _sanitize_oracle_steps(steps):
+    """Return only step name + pass/fail, hide full LLM outputs."""
+    if not steps:
+        return steps
+    sanitized = []
+    for s in steps:
+        sanitized.append({
+            "step": s.get("step"),
+            "name": s.get("name"),
+            "passed": s.get("output", {}).get("verdict") not in ("CLEAR_FAIL", "REJECTED") if isinstance(s.get("output"), dict) else None,
+        })
+    return sanitized
 
 
 def _submission_to_dict(sub: Submission) -> dict:
@@ -137,7 +183,7 @@ def _submission_to_dict(sub: Submission) -> dict:
         "status": sub.status,
         "oracle_score": sub.oracle_score,
         "oracle_reason": sub.oracle_reason,
-        "oracle_steps": sub.oracle_steps,
+        "oracle_steps": _sanitize_oracle_steps(sub.oracle_steps),
         "attempt": sub.attempt,
         "created_at": sub.created_at.isoformat() if sub.created_at else None,
     }
@@ -165,6 +211,8 @@ def deposit_info():
     return jsonify({
         "operations_wallet": wallet.get_ops_address(),
         "usdc_contract": app.config.get('USDC_CONTRACT', ''),
+        "chain": "base",
+        "min_amount": app.config.get('MIN_TASK_AMOUNT', 0.1),
         "chain_connected": wallet.is_connected(),
     }), 200
 
@@ -363,15 +411,19 @@ def fund_job(task_id):
         # On-chain verification
         verify = wallet.verify_deposit(tx_hash, job.price)
         if not verify.get('valid'):
-            return jsonify({
-                "error": f"Deposit verification failed: {verify.get('error', 'unknown')}"
-            }), 400
+            return jsonify({"error": "Deposit verification failed"}), 400
         job.depositor_address = verify.get('depositor')
-    # If wallet not connected (dev mode), accept any tx_hash
+    elif not app.config.get('DEV_MODE', False):
+        return jsonify({"error": "Chain not connected and DEV_MODE is disabled"}), 503
+    # else: dev mode — accept any tx_hash
 
     job.status = 'funded'
     job.deposit_tx_hash = tx_hash
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "This transaction has already been used to fund a job"}), 409
 
     return jsonify({
         "status": "funded",
@@ -387,9 +439,8 @@ def fund_job(task_id):
 
 @app.route('/jobs/<task_id>/claim', methods=['POST'])
 def claim_job(task_id):
-    from services.job_service import JobService
-
-    job = JobService.get_job(task_id)
+    # H6: Atomic claim with DB-level locking
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
@@ -469,15 +520,21 @@ def submit_result(task_id):
     if content is None:
         return jsonify({"error": "content is required"}), 400
 
+    # C3: Enforce 50KB content size limit
+    content_str = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else str(content)
+    if len(content_str.encode('utf-8')) > 50 * 1024:
+        return jsonify({"error": "Submission content exceeds 50KB limit"}), 400
+
     # Worker must be a participant
     participants = list(job.participants or [])
     if worker_id not in participants:
         return jsonify({"error": "Worker has not claimed this task"}), 403
 
-    # Check max_submissions on the job
+    # H10: Check submission limits within a locked read
+    job_for_submit = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
     total_submissions = Submission.query.filter_by(task_id=task_id).count()
-    if total_submissions >= (job.max_submissions or 20):
-        return jsonify({"error": "Maximum submissions reached for this task"}), 400
+    if total_submissions >= (job_for_submit.max_submissions or 20):
+        return jsonify({"error": "Task has reached maximum submissions"}), 400
 
     # Check max_retries per worker
     worker_submissions = Submission.query.filter_by(
@@ -566,10 +623,14 @@ def cancel_job(task_id):
     if buyer_id != job.buyer_id:
         return jsonify({"error": "Only the job creator can cancel"}), 403
 
-    if job.status != 'open':
-        return jsonify({
-            "error": f"Can only cancel open jobs (current: {job.status})"
-        }), 400
+    if job.status not in ('open', 'funded'):
+        return jsonify({"error": f"Cannot cancel job in {job.status} state"}), 400
+
+    if job.status == 'funded':
+        Submission.query.filter(
+            Submission.task_id == task_id,
+            Submission.status.in_(['pending', 'judging']),
+        ).update({'status': 'failed'}, synchronize_session='fetch')
 
     job.status = 'cancelled'
     db.session.commit()
@@ -604,6 +665,9 @@ def refund_job(task_id):
     if job.status not in ('expired', 'cancelled'):
         return jsonify({"error": f"Not refundable in state: {job.status}"}), 400
 
+    if job.refund_tx_hash:
+        return jsonify({"error": "Job already refunded"}), 409
+
     # Attempt on-chain refund if wallet is connected and deposit info exists
     wallet = get_wallet_service()
     refund_tx = None
@@ -613,9 +677,8 @@ def refund_job(task_id):
             job.refund_tx_hash = refund_tx
         except Exception as e:
             print(f"[Relay] Refund failed: {e}")
-            return jsonify({"error": f"On-chain refund failed: {str(e)}"}), 500
+            return jsonify({"error": "Refund processing failed"}), 500
 
-    job.status = 'cancelled'
     db.session.commit()
 
     result = {
@@ -633,4 +696,4 @@ def refund_job(task_id):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    app.run(port=5005, debug=True)
+    app.run(port=5005, debug=os.environ.get('FLASK_DEBUG', 'false').lower() in ('true', '1'))

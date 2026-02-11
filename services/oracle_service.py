@@ -21,7 +21,7 @@ class OracleService:
         self.model = os.environ.get('ORACLE_LLM_MODEL', 'openai/gpt-4o')
         self.pass_threshold = int(os.environ.get('ORACLE_PASS_THRESHOLD', '80'))
 
-    def _call_llm(self, prompt: str, temperature: float = 0.1) -> dict:
+    def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1000) -> dict:
         """Call LLM and parse JSON response."""
         resp = requests.post(
             f"{self.base_url}/chat/completions",
@@ -30,10 +30,12 @@ class OracleService:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
-                "max_tokens": 1000,
+                "max_tokens": max_tokens,
             },
             timeout=60,
         )
+        if not resp.ok:
+            raise RuntimeError(f"LLM API error: {resp.status_code} {resp.text[:200]}")
         data = resp.json()
         content = data['choices'][0]['message']['content'].strip()
         # Extract JSON from response (handle markdown code blocks)
@@ -48,6 +50,8 @@ class OracleService:
         """
         rubric_section = build_rubric_section(rubric)
         submission_str = json.dumps(submission, ensure_ascii=False) if isinstance(submission, dict) else str(submission)
+        # H4: Escape SUBMISSION delimiters in content to prevent delimiter injection
+        submission_str = submission_str.replace('</SUBMISSION>', '&lt;/SUBMISSION&gt;').replace('<SUBMISSION>', '&lt;SUBMISSION&gt;')
         steps = []
 
         # Step 2: Comprehension
@@ -87,12 +91,13 @@ class OracleService:
             submission=submission_str,
             completeness_instructions=completeness_instructions,
         )
-        step3 = self._call_llm(prompt3, temperature=0.1)
+        step3 = self._call_llm(prompt3, temperature=0.1, max_tokens=1500)
         steps.append({"step": 3, "name": "completeness", "output": step3})
 
         # Step 4: Quality
         prompt4 = STEP4_QUALITY.format(
             title=title,
+            description=description,
             step2_output=json.dumps(step2),
             step3_output=json.dumps(step3),
             submission=submission_str,
@@ -122,7 +127,7 @@ class OracleService:
             step4_output=json.dumps(step4),
             submission=submission_str,
         )
-        step5 = self._call_llm(prompt5, temperature=0.2)
+        step5 = self._call_llm(prompt5, temperature=0.2, max_tokens=1500)
         steps.append({"step": 5, "name": "devils_advocate", "output": step5})
 
         # Step 6: Final Verdict
@@ -141,10 +146,13 @@ class OracleService:
 
     def _build_result(self, verdict_step: dict, steps: list) -> dict:
         score = verdict_step.get('score', 0)
+        passed = score >= self.pass_threshold
+        # H8: Override verdict based on score to prevent LLM inconsistency
+        verdict = 'RESOLVED' if passed else 'REJECTED'
         return {
-            "verdict": verdict_step.get('verdict', 'REJECTED'),
+            "verdict": verdict,
             "score": score,
-            "passed": score >= self.pass_threshold,
+            "passed": passed,
             "reason": verdict_step.get('reason', ''),
             "steps": steps,
         }
