@@ -49,23 +49,3 @@ class EscrowManager:
         db.session.add(entry)
         db.session.flush()
 
-    @staticmethod
-    def slash_stake(agent_id, amount, task_id, reason="Slash"):
-        """
-        Confiscates locked funds to platform treasury.
-        """
-        agent = Agent.query.filter_by(agent_id=agent_id).first()
-        amount = Decimal(str(amount))
-        
-        if agent.locked_balance < amount:
-            amount = agent.locked_balance
-            
-        agent.locked_balance -= amount
-        # Funds go to platform
-        
-        entry = LedgerEntry(
-            source_id='escrow_lock', target_id='platform_treasury',
-            amount=amount, transaction_type='stake_slash', task_id=task_id
-        )
-        db.session.add(entry)
-        db.session.flush()

@@ -3,6 +3,7 @@ from models import db, Owner, Agent, Job, LedgerEntry
 from config import Config
 import os
 import uuid
+import json
 import datetime
 import hmac
 import hashlib
@@ -10,7 +11,6 @@ from decimal import Decimal
 from wallet_manager import wallet_manager
 from sqlalchemy import text, inspect
 
-from core.verifier_factory import VerifierFactory
 from core.escrow_manager import EscrowManager
 
 app = Flask(__name__)
@@ -190,7 +190,7 @@ def get_ranking():
     # Platform Stats
     total_agents = Agent.query.count()
     total_bounty_volume = db.session.query(db.func.sum(Job.price)).scalar() or 0
-    active_tasks = Job.query.filter(Job.status != 'completed').count()
+    active_tasks = Job.query.filter(Job.status.notin_(['settled', 'cancelled', 'refunded', 'expired'])).count()
     platform_revenue = db.session.query(db.func.sum(LedgerEntry.amount)).filter(LedgerEntry.target_id == 'platform_admin').scalar() or 0
     
     # Aggregate by owner for owner ranking
@@ -390,8 +390,7 @@ def submit_result(task_id):
             agent = Agent.query.filter_by(agent_id=agent_id).first()
             if agent and agent.encrypted_privkey:
                 worker_key = wallet_manager.decrypt_privkey(agent.encrypted_privkey)
-                import json as _json
-                result_bytes = _json.dumps(result, sort_keys=True).encode('utf-8')
+                result_bytes = json.dumps(result, sort_keys=True).encode('utf-8')
                 result_hash = bytes.fromhex(hashlib.sha256(result_bytes).hexdigest())
                 chain_tx_hash = bridge.submit_result(worker_key, job.chain_task_id, result_hash)
                 print(f"[ChainBridge] Task {task_id} result submitted on-chain, tx: {chain_tx_hash}")
@@ -403,23 +402,9 @@ def submit_result(task_id):
     # Branch: auto-verify or manual
     if job.verifiers_config:
         try:
-            verification_result = VerifierFactory.verify_composite(job, result)
-            is_passing = verification_result['success']
-            if is_passing:
-                payout_info = _settle_job(job, success=True)
-                return jsonify({
-                    "status": "settled",
-                    "verification": verification_result,
-                    "settlement": payout_info
-                }), 200
-            else:
-                payout_info = _settle_job(job, success=False)
-                return jsonify({
-                    "status": payout_info.get("status", "rejected"),
-                    "message": "Verification Failed",
-                    "verification": verification_result,
-                    "settlement": payout_info
-                }), 200
+            from services.verification import VerificationService
+            combined = VerificationService.verify_and_settle(job, result)
+            return jsonify(combined), 200
         except Exception as e:
             db.session.rollback()
             return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
@@ -464,28 +449,13 @@ def webhook_callback(task_id):
     job.result_data = current_result
     db.session.commit()
     
-    # Dispatch to Verifier
+    # Dispatch to VerificationService (same pipeline as submit endpoint)
     try:
-        # Use Composite Verification
-        verification_result = VerifierFactory.verify_composite(job, current_result)
-        
-        score = verification_result['score']
-        is_passing = verification_result['success']
-        
-        if is_passing:
-            _settle_job(job, success=True)
-            return jsonify({"status": "verified", "message": "Callback accepted, task settled."}), 200
-        else:
-            # Logic: Webhook arrived, but maybe score is still low (e.g. other verifiers failed previously?)
-            # Or maybe the payload didn't match?
-            # We should probably treat this as a failure attempt if it was meant to be the final trigger.
-            # Let's settle as fail to penalize if appropriate, or just return status.
-            # User requirement: "Timeout if not received" -> Slash.
-            # If received but wrong -> Simple fail?
-            _settle_job(job, success=False)
-            return jsonify({"status": "rejected", "reason": verification_result.get('reason')}), 400
-            
+        from services.verification import VerificationService
+        combined = VerificationService.verify_and_settle(job, current_result)
+        return jsonify(combined), 200
     except Exception as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/jobs/<task_id>/confirm', methods=['POST'])
@@ -623,7 +593,7 @@ def get_job(task_id):
     can_access = True
     buyer_id = request.args.get('buyer_id') or request.headers.get('X-Agent-ID')
 
-    if job.status in ('settled', 'completed') and job.solution_price and job.solution_price > 0:
+    if job.status == 'settled' and job.solution_price and job.solution_price > 0:
         access_list = job.access_list or []
         is_owner = (buyer_id == job.buyer_id) or (buyer_id == job.claimed_by)
         has_paid = buyer_id in access_list
@@ -769,8 +739,8 @@ def unlock_solution(task_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
         
-    if job.status != 'completed':
-        return jsonify({"error": "Solution not ready (Job not completed)"}), 400
+    if job.status != 'settled':
+        return jsonify({"error": "Solution not ready (Job not settled)"}), 400
         
     if job.solution_price <= 0:
         return jsonify({"status": "success", "message": "Solution is free"}), 200

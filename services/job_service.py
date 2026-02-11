@@ -1,5 +1,8 @@
 from models import db, Job
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+_EXPIRABLE_STATUSES = ('created', 'funded', 'claimed', 'submitted', 'rejected')
 
 
 class JobService:
@@ -12,7 +15,7 @@ class JobService:
         """
         if not job.expiry:
             return False
-        if job.status in ('created', 'funded', 'claimed', 'submitted', 'rejected'):
+        if job.status in _EXPIRABLE_STATUSES:
             if datetime.utcnow() > job.expiry:
                 job.status = 'expired'
                 db.session.commit()
@@ -23,7 +26,7 @@ class JobService:
     def list_jobs(status=None, buyer_id=None, claimed_by=None):
         """
         List jobs with optional filters.
-        Runs lazy expiry check on each result.
+        Runs lazy expiry check (batched) on each result.
         """
         query = Job.query
 
@@ -36,9 +39,15 @@ class JobService:
 
         jobs = query.order_by(Job.created_at.desc()).all()
 
-        # Lazy expiry on each
+        # Batch lazy expiry — mark all expired first, then single commit
+        now = datetime.utcnow()
+        expired_any = False
         for j in jobs:
-            JobService.check_expiry(j)
+            if j.expiry and j.status in _EXPIRABLE_STATUSES and now > j.expiry:
+                j.status = 'expired'
+                expired_any = True
+        if expired_any:
+            db.session.commit()
 
         return jobs
 

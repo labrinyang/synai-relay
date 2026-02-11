@@ -33,5 +33,9 @@ ENV/
 .env
 .flaskenv
 
+# Foundry build artifacts
+contracts/out/
+contracts/cache/
+
 # OS
 .DS_Store

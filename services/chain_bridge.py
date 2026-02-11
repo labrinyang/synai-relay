@@ -159,10 +159,15 @@ class ChainBridge:
 
 
 # Singleton — constructed lazily, tolerates missing env vars
+import threading
+
 _bridge_instance = None
+_bridge_lock = threading.Lock()
 
 def get_chain_bridge() -> ChainBridge:
     global _bridge_instance
     if _bridge_instance is None:
-        _bridge_instance = ChainBridge()
+        with _bridge_lock:
+            if _bridge_instance is None:
+                _bridge_instance = ChainBridge()
     return _bridge_instance

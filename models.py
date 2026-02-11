@@ -1,8 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from sqlalchemy import JSON, String, Numeric, Text
-import enum
 
 db = SQLAlchemy()
 
@@ -49,8 +48,8 @@ class Job(db.Model):
     escrow_tx_hash = db.Column(db.String(100)) # Link to on-chain deposit
     signature = db.Column(db.String(200))      # Buyer's cryptographic sign-off
     artifact_type = db.Column(db.String(20), default='CODE') # CODE, DOC, API_CALL, ACTION
-    verification_config = db.Column(JSON, default={})        # Legacy single config
-    verifiers_config = db.Column(JSON, default=[])           # List of {type, weight, config}
+    verification_config = db.Column(JSON, default=lambda: {})  # Legacy single config
+    verifiers_config = db.Column(JSON, default=lambda: [])    # List of {type, weight, config}
 
     deposit_amount = db.Column(db.Numeric(20, 6), default=0) # Worker stake (5% of price)
     failure_count = db.Column(db.Integer, default=0)         # Circuit Breaker
@@ -61,7 +60,7 @@ class Job(db.Model):
     
     # Knowledge Monetization
     solution_price = db.Column(db.Numeric(20, 6), default=0) # Price to unlock solution
-    access_list = db.Column(JSON, default=[])                # Agent IDs who paid
+    access_list = db.Column(JSON, default=lambda: [])          # Agent IDs who paid
     
     envelope_json = db.Column(JSON, nullable=True) 
     result_data = db.Column(JSON)

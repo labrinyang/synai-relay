@@ -49,9 +49,9 @@ def market():
             status = j['status']
             stake = j.get('deposit_amount', 0)
             status_display = status.upper()
-            if status == 'paused': status_display = click.style('PAUSED', fg='yellow')
-            elif status == 'slashed': status_display = click.style('SLASHED', fg='red')
-            elif status == 'completed': status_display = click.style('DONE', fg='green')
+            if status == 'expired': status_display = click.style('EXPIRED', fg='yellow')
+            elif status == 'rejected': status_display = click.style('REJECTED', fg='red')
+            elif status == 'settled': status_display = click.style('SETTLED', fg='green')
             
             table.append([
                 j['task_id'][:8], 
@@ -164,7 +164,7 @@ def submit(task_id, file_path):
             status = res.get('status')
             score = res.get('verification', {}).get('score', 0)
             
-            if status == 'completed':
+            if status == 'settled':
                 click.echo(click.style(f"VERIFIED! Score: {score}", fg='green'))
                 payout = res.get('settlement', {}).get('payout', 0)
                 click.echo(f"Settled: +{payout} USDC")
