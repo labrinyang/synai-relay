@@ -17,11 +17,11 @@
 - [x] 3B.2 检查 `docs/gap-analysis-opus.md` 已生成且非空
 - [x] 3C.1 对比 `gap-analysis-codex.md` 和 `gap-analysis-opus.md`，合并去重，生成最终缺口报告 `docs/gap-analysis-final.md`
 - [x] 3C.2 git commit: `feat(agent-flow): Phase 3 - 双模型交叉缺口分析完成`
-- [ ] 4.1 阅读 `docs/gap-analysis-final.md`，按优先级排序所有缺口项
-- [ ] 4.2 为每个 P0 缺口项编写实施规格，写入 `docs/implementation-plan.md`：
-- [ ] 4.3 为每个 P1 缺口项编写简要实施规格，追加到 `docs/implementation-plan.md`
-- [ ] 4.4 确定实施顺序（拓扑排序依赖关系），写入 `docs/implementation-order.md`
-- [ ] 4.5 git commit: `feat(agent-flow): Phase 4 - 执行计划制定完成`
+- [x] 4.1 阅读 `docs/gap-analysis-final.md`，按优先级排序所有缺口项
+- [x] 4.2 为每个 P0 缺口项编写实施规格，写入 `docs/implementation-plan.md`：
+- [x] 4.3 为每个 P1 缺口项编写简要实施规格，追加到 `docs/implementation-plan.md`
+- [x] 4.4 确定实施顺序（拓扑排序依赖关系），写入 `docs/implementation-order.md`
+- [x] 4.5 git commit: `feat(agent-flow): Phase 4 - 执行计划制定完成`
 - [ ] 5.N.1 调用 **Task + Codex subagent（通过 Codex MCP）** 执行实现，指令：
 - [ ] 5.N.2 检查实现文件已创建且测试文件已创建
 - [ ] 5.N.3 运行该缺口项的测试，确认通过
