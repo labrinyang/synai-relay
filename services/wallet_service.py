@@ -3,9 +3,12 @@ Base L2 USDC transfer service.
 Handles: deposit verification, payout, fee transfer, refund.
 Gracefully degrades when RPC/keys not configured (off-chain dev mode).
 """
+import logging
 import os
 import threading
 from decimal import Decimal
+
+logger = logging.getLogger('relay.wallet')
 
 # Standard USDC ERC-20 ABI (only Transfer event + transfer function needed)
 USDC_ABI = [
@@ -65,9 +68,9 @@ class WalletService:
                 if self.ops_key:
                     acct = self.w3.eth.account.from_key(self.ops_key)
                     self.ops_address = acct.address
-                print(f"[WalletService] Connected to {self.rpc_url}, ops={self.ops_address}")
+                logger.info("Connected to %s, ops=%s", self.rpc_url, self.ops_address)
             except Exception as e:
-                print(f"[WalletService] Init failed: {e}. Running in off-chain mode.")
+                logger.warning("Init failed: %s. Running in off-chain mode.", e)
                 self.w3 = None
 
     def is_connected(self) -> bool:
@@ -138,17 +141,19 @@ class WalletService:
 
         return tx_hash.hex()
 
-    def payout(self, worker_address: str, task_price: Decimal) -> dict:
-        """Send 80% to worker, 20% to fee wallet. Returns tx hashes."""
-        worker_amount = task_price * Decimal('0.80')
-        fee_amount = task_price * Decimal('0.20')
+    def payout(self, worker_address: str, task_price: Decimal, fee_bps: int = 2000) -> dict:
+        """Send worker share to worker, fee share to fee wallet. Returns tx hashes.
+        fee_bps: fee in basis points (2000 = 20%, 500 = 5%)."""
+        fee_rate = Decimal(fee_bps) / Decimal(10000)
+        worker_amount = task_price * (Decimal(1) - fee_rate)
+        fee_amount = task_price * fee_rate
 
         payout_tx = self.send_usdc(worker_address, worker_amount)
         try:
             fee_tx = self.send_usdc(self.fee_address, fee_amount)
         except Exception as e:
             # Worker paid but fee failed — log and return partial result
-            print(f"[WalletService] WARN: Fee transfer failed after payout: {e}")
+            logger.warning("Fee transfer failed after payout: %s", e)
             return {"payout_tx": payout_tx, "fee_tx": None, "fee_error": str(e)}
 
         return {"payout_tx": payout_tx, "fee_tx": fee_tx}
