@@ -322,13 +322,9 @@ def claim_job(task_id):
     if job.status == 'expired':
         return jsonify({"error": "Task expired", "status": "expired"}), 410
 
-    # Strictly enforce funding check
+    # Strictly enforce funding check — contract only allows FUNDED→CLAIMED
     if job.status != 'funded':
-        # Allow retry if status is 'rejected' and retries remain
-        if job.status == 'rejected' and job.failure_count < (job.max_retries or 3):
-            pass  # Allow retry
-        else:
-            return jsonify({"error": f"Job not available (Status: {job.status})"}), 403
+        return jsonify({"error": f"Job not available (Status: {job.status})"}), 403
 
     # Circuit Breaker Check
     max_retries = job.max_retries or 3
@@ -366,7 +362,10 @@ def claim_job(task_id):
             else:
                 print(f"[ChainBridge] Agent {agent_id} has no encrypted_privkey, skipping on-chain claim")
         except Exception as e:
+            # D7: Rollback stake if on-chain claim fails
             print(f"[ChainBridge] On-chain claim_task failed: {e}")
+            EscrowManager.release_stake(agent_id, required_stake, job.task_id)
+            return jsonify({"error": f"On-chain claim failed: {str(e)}"}), 500
 
     job.status = 'claimed'
     job.claimed_by = agent_id
@@ -396,6 +395,15 @@ def submit_result(task_id):
     if agent_id != job.claimed_by:
         return jsonify({"error": "Only the assigned agent can submit"}), 403
 
+    # S3: Re-stake if submitting from rejected (stake was released on rejection)
+    if job.status == 'rejected':
+        required_stake = job.deposit_amount
+        try:
+            EscrowManager.stake_funds(agent_id, required_stake, job.task_id)
+            print(f"[Relay] Agent {agent_id} re-staked {required_stake} for retry on task {task_id}")
+        except ValueError as e:
+            return jsonify({"error": f"Re-staking failed: {str(e)}"}), 400
+
     job.status = 'submitted'
     job.result_data = result
     db.session.flush()
@@ -418,8 +426,18 @@ def submit_result(task_id):
         except Exception as e:
             print(f"[ChainBridge] On-chain submit_result failed: {e}")
 
-    # Branch: auto-verify or manual
+    # Branch: auto-verify, async webhook, or manual
     if job.verifiers_config:
+        # F1: Check if any verifier is async (webhook). If so, defer verification.
+        has_async = any(
+            v.get('type') == 'webhook' for v in (job.verifiers_config or [])
+        )
+        if has_async:
+            db.session.commit()
+            return jsonify({
+                "status": "submitted",
+                "message": "Awaiting async verification callback"
+            }), 200
         try:
             from services.verification import VerificationService
             combined = VerificationService.verify_and_settle(job, result)
@@ -500,16 +518,25 @@ def confirm_job(task_id):
     job.status = 'accepted'
     result = SettlementService.settle_success(job)
 
-    # On-chain settle via ChainBridge (manual confirmation path)
+    # On-chain verdict + settle via ChainBridge (manual confirmation path)
     from services.chain_bridge import get_chain_bridge
     bridge = get_chain_bridge()
     if bridge.is_connected() and job.chain_task_id:
         try:
+            # D2: Submit verdict before settling (contract requires it)
+            evidence = {"manual_confirm": True, "buyer_id": buyer_id}
+            evidence_hash = bytes.fromhex(
+                hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+            )
+            bridge.submit_verdict(
+                chain_task_id=job.chain_task_id,
+                accepted=True, score=100, evidence_hash=evidence_hash
+            )
             chain_tx_hash = bridge.settle(job.chain_task_id, bridge.oracle_private_key)
             result["chain_settle_tx"] = chain_tx_hash
-            print(f"[ChainBridge] Task {task_id} settled on-chain, tx: {chain_tx_hash}")
+            print(f"[ChainBridge] Task {task_id} verdict + settle on-chain, tx: {chain_tx_hash}")
         except Exception as e:
-            print(f"[ChainBridge] On-chain settle failed: {e}")
+            print(f"[ChainBridge] On-chain verdict/settle failed: {e}")
 
     print(f"[Relay] Boss {buyer_id} confirmed task {task_id}. Settlement complete.")
     return jsonify({"status": "settled", **result}), 200
@@ -685,6 +712,12 @@ def refund_job(task_id):
         try:
             boss_key = (request.json or {}).get('boss_key')
             if boss_key:
+                # D4: Mark expired on-chain first if task was lazily expired
+                if job.status == 'expired':
+                    try:
+                        bridge.mark_expired(job.chain_task_id, boss_key)
+                    except Exception:
+                        pass  # May already be expired on-chain
                 bridge.refund(boss_key, job.chain_task_id)
         except Exception as e:
             return jsonify({"error": f"On-chain refund failed: {str(e)}"}), 500

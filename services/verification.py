@@ -38,7 +38,8 @@ class VerificationService:
         # Step 3: Submit verdict on-chain
         verdict_tx = None
         bridge = get_chain_bridge()
-        if bridge.is_connected() and job.chain_task_id:
+        chain_connected = bridge.is_connected() and job.chain_task_id
+        if chain_connected:
             try:
                 verdict_tx = bridge.submit_verdict(
                     chain_task_id=job.chain_task_id,
@@ -47,7 +48,15 @@ class VerificationService:
                     evidence_hash=evidence_hash,
                 )
             except Exception as e:
+                # D3: If chain is connected but verdict fails, abort settlement
                 print(f"[Verification] On-chain verdict failed: {e}")
+                job.verdict_data = {
+                    "score": score, "accepted": accepted,
+                    "evidence_hash": evidence_hash.hex(),
+                    "error": f"On-chain verdict failed: {e}",
+                }
+                db.session.commit()
+                raise RuntimeError(f"On-chain verdict submission failed: {e}")
 
         # Step 4: Store verdict data on job
         job.verdict_data = {
@@ -60,8 +69,12 @@ class VerificationService:
 
         # Step 5: Settle
         if accepted:
+            # D6: Transition through 'accepted' state before settling
+            job.status = 'accepted'
+            db.session.flush()
+
             # On-chain settle (if connected)
-            if bridge.is_connected() and job.chain_task_id:
+            if chain_connected and job.chain_task_id:
                 try:
                     bridge.settle(job.chain_task_id, bridge.oracle_private_key)
                 except Exception as e:
