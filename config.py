@@ -23,3 +23,7 @@ class Config:
     ORACLE_LLM_MODEL = os.environ.get('ORACLE_LLM_MODEL', 'openai/gpt-4o')
     ORACLE_PASS_THRESHOLD = int(os.environ.get('ORACLE_PASS_THRESHOLD', '80'))
     ORACLE_MAX_ROUNDS = int(os.environ.get('ORACLE_MAX_ROUNDS', '6'))
+    ORACLE_TIMEOUT_SECONDS = int(os.environ.get('ORACLE_TIMEOUT_SECONDS', '120'))
+
+    # Platform fee (basis points: 2000 = 20%)
+    PLATFORM_FEE_BPS = int(os.environ.get('PLATFORM_FEE_BPS', '2000'))

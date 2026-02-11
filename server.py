@@ -6,16 +6,30 @@ Job statuses:  open -> funded -> resolved | expired | cancelled
 Submission statuses: pending -> judging -> passed | failed
 """
 
-from flask import Flask, request, jsonify
-from models import db, Owner, Agent, Job, Submission
+from flask import Flask, request, jsonify, g
+from models import db, Owner, Agent, Job, Submission, Webhook
 from config import Config
 from sqlalchemy.exc import IntegrityError
+from services.auth_service import generate_api_key, require_auth, require_buyer
 
 import json
+import logging
 import os
 import threading
 import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from decimal import Decimal, InvalidOperation
+
+# ---------------------------------------------------------------------------
+# Structured logging setup (G14)
+# ---------------------------------------------------------------------------
+
+_log_handler = logging.StreamHandler()
+_log_handler.setFormatter(logging.Formatter(
+    '{"timestamp":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}'
+))
+logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
+logger = logging.getLogger('relay')
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -29,13 +43,16 @@ db.init_app(app)
 # Database bootstrap
 # ---------------------------------------------------------------------------
 
-print("[Relay] Starting SYNAI Relay Protocol V2...")
+logger.info("Starting SYNAI Relay Protocol V2")
+if Config.DEV_MODE:
+    logger.warning("⚠️  DEV_MODE ENABLED — chain verification disabled, accepting any tx_hash")
+
 with app.app_context():
     try:
         db.create_all()
-        print("[Relay] Database tables created / verified.")
+        logger.info("Database tables created / verified")
     except Exception as e:
-        print(f"[FATAL] Database init failed: {e}")
+        logger.critical("Database init failed: %s", e)
 
     # L11: Recover stuck judging submissions from previous crash
     try:
@@ -46,9 +63,19 @@ with app.app_context():
                 synchronize_session='fetch'
             )
             db.session.commit()
-            print(f"[Relay] Recovered {stuck} stuck judging submissions")
+            logger.info("Recovered %d stuck judging submissions", stuck)
     except Exception as e:
-        print(f"[Relay] Crash recovery check failed: {e}")
+        logger.error("Crash recovery check failed: %s", e)
+
+# G23: Dev mode response header
+if Config.DEV_MODE:
+    @app.after_request
+    def _add_dev_mode_header(response):
+        response.headers['X-Dev-Mode'] = 'true'
+        return response
+
+# Thread pool for oracle evaluations with timeout support (G07)
+_oracle_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='oracle')
 
 # ---------------------------------------------------------------------------
 # Oracle background thread
@@ -116,22 +143,34 @@ def _run_oracle(app, submission_id):
                         Submission.status.in_(['pending', 'judging']),
                     ).update({'status': 'failed'}, synchronize_session='fetch')
 
-                    # This submission won — attempt payout
+                    # This submission won — attempt payout (G06: track status)
+                    job_obj = Job.query.get(sub.task_id)
                     worker = Agent.query.get(sub.worker_id)
                     if worker and worker.wallet_address:
                         from services.wallet_service import get_wallet_service
                         wallet = get_wallet_service()
                         if wallet.is_connected():
+                            job_obj.payout_status = 'pending'
+                            db.session.flush()
                             try:
-                                txs = wallet.payout(worker.wallet_address, job.price)
-                                job_obj = Job.query.get(sub.task_id)
+                                # G19: Use per-job fee_bps
+                                fee_bps = job_obj.fee_bps or Config.PLATFORM_FEE_BPS
+                                txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
                                 job_obj.payout_tx_hash = txs['payout_tx']
                                 job_obj.fee_tx_hash = txs.get('fee_tx')
+                                job_obj.payout_status = 'success'
+                                worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
                                 worker.total_earned = (
-                                    (worker.total_earned or 0) + job.price * Decimal('0.80')
+                                    (worker.total_earned or 0) + job.price * worker_share
                                 )
                             except Exception as e:
-                                print(f"[Oracle] Payout failed: {e}")
+                                job_obj.payout_status = 'failed'
+                                logger.error("Payout failed for submission %s: %s", sub.id, e)
+                        else:
+                            job_obj.payout_status = 'skipped'
+                    else:
+                        if job_obj:
+                            job_obj.payout_status = 'skipped'
 
                     # Update reputation
                     from services.agent_service import AgentService
@@ -153,8 +192,33 @@ def _run_oracle(app, submission_id):
             # M8: Don't leak internal error details to client
             sub.oracle_reason = "Internal processing error"
             sub.oracle_steps = [{"step": 0, "name": "error", "output": {"error": "internal"}}]
-            print(f"[Oracle] Exception in _run_oracle for sub {sub.id}: {e}")
+            logger.exception("Oracle exception for submission %s", sub.id)
             db.session.commit()
+
+
+def _launch_oracle_with_timeout(submission_id):
+    """Submit oracle evaluation to thread pool with timeout (G07)."""
+    timeout = Config.ORACLE_TIMEOUT_SECONDS
+
+    def _oracle_with_timeout():
+        try:
+            future = _oracle_executor.submit(_run_oracle, app, submission_id)
+            future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            # Oracle timed out — mark submission as failed
+            with app.app_context():
+                sub = Submission.query.get(submission_id)
+                if sub and sub.status == 'judging':
+                    sub.status = 'failed'
+                    sub.oracle_reason = f"Evaluation timed out after {timeout}s"
+                    sub.oracle_steps = [{"step": 0, "name": "timeout", "output": {"error": "timeout"}}]
+                    db.session.commit()
+                    logger.warning("Oracle timeout for submission %s after %ds", submission_id, timeout)
+        except Exception as e:
+            logger.exception("Oracle launcher error for submission %s", submission_id)
+
+    t = threading.Thread(target=_oracle_with_timeout, daemon=True)
+    t.start()
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +277,10 @@ def _submission_to_dict(sub: Submission) -> dict:
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "healthy", "service": "synai-relay-v2"}), 200
+    result = {"status": "healthy", "service": "synai-relay-v2"}
+    if Config.DEV_MODE:
+        result["dev_mode"] = True
+    return jsonify(result), 200
 
 
 # ===================================================================
@@ -257,7 +324,20 @@ def register_agent():
     if "error" in result:
         return jsonify(result), 409
 
-    return jsonify({"status": "registered", **result}), 201
+    # G01: Generate API key and store hash
+    raw_key, key_hash = generate_api_key()
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if agent:
+        agent.api_key_hash = key_hash
+        db.session.commit()
+
+    response = {"status": "registered", "api_key": raw_key, **result}
+
+    # G20: Wallet warning
+    if not wallet_address:
+        response["warnings"] = ["wallet_address not set — payouts will be skipped"]
+
+    return jsonify(response), 201
 
 
 # ===================================================================
@@ -276,31 +356,70 @@ def get_agent(agent_id):
 
 
 # ===================================================================
+# 4b. PATCH /agents/<agent_id> — update profile (G02)
+# ===================================================================
+
+
+@app.route('/agents/<agent_id>', methods=['PATCH'])
+@require_auth
+def update_agent(agent_id):
+    import re
+
+    # Must be the agent themselves
+    if g.current_agent_id != agent_id:
+        return jsonify({"error": "Cannot update another agent's profile"}), 403
+
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if not agent:
+        return jsonify({"error": "Agent not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if 'name' in data:
+        agent.name = data['name']
+
+    if 'wallet_address' in data:
+        wallet = data['wallet_address']
+        if wallet and not re.match(r'^0x[0-9a-fA-F]{40}$', wallet):
+            return jsonify({"error": "Invalid wallet address format"}), 400
+        agent.wallet_address = wallet
+
+    db.session.commit()
+
+    from services.agent_service import AgentService
+    return jsonify(AgentService.get_profile(agent_id)), 200
+
+
+# ===================================================================
 # 5 & 6. /jobs — POST create | GET list
 # ===================================================================
 
 
-@app.route('/jobs', methods=['GET', 'POST'])
-def jobs_endpoint():
-    if request.method == 'POST':
-        return _create_job()
+@app.route('/jobs', methods=['GET'])
+def list_jobs_endpoint():
     return _list_jobs()
+
+
+@app.route('/jobs', methods=['POST'])
+@require_auth
+def create_job_endpoint():
+    return _create_job()
 
 
 def _create_job():
     data = request.get_json(silent=True) or {}
 
+    # buyer_id is the authenticated agent
+    buyer_id = g.current_agent_id
+
     # Required fields
     title = data.get('title')
     description = data.get('description')
-    buyer_id = data.get('buyer_id')
 
     if not title:
         return jsonify({"error": "title is required"}), 400
     if not description:
         return jsonify({"error": "description is required"}), 400
-    if not buyer_id:
-        return jsonify({"error": "buyer_id is required"}), 400
 
     # Price validation
     raw_price = data.get('price')
@@ -400,6 +519,7 @@ def get_job(task_id):
 
 
 @app.route('/jobs/<task_id>/fund', methods=['POST'])
+@require_auth
 def fund_job(task_id):
     from services.job_service import JobService
     from services.wallet_service import get_wallet_service
@@ -411,14 +531,12 @@ def fund_job(task_id):
     if job.status != 'open':
         return jsonify({"error": f"Job not in open state (current: {job.status})"}), 400
 
+    # Auth: must be the buyer
+    err = require_buyer(job)
+    if err:
+        return err
+
     data = request.get_json(silent=True) or {}
-
-    buyer_id = data.get('buyer_id')
-    if not buyer_id:
-        return jsonify({"error": "buyer_id is required"}), 400
-    if buyer_id != job.buyer_id:
-        return jsonify({"error": "Only the job creator can fund this job"}), 403
-
     tx_hash = data.get('tx_hash')
     if not tx_hash:
         return jsonify({"error": "tx_hash is required"}), 400
@@ -455,6 +573,7 @@ def fund_job(task_id):
 
 
 @app.route('/jobs/<task_id>/claim', methods=['POST'])
+@require_auth
 def claim_job(task_id):
     # H6: Atomic claim with DB-level locking
     job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
@@ -464,10 +583,7 @@ def claim_job(task_id):
     if job.status != 'funded':
         return jsonify({"error": f"Job not claimable (current status: {job.status})"}), 400
 
-    data = request.get_json(silent=True) or {}
-    worker_id = data.get('worker_id')
-    if not worker_id:
-        return jsonify({"error": "worker_id is required"}), 400
+    worker_id = g.current_agent_id
 
     # Self-dealing prevention
     if worker_id == job.buyer_id:
@@ -503,8 +619,64 @@ def claim_job(task_id):
     job.participants = participants
     db.session.commit()
 
-    return jsonify({
+    result = {
         "status": "claimed",
+        "task_id": task_id,
+        "worker_id": worker_id,
+    }
+
+    # G20: Wallet warning at claim time
+    if not worker.wallet_address:
+        result["warnings"] = ["wallet_address not set — payouts will be skipped"]
+
+    return jsonify(result), 200
+
+
+# ===================================================================
+# 9b. POST /jobs/<task_id>/unclaim — worker withdraws (G05)
+# ===================================================================
+
+
+@app.route('/jobs/<task_id>/unclaim', methods=['POST'])
+@require_auth
+def unclaim_job(task_id):
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    worker_id = g.current_agent_id
+
+    if job.status not in ('funded',):
+        return jsonify({"error": f"Cannot unclaim from job in {job.status} state"}), 400
+
+    participants = list(job.participants or [])
+    if worker_id not in participants:
+        return jsonify({"error": "Worker has not claimed this task"}), 400
+
+    # Block unclaim if worker has active judging submissions
+    active_judging = Submission.query.filter(
+        Submission.task_id == task_id,
+        Submission.worker_id == worker_id,
+        Submission.status == 'judging',
+    ).count()
+    if active_judging > 0:
+        return jsonify({"error": "Cannot unclaim: submissions are being judged"}), 400
+
+    # Cancel any pending submissions from this worker
+    Submission.query.filter(
+        Submission.task_id == task_id,
+        Submission.worker_id == worker_id,
+        Submission.status == 'pending',
+    ).update({'status': 'failed'}, synchronize_session='fetch')
+
+    participants.remove(worker_id)
+    job.participants = participants
+    db.session.commit()
+
+    return jsonify({
+        "status": "unclaimed",
         "task_id": task_id,
         "worker_id": worker_id,
     }), 200
@@ -516,6 +688,7 @@ def claim_job(task_id):
 
 
 @app.route('/jobs/<task_id>/submit', methods=['POST'])
+@require_auth
 def submit_result(task_id):
     from services.job_service import JobService
 
@@ -529,11 +702,9 @@ def submit_result(task_id):
         }), 400
 
     data = request.get_json(silent=True) or {}
-    worker_id = data.get('worker_id')
+    worker_id = g.current_agent_id
     content = data.get('content')
 
-    if not worker_id:
-        return jsonify({"error": "worker_id is required"}), 400
     if content is None:
         return jsonify({"error": "content is required"}), 400
 
@@ -572,13 +743,8 @@ def submit_result(task_id):
     db.session.add(sub)
     db.session.commit()
 
-    # Launch oracle in background thread
-    t = threading.Thread(
-        target=_run_oracle,
-        args=(app, sub.id),
-        daemon=True,
-    )
-    t.start()
+    # Launch oracle with timeout (G07)
+    _launch_oracle_with_timeout(sub.id)
 
     return jsonify({
         "status": "judging",
@@ -626,6 +792,7 @@ def get_submission(submission_id):
 
 
 @app.route('/jobs/<task_id>/cancel', methods=['POST'])
+@require_auth
 def cancel_job(task_id):
     from services.job_service import JobService
 
@@ -633,12 +800,10 @@ def cancel_job(task_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    buyer_id = data.get('buyer_id')
-    if not buyer_id:
-        return jsonify({"error": "buyer_id is required"}), 400
-    if buyer_id != job.buyer_id:
-        return jsonify({"error": "Only the job creator can cancel"}), 403
+    # Auth: must be the buyer
+    err = require_buyer(job)
+    if err:
+        return err
 
     if job.status not in ('open', 'funded'):
         return jsonify({"error": f"Cannot cancel job in {job.status} state"}), 400
@@ -679,6 +844,7 @@ def cancel_job(task_id):
 
 
 @app.route('/jobs/<task_id>/refund', methods=['POST'])
+@require_auth
 def refund_job(task_id):
     from services.job_service import JobService
     from services.wallet_service import get_wallet_service
@@ -687,12 +853,10 @@ def refund_job(task_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    buyer_id = data.get('buyer_id')
-    if not buyer_id:
-        return jsonify({"error": "buyer_id is required"}), 400
-    if buyer_id != job.buyer_id:
-        return jsonify({"error": "Only the job creator can request a refund"}), 403
+    # Auth: must be the buyer
+    err = require_buyer(job)
+    if err:
+        return err
 
     if job.status not in ('expired', 'cancelled'):
         return jsonify({"error": f"Not refundable in state: {job.status}"}), 400
@@ -721,7 +885,7 @@ def refund_job(task_id):
             # Rollback the 'pending' marker on failure
             job.refund_tx_hash = None
             db.session.commit()
-            print(f"[Relay] Refund failed: {e}")
+            logger.error("Refund failed for task %s: %s", task_id, e)
             return jsonify({"error": "Refund processing failed"}), 500
 
     if not refund_tx:

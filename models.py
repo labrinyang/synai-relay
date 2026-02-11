@@ -31,6 +31,8 @@ class Agent(db.Model):
     # Wallet
     wallet_address = db.Column(db.String(42))
     encrypted_privkey = db.Column(db.Text)
+    # Auth (G01)
+    api_key_hash = db.Column(db.String(128), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -41,8 +43,8 @@ class Job(db.Model):
     description = db.Column(db.Text)
     rubric = db.Column(db.Text, nullable=True)
     price = db.Column(db.Numeric(20, 6), nullable=False)
-    buyer_id = db.Column(db.String(100))
-    status = db.Column(db.String(20), default='open')
+    buyer_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'))  # G08: FK
+    status = db.Column(db.String(20), default='open', index=True)  # G09: index
     # Statuses: 'open', 'funded', 'resolved', 'expired', 'cancelled'
     artifact_type = db.Column(db.String(20), default='GENERAL')
     # On-chain deposit
@@ -50,6 +52,7 @@ class Job(db.Model):
     depositor_address = db.Column(db.String(42), nullable=True)
     # Payout/refund
     payout_tx_hash = db.Column(db.String(100), nullable=True)
+    payout_status = db.Column(db.String(20), nullable=True)  # G06: pending|success|failed|skipped
     fee_tx_hash = db.Column(db.String(100), nullable=True)
     refund_tx_hash = db.Column(db.String(100), nullable=True)
     winner_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=True)
@@ -60,6 +63,8 @@ class Job(db.Model):
     min_reputation = db.Column(db.Numeric(5, 4), nullable=True)
     max_submissions = db.Column(db.Integer, default=20)
     max_retries = db.Column(db.Integer, default=3)
+    # Fee (G19)
+    fee_bps = db.Column(db.Integer, default=2000)  # basis points: 2000 = 20%
     # Lifecycle
     failure_count = db.Column(db.Integer, default=0)
     expiry = db.Column(db.DateTime, nullable=True)
@@ -72,14 +77,21 @@ class Job(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     # Relationships
-    submissions = db.relationship('Submission', backref='job', lazy=True)
+    submissions = db.relationship('Submission', backref='job', lazy=True,
+                                  foreign_keys='Submission.task_id')
+
+    # G09: indexes
+    __table_args__ = (
+        db.Index('ix_jobs_buyer_id', 'buyer_id'),
+        db.Index('ix_jobs_status_created', 'status', 'created_at'),
+    )
 
 
 class Submission(db.Model):
     __tablename__ = 'submissions'
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False)
-    worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False)
+    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)  # G09
+    worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)  # G09
     content = db.Column(db.JSON)
     status = db.Column(db.String(20), default='pending')
     # Statuses: 'pending', 'judging', 'passed', 'failed'
@@ -90,3 +102,20 @@ class Submission(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     # Relationships
     worker = db.relationship('Agent', foreign_keys=[worker_id])
+
+    # G09: composite index for retry count queries
+    __table_args__ = (
+        db.Index('ix_submissions_task_worker', 'task_id', 'worker_id'),
+    )
+
+
+class Webhook(db.Model):
+    """G04: Webhook registration for event push notifications."""
+    __tablename__ = 'webhooks'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)
+    url = db.Column(db.Text, nullable=False)
+    events = db.Column(db.JSON, default=lambda: [])  # e.g., ["job.resolved", "submission.completed"]
+    secret = db.Column(db.String(64), nullable=True)  # HMAC secret for signature
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
