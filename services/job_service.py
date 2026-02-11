@@ -1,95 +1,74 @@
-from models import db, Job
+from models import db, Job, Submission
 from datetime import datetime, timezone
 
 
-_EXPIRABLE_STATUSES = ('funded', 'claimed', 'submitted', 'rejected')
+# Expirable states (funded tasks that haven't resolved)
+_EXPIRABLE_STATUSES = ('funded',)
 
 
 class JobService:
     @staticmethod
-    def check_expiry(job):
-        """
-        Lazy expiry check. If task has an expiry and current time
-        exceeds it, and the task is in an expirable state, mark it expired.
-        Returns True if the task was just expired.
-        """
+    def check_expiry(job: Job) -> bool:
+        """Lazy expiry check. Returns True if task was just expired."""
+        if job.status not in _EXPIRABLE_STATUSES:
+            return False
         if not job.expiry:
             return False
-
-        if datetime.utcnow() > job.expiry:
-            if job.status in _EXPIRABLE_STATUSES:
-                job.status = 'expired'
-                db.session.commit()
-                return True
-            if job.status == 'created':
-                job.status = 'cancelled'
-                db.session.commit()
-                return True
+        now = datetime.now(timezone.utc)
+        exp = job.expiry if job.expiry.tzinfo else job.expiry.replace(tzinfo=timezone.utc)
+        if now >= exp:
+            job.status = 'expired'
+            # Cancel any pending/judging submissions
+            Submission.query.filter(
+                Submission.task_id == job.task_id,
+                Submission.status.in_(['pending', 'judging']),
+            ).update({'status': 'failed'}, synchronize_session='fetch')
+            db.session.commit()
+            return True
         return False
 
     @staticmethod
-    def list_jobs(status=None, buyer_id=None, claimed_by=None):
-        """
-        List jobs with optional filters.
-        Runs lazy expiry check (batched) on each result.
-        """
+    def list_jobs(status=None, buyer_id=None, worker_id=None):
         query = Job.query
-
         if status:
             query = query.filter(Job.status == status)
         if buyer_id:
             query = query.filter(Job.buyer_id == buyer_id)
-        if claimed_by:
-            query = query.filter(Job.claimed_by == claimed_by)
-
-        jobs = query.order_by(Job.created_at.desc()).all()
-
-        # Batch lazy expiry — mark all expired first, then single commit
-        now = datetime.utcnow()
-        changed_any = False
-        for j in jobs:
-            if j.expiry and now > j.expiry:
-                if j.status in _EXPIRABLE_STATUSES:
-                    j.status = 'expired'
-                    changed_any = True
-                elif j.status == 'created':
-                    j.status = 'cancelled'
-                    changed_any = True
-        if changed_any:
-            db.session.commit()
-
-        return jobs
+        if worker_id:
+            # Jobs where worker is a participant
+            query = query.filter(Job.participants.contains(worker_id))
+        return query.order_by(Job.created_at.desc()).all()
 
     @staticmethod
-    def get_job(task_id):
-        """
-        Get a single job by task_id. Runs lazy expiry check.
-        Returns None if not found.
-        """
+    def get_job(task_id: str) -> Job:
         job = Job.query.filter_by(task_id=task_id).first()
         if job:
             JobService.check_expiry(job)
         return job
 
     @staticmethod
-    def to_dict(job):
-        """Standard job serialization."""
+    def to_dict(job: Job) -> dict:
+        submission_count = Submission.query.filter_by(task_id=job.task_id).count()
         return {
-            "task_id": str(job.task_id),
+            "task_id": job.task_id,
             "title": job.title,
             "description": job.description,
+            "rubric": job.rubric,
             "price": float(job.price),
-            "status": job.status,
             "buyer_id": job.buyer_id,
-            "claimed_by": job.claimed_by,
+            "status": job.status,
             "artifact_type": job.artifact_type,
-            "deposit_amount": float(job.deposit_amount) if job.deposit_amount else 0,
-            "verifiers_config": job.verifiers_config,
-            "result_data": job.result_data,
-            "failure_count": job.failure_count,
-            "max_retries": job.max_retries or 3,
+            "participants": job.participants or [],
+            "winner_id": job.winner_id,
+            "submission_count": submission_count,
+            "max_submissions": job.max_submissions,
+            "max_retries": job.max_retries,
+            "min_reputation": float(job.min_reputation) if job.min_reputation else None,
             "expiry": job.expiry.isoformat() if job.expiry else None,
-            "chain_task_id": job.chain_task_id,
-            "verdict_data": job.verdict_data,
+            "deposit_tx_hash": job.deposit_tx_hash,
+            "payout_tx_hash": job.payout_tx_hash,
+            "refund_tx_hash": job.refund_tx_hash,
+            "solution_price": float(job.solution_price or 0),
             "created_at": job.created_at.isoformat() if job.created_at else None,
+            "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         }
