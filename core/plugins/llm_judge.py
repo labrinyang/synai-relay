@@ -1,5 +1,4 @@
 from core.verifier_base import BaseVerifier
-import google.generativeai as genai
 import os
 import json
 
@@ -7,6 +6,7 @@ class LLMJudgeVerifier(BaseVerifier):
     def __init__(self):
         self.api_key = os.getenv("GOOGLE_API_KEY")
         if self.api_key:
+            import google.generativeai as genai
             genai.configure(api_key=self.api_key)
 
     def verify(self, job, submission, config=None):
@@ -26,6 +26,7 @@ class LLMJudgeVerifier(BaseVerifier):
         """
         
         try:
+            import google.generativeai as genai
             model = genai.GenerativeModel('gemini-1.5-pro')
             response = model.generate_content(prompt)
             data = json.loads(response.text.replace('```json','').replace('```',''))

@@ -249,10 +249,16 @@ def main():
          f"status={r.status_code if r else 'N/A'}")
 
     # ==================================================================
-    # 18. Claim with unregistered agent
+    # 18. Claim with unregistered agent (needs a separate funded job)
     # ==================================================================
-    r = safe_request("post", f"/jobs/{TASK_ID}/claim",
-                     json={"agent_id": f"ghost_{RUN_ID}_unknown"})
+    r2 = safe_request("post", "/jobs", json={
+        "title": f"UnregTest {RUN_ID}", "terms": {"price": 10}, "buyer_id": BOSS_ID})
+    unreg_task = r2.json().get("task_id") if r2 and r2.status_code == 201 else None
+    if unreg_task:
+        safe_request("post", f"/jobs/{unreg_task}/fund",
+                     json={"escrow_tx_hash": f"0xunreg_{RUN_ID}"})
+    r = safe_request("post", f"/jobs/{unreg_task}/claim",
+                     json={"agent_id": f"ghost_{RUN_ID}_unknown"}) if unreg_task else None
     step("Claim with unregistered agent",
          r is not None and r.status_code == 400,
          f"status={r.status_code if r else 'N/A'}")
