@@ -5,6 +5,9 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
 
+    # Dev mode: when True, accept any tx_hash without chain verification
+    DEV_MODE = os.environ.get('DEV_MODE', 'true').lower() in ('true', '1', 'yes')
+
     # Chain (Base L2)
     RPC_URL = os.environ.get('RPC_URL', '')
     USDC_CONTRACT = os.environ.get('USDC_CONTRACT', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913')

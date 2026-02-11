@@ -1,9 +1,13 @@
-from models import db, Agent, Submission
+import re as _re
+from models import db, Agent, Job, Submission
 
 
 class AgentService:
     @staticmethod
     def register(agent_id: str, name: str = None, wallet_address: str = None) -> dict:
+        if wallet_address and not _re.match(r'^0x[0-9a-fA-F]{40}$', wallet_address):
+            return {"error": "Invalid wallet address format"}
+
         existing = Agent.query.filter_by(agent_id=agent_id).first()
         if existing:
             return {"error": "Agent already registered", "agent_id": agent_id}
@@ -34,8 +38,9 @@ class AgentService:
         agent = Agent.query.filter_by(agent_id=agent_id).first()
         if not agent:
             return
-        total_claims = db.session.query(db.func.count(db.distinct(Submission.task_id))).filter(
-            Submission.worker_id == agent_id
+        # Count tasks where this agent is a participant (claimed)
+        total_claims = db.session.query(db.func.count(Job.task_id)).filter(
+            Job.participants.contains(agent_id)
         ).scalar() or 0
         passed = db.session.query(db.func.count(Submission.id)).filter(
             Submission.worker_id == agent_id,
@@ -46,6 +51,12 @@ class AgentService:
             agent.completion_rate = passed / total_claims
         else:
             agent.completion_rate = None
+
+        # Update metrics.reliability
+        metrics = dict(agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0})
+        metrics['reliability'] = passed - (total_claims - passed)
+        agent.metrics = metrics
+
         db.session.flush()
 
     @staticmethod

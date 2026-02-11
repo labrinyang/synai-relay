@@ -23,7 +23,7 @@ class JobService:
                 Submission.task_id == job.task_id,
                 Submission.status.in_(['pending', 'judging']),
             ).update({'status': 'failed'}, synchronize_session='fetch')
-            db.session.commit()
+            db.session.flush()
             return True
         return False
 
@@ -34,10 +34,17 @@ class JobService:
             query = query.filter(Job.status == status)
         if buyer_id:
             query = query.filter(Job.buyer_id == buyer_id)
+        jobs = query.order_by(Job.created_at.desc()).all()
+        # Lazy expiry check on listed jobs
+        for job in jobs:
+            JobService.check_expiry(job)
+        # Re-filter if status was specified (some may have just expired)
+        if status:
+            jobs = [j for j in jobs if j.status == status]
+        # Python-level worker filter (portable across DB engines)
         if worker_id:
-            # Jobs where worker is a participant
-            query = query.filter(Job.participants.contains(worker_id))
-        return query.order_by(Job.created_at.desc()).all()
+            jobs = [j for j in jobs if worker_id in (j.participants or [])]
+        return jobs
 
     @staticmethod
     def get_job(task_id: str) -> Job:
@@ -67,6 +74,8 @@ class JobService:
             "expiry": job.expiry.isoformat() if job.expiry else None,
             "deposit_tx_hash": job.deposit_tx_hash,
             "payout_tx_hash": job.payout_tx_hash,
+            "fee_tx_hash": job.fee_tx_hash,
+            "depositor_address": job.depositor_address,
             "refund_tx_hash": job.refund_tx_hash,
             "solution_price": float(job.solution_price or 0),
             "created_at": job.created_at.isoformat() if job.created_at else None,
