@@ -7,7 +7,9 @@ import json
 import datetime
 import hmac
 import hashlib
+import secrets
 from decimal import Decimal
+from markupsafe import escape
 from wallet_manager import wallet_manager
 from sqlalchemy import text, inspect
 
@@ -17,8 +19,8 @@ app = Flask(__name__)
 app.config.from_object(Config)
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')
 if not WEBHOOK_SECRET:
-    WEBHOOK_SECRET = 'dev-secret-DO-NOT-USE-IN-PRODUCTION'
-    print("[Relay] WARNING: WEBHOOK_SECRET not set. Using insecure default. Set WEBHOOK_SECRET env var for production.")
+    WEBHOOK_SECRET = secrets.token_hex(32)
+    print("[Relay] WARNING: WEBHOOK_SECRET not set. Generated ephemeral secret for dev mode. Set WEBHOOK_SECRET env var for production.")
 
 db.init_app(app)
 
@@ -231,17 +233,30 @@ def post_job():
         if data.get('expiry'):
             expiry = datetime.datetime.utcfromtimestamp(int(data['expiry']))
 
+        price = Decimal(str(data.get('terms', {}).get('price', 0)))
+        if price <= 0:
+            return jsonify({"error": "Price must be greater than zero"}), 400
+
+        max_retries = data.get('max_retries', 3)
+        if not isinstance(max_retries, int) or max_retries < 1:
+            max_retries = 3
+
+        solution_price = Decimal(str(data.get('solution_price', 0)))
+        if solution_price < 0:
+            return jsonify({"error": "Solution price must not be negative"}), 400
+
         new_job = Job(
             title=data.get('title', 'Untitled Task'),
             description=data.get('description', ''),
-            price=Decimal(str(data.get('terms', {}).get('price', 0))),
+            price=price,
+            solution_price=solution_price,
             buyer_id=data.get('buyer_id', 'unknown'),
             artifact_type=data.get('artifact_type', 'CODE'),
             verification_config=data.get('verification_config', {}),
             verifiers_config=data.get('verifiers_config', []),
             envelope_json=data.get('envelope_json', {}),
             expiry=expiry,
-            max_retries=data.get('max_retries', 3),
+            max_retries=max_retries,
             status='created'
         )
 
@@ -321,6 +336,10 @@ def claim_job(task_id):
         job.status = 'expired'
         db.session.commit()
         return jsonify({"error": "Job expired due to too many failures."}), 403
+
+    # Self-dealing prevention: worker cannot be the buyer
+    if agent_id == job.buyer_id:
+        return jsonify({"error": "Task creator cannot claim their own task"}), 403
 
     # Require agent to be registered (no auto-register)
     agent = Agent.query.filter_by(agent_id=agent_id).first()
@@ -792,13 +811,21 @@ def share_job(task_id):
     criteria = payload.get('verification_regex', 'N/A')
     entrypoint = payload.get('entrypoint', 'N/A')
     env_setup = payload.get('environment_setup', 'Standard ATP Node v1')
+
+    # Escape all user-controlled values to prevent SSTI and XSS
+    safe_title = escape(job.title)
+    safe_desc = escape(job.description or 'Autonomous task requiring specialized execution and verification.')
+    safe_criteria = escape(criteria)
+    safe_entrypoint = escape(entrypoint)
+    safe_env = escape(env_setup)
+    safe_price = float(job.price)
     
     # A high-fidelity technical sharing page
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>SYNAI.SHOP - {job.title}</title>
+        <title>SYNAI.SHOP - {safe_title}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
@@ -820,26 +847,26 @@ def share_job(task_id):
     <body>
         <div class="card">
             <div class="brand">● SYNAI.SHOP // TASK_MANIFEST_v1.0</div>
-            <h1>{job.title}</h1>
-            <p class="desc">{job.description or 'Autonomous task requiring specialized execution and verification.'}</p>
+            <h1>{safe_title}</h1>
+            <p class="desc">{safe_desc}</p>
             
             <div class="price-row">
                 <span style="font-size: 11px; color: #bc13fe; font-weight: 800;">BOUNTY</span>
-                <span class="price-val">{float(job.price)} USDC</span>
+                <span class="price-val">{safe_price} USDC</span>
             </div>
 
             <div class="tech-specs">
                 <div class="spec-item">
                     <div class="spec-label">Acceptance Criteria (Regex)</div>
-                    <div class="spec-val">{criteria}</div>
+                    <div class="spec-val">{safe_criteria}</div>
                 </div>
                 <div class="spec-item">
                     <div class="spec-label">Entrypoint / Verifier</div>
-                    <div class="spec-val">{entrypoint}</div>
+                    <div class="spec-val">{safe_entrypoint}</div>
                 </div>
                 <div class="spec-item">
                     <div class="spec-label">Target Environment</div>
-                    <div class="spec-val">{env_setup}</div>
+                    <div class="spec-val">{safe_env}</div>
                 </div>
             </div>
 

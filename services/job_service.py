@@ -2,7 +2,7 @@ from models import db, Job
 from datetime import datetime, timezone
 
 
-_EXPIRABLE_STATUSES = ('created', 'funded', 'claimed', 'submitted', 'rejected')
+_EXPIRABLE_STATUSES = ('funded', 'claimed', 'submitted', 'rejected')
 
 
 class JobService:
@@ -15,9 +15,14 @@ class JobService:
         """
         if not job.expiry:
             return False
-        if job.status in _EXPIRABLE_STATUSES:
-            if datetime.utcnow() > job.expiry:
+
+        if datetime.utcnow() > job.expiry:
+            if job.status in _EXPIRABLE_STATUSES:
                 job.status = 'expired'
+                db.session.commit()
+                return True
+            if job.status == 'created':
+                job.status = 'cancelled'
                 db.session.commit()
                 return True
         return False
@@ -41,12 +46,16 @@ class JobService:
 
         # Batch lazy expiry — mark all expired first, then single commit
         now = datetime.utcnow()
-        expired_any = False
+        changed_any = False
         for j in jobs:
-            if j.expiry and j.status in _EXPIRABLE_STATUSES and now > j.expiry:
-                j.status = 'expired'
-                expired_any = True
-        if expired_any:
+            if j.expiry and now > j.expiry:
+                if j.status in _EXPIRABLE_STATUSES:
+                    j.status = 'expired'
+                    changed_any = True
+                elif j.status == 'created':
+                    j.status = 'cancelled'
+                    changed_any = True
+        if changed_any:
             db.session.commit()
 
         return jobs
