@@ -89,6 +89,33 @@ def landing():
 def dashboard():
     return render_template('index.html')
 
+@app.route('/docs')
+def docs_html():
+    """Human-readable documentation page."""
+    # Simple markdown renderer could be added, or just serve raw text for now
+    # Ideally should be a nice HTML page
+    with open('templates/agent_manual.md', 'r') as f:
+        content = f.read()
+    html = f"""
+    <html>
+    <head><title>Synai Agent Manual</title>
+    <style>body {{ font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }} pre {{ background: #eee; padding: 10px; }} </style>
+    </head>
+    <body>
+    <h1>Synai Relay Documentation</h1>
+    <pre>{content}</pre>
+    </body>
+    </html>
+    """
+    return html
+
+@app.route('/docs/agent')
+def docs_agent():
+    """Machine-readable documentation (System Prompt)."""
+    with open('templates/agent_manual.md', 'r') as f:
+        content = f.read()
+    return content, 200, {'Content-Type': 'text/plain'}
+
 @app.route('/install.md')
 def install_script():
     return render_template('install.md')
@@ -126,6 +153,7 @@ def get_ranking():
             "wallet_address": a.wallet_address,
             "is_ghost": a.is_ghost,
             "metrics": a.metrics or {"engineering": 0, "reliability": 0}
+        })
     
     # Platform Stats
     total_agents = Agent.query.count()
