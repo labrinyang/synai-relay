@@ -259,6 +259,7 @@ def post_job():
 @app.route('/jobs/<task_id>/fund', methods=['POST'])
 def fund_job(task_id):
     from services.job_service import JobService
+    from services.chain_bridge import get_chain_bridge
 
     job = JobService.get_job(task_id)
     if not job:
@@ -269,6 +270,21 @@ def fund_job(task_id):
         return jsonify({"error": f"Job not in created state (current: {job.status})"}), 400
 
     tx_hash = request.json.get('escrow_tx_hash')
+
+    # On-chain funding via ChainBridge (if connected and task has chain_task_id)
+    if not tx_hash:
+        bridge = get_chain_bridge()
+        if bridge.is_connected() and job.chain_task_id:
+            boss_key = request.json.get('boss_key')
+            if not boss_key:
+                return jsonify({"error": "boss_key or escrow_tx_hash required"}), 400
+            try:
+                tx_hash = bridge.fund_task(boss_key, job.chain_task_id)
+                print(f"[ChainBridge] Task {task_id} funded on-chain, tx: {tx_hash}")
+            except Exception as e:
+                print(f"[ChainBridge] On-chain fund_task failed: {e}")
+                return jsonify({"error": f"On-chain funding failed: {str(e)}"}), 500
+
     if not tx_hash:
         return jsonify({"error": "Escrow transaction hash required"}), 400
 
@@ -280,6 +296,7 @@ def fund_job(task_id):
 @app.route('/jobs/<task_id>/claim', methods=['POST'])
 def claim_job(task_id):
     from services.job_service import JobService
+    from services.chain_bridge import get_chain_bridge
 
     agent_id = request.json.get('agent_id')
     job = JobService.get_job(task_id)
@@ -318,10 +335,27 @@ def claim_job(task_id):
     except ValueError as e:
         return jsonify({"error": f"Staking failed: {str(e)}"}), 400
 
+    # On-chain claim via ChainBridge
+    chain_tx_hash = None
+    bridge = get_chain_bridge()
+    if bridge.is_connected() and job.chain_task_id:
+        try:
+            if agent.encrypted_privkey:
+                worker_key = wallet_manager.decrypt_privkey(agent.encrypted_privkey)
+                chain_tx_hash = bridge.claim_task(worker_key, job.chain_task_id)
+                print(f"[ChainBridge] Task {task_id} claimed on-chain by {agent_id}, tx: {chain_tx_hash}")
+            else:
+                print(f"[ChainBridge] Agent {agent_id} has no encrypted_privkey, skipping on-chain claim")
+        except Exception as e:
+            print(f"[ChainBridge] On-chain claim_task failed: {e}")
+
     job.status = 'claimed'
     job.claimed_by = agent_id
     db.session.commit()
-    return jsonify({"status": "claimed", "message": f"Job claimed & staked by {agent_id}"}), 200
+    response = {"status": "claimed", "message": f"Job claimed & staked by {agent_id}"}
+    if chain_tx_hash:
+        response["chain_tx_hash"] = chain_tx_hash
+    return jsonify(response), 200
 
 
 @app.route('/jobs/<task_id>/submit', methods=['POST'])
@@ -347,6 +381,24 @@ def submit_result(task_id):
     job.result_data = result
     db.session.flush()
     print(f"[Relay] Task {task_id} submitted by {agent_id}.")
+
+    # On-chain submit via ChainBridge
+    from services.chain_bridge import get_chain_bridge
+    bridge = get_chain_bridge()
+    if bridge.is_connected() and job.chain_task_id:
+        try:
+            agent = Agent.query.filter_by(agent_id=agent_id).first()
+            if agent and agent.encrypted_privkey:
+                worker_key = wallet_manager.decrypt_privkey(agent.encrypted_privkey)
+                import json as _json
+                result_bytes = _json.dumps(result, sort_keys=True).encode('utf-8')
+                result_hash = bytes.fromhex(hashlib.sha256(result_bytes).hexdigest())
+                chain_tx_hash = bridge.submit_result(worker_key, job.chain_task_id, result_hash)
+                print(f"[ChainBridge] Task {task_id} result submitted on-chain, tx: {chain_tx_hash}")
+            else:
+                print(f"[ChainBridge] Agent {agent_id} has no encrypted_privkey, skipping on-chain submit")
+        except Exception as e:
+            print(f"[ChainBridge] On-chain submit_result failed: {e}")
 
     # Branch: auto-verify or manual
     if job.verifiers_config:
@@ -458,6 +510,17 @@ def confirm_job(task_id):
     job.signature = signature
     job.status = 'accepted'
     result = SettlementService.settle_success(job)
+
+    # On-chain settle via ChainBridge (manual confirmation path)
+    from services.chain_bridge import get_chain_bridge
+    bridge = get_chain_bridge()
+    if bridge.is_connected() and job.chain_task_id:
+        try:
+            chain_tx_hash = bridge.settle(job.chain_task_id, bridge.oracle_private_key)
+            result["chain_settle_tx"] = chain_tx_hash
+            print(f"[ChainBridge] Task {task_id} settled on-chain, tx: {chain_tx_hash}")
+        except Exception as e:
+            print(f"[ChainBridge] On-chain settle failed: {e}")
 
     print(f"[Relay] Boss {buyer_id} confirmed task {task_id}. Settlement complete.")
     return jsonify({"status": "settled", **result}), 200
@@ -595,6 +658,17 @@ def cancel_job(task_id):
     if job.claimed_by:
         return jsonify({"error": "Cannot cancel: task already claimed by a worker"}), 400
 
+    # On-chain cancel via chain_bridge (optional, graceful degradation)
+    from services.chain_bridge import get_chain_bridge
+    bridge = get_chain_bridge()
+    if bridge.is_connected() and job.chain_task_id:
+        try:
+            boss_key = (request.json or {}).get('boss_key')
+            if boss_key:
+                bridge.cancel_task(boss_key, job.chain_task_id)
+        except Exception as e:
+            return jsonify({"error": f"On-chain cancel failed: {str(e)}"}), 500
+
     job.status = 'cancelled'
     db.session.commit()
     return jsonify({"status": "cancelled", "task_id": task_id}), 200
@@ -614,6 +688,17 @@ def refund_job(task_id):
 
     if job.status not in ('expired', 'cancelled'):
         return jsonify({"error": f"Not refundable in state: {job.status}"}), 400
+
+    # On-chain refund via chain_bridge (optional, graceful degradation)
+    from services.chain_bridge import get_chain_bridge
+    bridge = get_chain_bridge()
+    if bridge.is_connected() and job.chain_task_id:
+        try:
+            boss_key = (request.json or {}).get('boss_key')
+            if boss_key:
+                bridge.refund(boss_key, job.chain_task_id)
+        except Exception as e:
+            return jsonify({"error": f"On-chain refund failed: {str(e)}"}), 500
 
     # Release any locked worker stake (if worker existed)
     if job.claimed_by and job.deposit_amount:
@@ -647,8 +732,32 @@ def withdraw_funds(agent_id):
     agent = Agent.query.filter_by(agent_id=agent_id).first()
     if not agent:
         return jsonify({"error": "Agent not found"}), 404
-    # On-chain withdrawal will be wired in Phase B (chain_bridge)
-    return jsonify({"error": "Chain bridge not connected. On-chain withdrawal not yet available."}), 503
+
+    # On-chain withdrawal via chain_bridge (optional, graceful degradation)
+    from services.chain_bridge import get_chain_bridge
+    bridge = get_chain_bridge()
+    chain_tx = None
+    if bridge.is_connected() and agent.wallet_address:
+        try:
+            pending = bridge.get_pending_withdrawal(agent.wallet_address)
+            if pending > 0:
+                from wallet_manager import wallet_manager
+                priv_key = wallet_manager.decrypt_privkey(agent.encrypted_privkey)
+                chain_tx = bridge.withdraw(priv_key)
+        except Exception as e:
+            print(f"[ChainBridge] On-chain withdraw failed: {e}")
+
+    if not bridge.is_connected():
+        return jsonify({"error": "Chain bridge not connected. On-chain withdrawal not yet available."}), 503
+
+    response = {
+        "status": "withdrawn",
+        "agent_id": agent_id,
+        "wallet_address": agent.wallet_address,
+    }
+    if chain_tx:
+        response["chain_tx_hash"] = chain_tx
+    return jsonify(response), 200
 
 @app.route('/jobs/<task_id>/unlock', methods=['POST'])
 def unlock_solution(task_id):
