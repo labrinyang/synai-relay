@@ -39,9 +39,9 @@ class AgentService:
         if not agent:
             return
         # Count tasks where this agent is a participant (claimed)
-        total_claims = db.session.query(db.func.count(Job.task_id)).filter(
-            Job.participants.contains(agent_id)
-        ).scalar() or 0
+        # M1: Use Python-level check for portability across DB engines
+        all_jobs = Job.query.filter(Job.participants.isnot(None)).all()
+        total_claims = sum(1 for j in all_jobs if agent_id in (j.participants or []))
         passed = db.session.query(db.func.count(Submission.id)).filter(
             Submission.worker_id == agent_id,
             Submission.status == 'passed',

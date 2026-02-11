@@ -6,7 +6,8 @@ class Config:
     SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
 
     # Dev mode: when True, accept any tx_hash without chain verification
-    DEV_MODE = os.environ.get('DEV_MODE', 'true').lower() in ('true', '1', 'yes')
+    # Defaults to False — must be explicitly enabled via DEV_MODE=true
+    DEV_MODE = os.environ.get('DEV_MODE', 'false').lower() in ('true', '1', 'yes')
 
     # Chain (Base L2)
     RPC_URL = os.environ.get('RPC_URL', '')

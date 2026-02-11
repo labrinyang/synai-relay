@@ -36,8 +36,13 @@ class JobService:
             query = query.filter(Job.buyer_id == buyer_id)
         jobs = query.order_by(Job.created_at.desc()).all()
         # Lazy expiry check on listed jobs
+        any_expired = False
         for job in jobs:
-            JobService.check_expiry(job)
+            if JobService.check_expiry(job):
+                any_expired = True
+        # L10: Persist expiry changes from read path
+        if any_expired:
+            db.session.commit()
         # Re-filter if status was specified (some may have just expired)
         if status:
             jobs = [j for j in jobs if j.status == status]
@@ -50,7 +55,8 @@ class JobService:
     def get_job(task_id: str) -> Job:
         job = Job.query.filter_by(task_id=task_id).first()
         if job:
-            JobService.check_expiry(job)
+            if JobService.check_expiry(job):
+                db.session.commit()
         return job
 
     @staticmethod

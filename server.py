@@ -150,8 +150,10 @@ def _run_oracle(app, submission_id):
             db.session.commit()
         except Exception as e:
             sub.status = 'failed'
-            sub.oracle_reason = f"Internal error: {str(e)}"
-            sub.oracle_steps = [{"step": 0, "name": "error", "output": {"error": str(e)}}]
+            # M8: Don't leak internal error details to client
+            sub.oracle_reason = "Internal processing error"
+            sub.oracle_steps = [{"step": 0, "name": "error", "output": {"error": "internal"}}]
+            print(f"[Oracle] Exception in _run_oracle for sub {sub.id}: {e}")
             db.session.commit()
 
 
@@ -166,10 +168,25 @@ def _sanitize_oracle_steps(steps):
         return steps
     sanitized = []
     for s in steps:
+        output = s.get("output")
+        if isinstance(output, dict):
+            verdict = output.get("verdict")
+            if verdict:
+                # Explicit verdict exists — use it
+                passed = verdict not in ("CLEAR_FAIL", "REJECTED", "BLOCKED")
+            else:
+                # No verdict field (e.g., guard step uses "blocked" key)
+                blocked = output.get("blocked")
+                if blocked is not None:
+                    passed = not blocked
+                else:
+                    passed = None
+        else:
+            passed = None
         sanitized.append({
             "step": s.get("step"),
             "name": s.get("name"),
-            "passed": s.get("output", {}).get("verdict") not in ("CLEAR_FAIL", "REJECTED") if isinstance(s.get("output"), dict) else None,
+            "passed": passed,
         })
     return sanitized
 
@@ -626,7 +643,22 @@ def cancel_job(task_id):
     if job.status not in ('open', 'funded'):
         return jsonify({"error": f"Cannot cancel job in {job.status} state"}), 400
 
+    # C2: Lock the job row to prevent cancel/resolve race
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
+
+    # Re-check status under lock (may have changed concurrently)
+    if job.status not in ('open', 'funded'):
+        return jsonify({"error": f"Cannot cancel job in {job.status} state"}), 400
+
     if job.status == 'funded':
+        # Block cancel if any submission is actively being judged
+        active_judging = Submission.query.filter(
+            Submission.task_id == task_id,
+            Submission.status == 'judging',
+        ).count()
+        if active_judging > 0:
+            return jsonify({"error": "Cannot cancel: submissions are being judged"}), 409
+
         Submission.query.filter(
             Submission.task_id == task_id,
             Submission.status.in_(['pending', 'judging']),
@@ -665,8 +697,18 @@ def refund_job(task_id):
     if job.status not in ('expired', 'cancelled'):
         return jsonify({"error": f"Not refundable in state: {job.status}"}), 400
 
+    # C1: Atomic idempotency check — lock the row to prevent concurrent double-refund
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
+
+    # Re-check under lock
+    if job.status not in ('expired', 'cancelled'):
+        return jsonify({"error": f"Not refundable in state: {job.status}"}), 400
     if job.refund_tx_hash:
         return jsonify({"error": "Job already refunded"}), 409
+
+    # Mark refund as in-progress before sending (prevents concurrent attempts)
+    job.refund_tx_hash = 'pending'
+    db.session.flush()
 
     # Attempt on-chain refund if wallet is connected and deposit info exists
     wallet = get_wallet_service()
@@ -676,9 +718,15 @@ def refund_job(task_id):
             refund_tx = wallet.refund(job.depositor_address, job.price)
             job.refund_tx_hash = refund_tx
         except Exception as e:
+            # Rollback the 'pending' marker on failure
+            job.refund_tx_hash = None
+            db.session.commit()
             print(f"[Relay] Refund failed: {e}")
             return jsonify({"error": "Refund processing failed"}), 500
 
+    if not refund_tx:
+        # Off-chain mode: mark as refunded without tx
+        job.refund_tx_hash = 'off-chain'
     db.session.commit()
 
     result = {
