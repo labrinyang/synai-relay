@@ -17,7 +17,7 @@ import sys
 import uuid
 import requests
 
-BASE_URL = os.getenv("SYNAI_URL", "http://localhost:5000")
+BASE_URL = os.getenv("SYNAI_URL", "http://localhost:5005")
 
 # Unique suffixes to avoid collisions
 _uid = uuid.uuid4().hex[:8]

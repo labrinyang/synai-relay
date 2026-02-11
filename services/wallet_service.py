@@ -68,7 +68,7 @@ class WalletService:
                 self.w3 = None
 
     def is_connected(self) -> bool:
-        return self.w3 is not None and self.w3.is_connected()
+        return self.w3 is not None and self.ops_key and self.w3.is_connected()
 
     def get_ops_address(self) -> str:
         return self.ops_address or ''
