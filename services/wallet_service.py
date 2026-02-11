@@ -103,11 +103,20 @@ class WalletService:
                     raw_amount = t['args']['value']
                     amount = Decimal(raw_amount) / Decimal(10 ** self.usdc_decimals)
                     if amount >= expected_amount:
-                        return {
+                        result = {
                             "valid": True,
                             "depositor": t['args']['from'],
                             "amount": amount,
                         }
+                        # G22: Flag overpayment
+                        if amount > expected_amount:
+                            overpayment = amount - expected_amount
+                            result["overpayment"] = float(overpayment)
+                            logger.warning(
+                                "Overpayment detected: tx=%s amount=%s expected=%s excess=%s",
+                                tx_hash, amount, expected_amount, overpayment,
+                            )
+                        return result
                     else:
                         return {"valid": False, "error": f"Amount {amount} < {expected_amount}"}
 

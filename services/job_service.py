@@ -28,28 +28,63 @@ class JobService:
         return False
 
     @staticmethod
-    def list_jobs(status=None, buyer_id=None, worker_id=None):
+    def list_jobs(status=None, buyer_id=None, worker_id=None,
+                  artifact_type=None, min_price=None, max_price=None,
+                  sort_by='created_at', sort_order='desc',
+                  limit=50, offset=0):
+        """G03: Enhanced job listing with filtering, sorting, pagination."""
+        from decimal import Decimal, InvalidOperation
+
         query = Job.query
         if status:
             query = query.filter(Job.status == status)
         if buyer_id:
             query = query.filter(Job.buyer_id == buyer_id)
-        jobs = query.order_by(Job.created_at.desc()).all()
+        if artifact_type:
+            query = query.filter(Job.artifact_type == artifact_type)
+        if min_price is not None:
+            try:
+                query = query.filter(Job.price >= Decimal(str(min_price)))
+            except (InvalidOperation, ValueError):
+                pass
+        if max_price is not None:
+            try:
+                query = query.filter(Job.price <= Decimal(str(max_price)))
+            except (InvalidOperation, ValueError):
+                pass
+
+        # Total count before pagination (but after filters)
+        # We need to handle expiry and worker filtering in-memory, so get total after
+        all_jobs = query.order_by(Job.created_at.desc()).all()
+
         # Lazy expiry check on listed jobs
         any_expired = False
-        for job in jobs:
+        for job in all_jobs:
             if JobService.check_expiry(job):
                 any_expired = True
-        # L10: Persist expiry changes from read path
         if any_expired:
             db.session.commit()
         # Re-filter if status was specified (some may have just expired)
         if status:
-            jobs = [j for j in jobs if j.status == status]
+            all_jobs = [j for j in all_jobs if j.status == status]
         # Python-level worker filter (portable across DB engines)
         if worker_id:
-            jobs = [j for j in jobs if worker_id in (j.participants or [])]
-        return jobs
+            all_jobs = [j for j in all_jobs if worker_id in (j.participants or [])]
+
+        total = len(all_jobs)
+
+        # Sort
+        sort_col_map = {'created_at': 'created_at', 'price': 'price', 'expiry': 'expiry'}
+        sort_key = sort_col_map.get(sort_by, 'created_at')
+        reverse = sort_order != 'asc'
+        all_jobs.sort(key=lambda j: getattr(j, sort_key) or datetime.min, reverse=reverse)
+
+        # Clamp limit
+        limit = min(max(1, limit), 200)
+        offset = max(0, offset)
+
+        paginated = all_jobs[offset:offset + limit]
+        return paginated, total
 
     @staticmethod
     def get_job(task_id: str) -> Job:
