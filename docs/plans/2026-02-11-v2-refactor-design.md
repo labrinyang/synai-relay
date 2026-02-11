@@ -269,18 +269,20 @@ If BLOCKED: submission -> `failed` immediately. No further rounds.
 
 ### LLM config
 ```
-ORACLE_LLM_BASE_URL=https://api.openai.com/v1
-ORACLE_LLM_API_KEY=sk-...
-ORACLE_LLM_MODEL=gpt-4o-mini
+ORACLE_LLM_BASE_URL=https://openrouter.ai/api/v1   # OpenRouter (OpenAI-compatible)
+ORACLE_LLM_API_KEY=sk-or-v1-...                     # OpenRouter API key
+ORACLE_LLM_MODEL=openai/gpt-4o                      # OpenRouter model ID
 ORACLE_PASS_THRESHOLD=80
 ORACLE_MAX_ROUNDS=6
 ```
+Note: Uses OpenRouter as provider. Any OpenAI-compatible endpoint works — just change BASE_URL + API_KEY + MODEL.
 
 All submissions' content wrapped in `<SUBMISSION>` delimiters in every step to prevent prompt injection.
 
 ### Cost estimate
-- gpt-4o-mini: ~$0.001/call
-- Worst case: 6 calls x 20 submissions = 120 calls = ~$0.12/task
+- gpt-4o via OpenRouter: ~$0.005-0.01/call (input+output)
+- Worst case: 6 calls x 20 submissions = 120 calls = ~$0.60-1.20/task
+- Typical (early exits): 3-4 calls x 5 submissions = ~$0.10-0.20/task
 
 ---
 
@@ -441,10 +443,10 @@ OPERATIONS_WALLET_KEY=0x...
 FEE_WALLET_ADDRESS=0x...
 MIN_TASK_AMOUNT=0.1
 
-# Oracle LLM (OpenAI-compatible)
-ORACLE_LLM_BASE_URL=https://api.openai.com/v1
-ORACLE_LLM_API_KEY=sk-...
-ORACLE_LLM_MODEL=gpt-4o-mini
+# Oracle LLM (OpenRouter - OpenAI-compatible)
+ORACLE_LLM_BASE_URL=https://openrouter.ai/api/v1
+ORACLE_LLM_API_KEY=sk-or-v1-...
+ORACLE_LLM_MODEL=openai/gpt-4o
 ORACLE_PASS_THRESHOLD=80
 ORACLE_MAX_ROUNDS=6
 
