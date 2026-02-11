@@ -15,7 +15,10 @@ from core.escrow_manager import EscrowManager
 
 app = Flask(__name__)
 app.config.from_object(Config)
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'dev-secret-change-in-production')
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')
+if not WEBHOOK_SECRET:
+    WEBHOOK_SECRET = 'dev-secret-DO-NOT-USE-IN-PRODUCTION'
+    print("[Relay] WARNING: WEBHOOK_SECRET not set. Using insecure default. Set WEBHOOK_SECRET env var for production.")
 
 db.init_app(app)
 
@@ -321,7 +324,7 @@ def submit_result(task_id):
 
     job.status = 'submitted'
     job.result_data = result
-    db.session.commit()
+    db.session.flush()
     print(f"[Relay] Task {task_id} submitted by {agent_id}. Dispatching to Verifier...")
 
     try:
@@ -344,6 +347,7 @@ def submit_result(task_id):
                 "settlement": payout_info
             }), 200
     except Exception as e:
+        db.session.rollback()
         return jsonify({"error": f"Verification internal error: {str(e)}"}), 500
 
 def _settle_job(job, success=True):
@@ -355,65 +359,72 @@ def _settle_job(job, success=True):
         
     agent_id = job.claimed_by
     agent = Agent.query.filter_by(agent_id=agent_id).first()
-    
-    if success:
-        # 1. Release Reward
-        price = job.price
-        platform_fee = price * Decimal('0.20')
-        seller_payout = price * Decimal('0.80')
-        
-        if agent:
-            agent.balance += seller_payout
-            
-            # Ledger: Payout
-            db.session.add(LedgerEntry(
-                source_id='platform', target_id=agent_id,
-                amount=seller_payout, transaction_type='task_payout', task_id=job.task_id
-            ))
-            # Ledger: Fee
-            db.session.add(LedgerEntry(
-                source_id='platform', target_id='platform_admin',
-                amount=platform_fee, transaction_type='platform_fee', task_id=job.task_id
-            ))
-            
-            # 2. Release Stake
-            EscrowManager.release_stake(agent_id, job.deposit_amount, job.task_id)
 
-            # Reputation
-            metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
-            metrics['reliability'] = metrics.get('reliability', 0) + 1
-            agent.metrics = metrics
-
-        job.status = 'completed'
-        
-        return {"payout": float(seller_payout), "fee": float(platform_fee), "stake_return": float(job.deposit_amount)}
-
-    else:
-        # Failure Logic
-        # Refund Stake minus 5% Penalty
-        stake_amount = job.deposit_amount
-        penalty = stake_amount * Decimal('0.05')
-        refund = stake_amount - penalty
-        
-        if agent:
-            # Release Refund
-            EscrowManager.release_stake(agent_id, refund, job.task_id)
-            # Slash Penalty (Technically this part of locked balance is just moved to treasury)
-            # But release_stake only moves what we ask. The remaining 'penalty' matches locked_balance?
-            # Creating a slash entry for the penalty to keep ledger clean? 
-            # Actually EscrowManager.release_stake moves FROM locked. 
-            # We need to explicitly Slash the penalty.
-            EscrowManager.slash_stake(agent_id, penalty, job.task_id, reason="Verification Failure Penalty")
+    try:
+        if success:
+            # 1. Release Reward
+            price = job.price
+            platform_fee = price * Decimal('0.20')
+            seller_payout = price * Decimal('0.80')
             
-            # Reputation Hit
-            metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
-            metrics['reliability'] = max(0, metrics.get('reliability', 0) - 1)
-            agent.metrics = metrics
+            if agent:
+                agent.balance += seller_payout
+                
+                # Ledger: Payout
+                db.session.add(LedgerEntry(
+                    source_id='platform', target_id=agent_id,
+                    amount=seller_payout, transaction_type='task_payout', task_id=job.task_id
+                ))
+                # Ledger: Fee
+                db.session.add(LedgerEntry(
+                    source_id='platform', target_id='platform_admin',
+                    amount=platform_fee, transaction_type='platform_fee', task_id=job.task_id
+                ))
+                
+                # 2. Release Stake
+                EscrowManager.release_stake(agent_id, job.deposit_amount, job.task_id)
+
+                # Reputation
+                metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
+                metrics['reliability'] = metrics.get('reliability', 0) + 1
+                agent.metrics = metrics
+
+            job.status = 'completed'
+            db.session.commit()
             
-        job.status = 'failed' # Or 'open' to retry? Let's say failed for now.
-        job.failure_count += 1
-        
-        return {"payout": 0, "fee": 0, "stake_return": float(refund), "penalty": float(penalty)}
+            return {"payout": float(seller_payout), "fee": float(platform_fee), "stake_return": float(job.deposit_amount)}
+
+        else:
+            # Failure Logic
+            # Refund Stake minus 5% Penalty
+            stake_amount = job.deposit_amount
+            penalty = stake_amount * Decimal('0.05')
+            refund = stake_amount - penalty
+            
+            if agent:
+                # Release Refund
+                EscrowManager.release_stake(agent_id, refund, job.task_id)
+                # Slash Penalty (Technically this part of locked balance is just moved to treasury)
+                # But release_stake only moves what we ask. The remaining 'penalty' matches locked_balance?
+                # Creating a slash entry for the penalty to keep ledger clean? 
+                # Actually EscrowManager.release_stake moves FROM locked. 
+                # We need to explicitly Slash the penalty.
+                EscrowManager.slash_stake(agent_id, penalty, job.task_id, reason="Verification Failure Penalty")
+                
+                # Reputation Hit
+                metrics = agent.metrics or {"engineering": 0, "creativity": 0, "reliability": 0}
+                metrics['reliability'] = max(0, metrics.get('reliability', 0) - 1)
+                agent.metrics = metrics
+                
+            job.status = 'failed' # Or 'open' to retry? Let's say failed for now.
+            job.failure_count += 1
+            db.session.commit()
+            
+            return {"payout": 0, "fee": 0, "stake_return": float(refund), "penalty": float(penalty)}
+    except Exception as e:
+        db.session.rollback()
+        print(f"[Relay] Settlement failed, rolled back: {e}")
+        raise
 
 
 @app.route('/v1/verify/webhook/<task_id>', methods=['POST'])
@@ -568,21 +579,28 @@ def deposit_funds(agent_id):
         return jsonify({"error": "Agent not found"}), 404
 
     data = request.json or {}
-    amount = data.get('amount')
-    if not amount or float(amount) <= 0:
-        return jsonify({"error": "Positive amount required"}), 400
+    raw_amount = data.get('amount')
+    try:
+        amount = Decimal(str(raw_amount))
+        if not amount.is_finite() or amount <= 0:
+            return jsonify({"error": "Positive finite amount required"}), 400
+    except Exception:
+        return jsonify({"error": "Invalid amount"}), 400
 
-    amount = Decimal(str(amount))
-    agent.balance += amount
-    entry = LedgerEntry(
-        source_id='deposit',
-        target_id=agent_id,
-        amount=amount,
-        transaction_type='deposit',
-        task_id=None
-    )
-    db.session.add(entry)
-    db.session.commit()
+    try:
+        agent.balance += amount
+        entry = LedgerEntry(
+            source_id='deposit',
+            target_id=agent_id,
+            amount=amount,
+            transaction_type='deposit',
+            task_id=None
+        )
+        db.session.add(entry)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Transaction failed"}), 500
     return jsonify({
         "status": "deposited",
         "agent_id": agent_id,
