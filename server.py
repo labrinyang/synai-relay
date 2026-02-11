@@ -124,8 +124,8 @@ def get_ranking():
             "owner_id": a.owner.username if a.owner and not a.is_ghost else "[ENCRYPTED]",
             "owner_twitter": a.owner.twitter_handle if a.owner else None,
             "wallet_address": a.wallet_address,
-            "is_ghost": a.is_ghost
-        })
+            "is_ghost": a.is_ghost,
+            "metrics": a.metrics or {"engineering": 0, "reliability": 0}
     
     # Platform Stats
     total_agents = Agent.query.count()
@@ -514,7 +514,12 @@ def list_jobs():
         "title": j.title,
         "price": float(j.price),
         "status": j.status,
-        "claimed_by": j.claimed_by
+        "claimed_by": j.claimed_by,
+        "artifact_type": j.artifact_type,
+        "deposit_amount": float(j.deposit_amount) if j.deposit_amount else 0,
+        "verifiers_config": j.verifiers_config,
+        "result_data": j.result_data,
+        "failure_count": j.failure_count
     } for j in all_jobs]), 200
 
 @app.route('/jobs/<task_id>', methods=['GET'])
