@@ -109,6 +109,16 @@ class Submission(db.Model):
     )
 
 
+class IdempotencyKey(db.Model):
+    """G17: Idempotency keys for safe request retries."""
+    __tablename__ = 'idempotency_keys'
+    key = db.Column(db.String(128), primary_key=True)
+    agent_id = db.Column(db.String(100), nullable=False)
+    response_code = db.Column(db.Integer, nullable=False)
+    response_body = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class Webhook(db.Model):
     """G04: Webhook registration for event push notifications."""
     __tablename__ = 'webhooks'

@@ -7,10 +7,11 @@ Submission statuses: pending -> judging -> passed | failed
 """
 
 from flask import Flask, request, jsonify, g
-from models import db, Owner, Agent, Job, Submission, Webhook
+from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey
 from config import Config
 from sqlalchemy.exc import IntegrityError
 from services.auth_service import generate_api_key, require_auth, require_buyer
+from services.rate_limiter import rate_limit, get_submit_limiter
 
 import json
 import logging
@@ -76,6 +77,39 @@ if Config.DEV_MODE:
 
 # Thread pool for oracle evaluations with timeout support (G07)
 _oracle_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='oracle')
+
+
+# ---------------------------------------------------------------------------
+# G12: Proactive expiry checker (background loop)
+# ---------------------------------------------------------------------------
+
+def _expiry_checker_loop():
+    """Background thread: check for expired funded jobs every 60 seconds."""
+    while True:
+        try:
+            import time
+            time.sleep(60)
+            with app.app_context():
+                from services.job_service import JobService
+                now = datetime.datetime.now(datetime.timezone.utc)
+                expired_jobs = Job.query.filter(
+                    Job.status == 'funded',
+                    Job.expiry.isnot(None),
+                    Job.expiry < now,
+                ).all()
+                for job in expired_jobs:
+                    if JobService.check_expiry(job):
+                        logger.info("Proactively expired job %s", job.task_id)
+                        # Fire webhook
+                        from services.webhook_service import fire_event
+                        fire_event('job.expired', job.task_id, {"status": "expired"})
+                if expired_jobs:
+                    db.session.commit()
+        except Exception as e:
+            logger.error("Expiry checker error: %s", e)
+
+_expiry_thread = threading.Thread(target=_expiry_checker_loop, daemon=True, name='expiry-checker')
+_expiry_thread.start()
 
 # ---------------------------------------------------------------------------
 # Oracle background thread
@@ -172,6 +206,14 @@ def _run_oracle(app, submission_id):
                         if job_obj:
                             job_obj.payout_status = 'skipped'
 
+                    # G04: Fire webhook for resolve
+                    from services.webhook_service import fire_event
+                    fire_event('job.resolved', sub.task_id, {
+                        "status": "resolved",
+                        "winner_id": sub.worker_id,
+                        "score": result['score'],
+                    })
+
                     # Update reputation
                     from services.agent_service import AgentService
                     AgentService.update_reputation(sub.worker_id)
@@ -187,6 +229,15 @@ def _run_oracle(app, submission_id):
                 AgentService.update_reputation(sub.worker_id)
 
             db.session.commit()
+
+            # G04: Fire webhook for submission result
+            from services.webhook_service import fire_event
+            fire_event('submission.completed', sub.task_id, {
+                "submission_id": sub.id,
+                "worker_id": sub.worker_id,
+                "status": sub.status,
+                "score": sub.oracle_score,
+            })
         except Exception as e:
             sub.status = 'failed'
             # M8: Don't leak internal error details to client
@@ -219,6 +270,45 @@ def _launch_oracle_with_timeout(submission_id):
 
     t = threading.Thread(target=_oracle_with_timeout, daemon=True)
     t.start()
+
+
+# ---------------------------------------------------------------------------
+# G17: Idempotency key helper
+# ---------------------------------------------------------------------------
+
+
+def check_idempotency():
+    """Check for Idempotency-Key header. Returns cached response if found, else None."""
+    idem_key = request.headers.get('Idempotency-Key')
+    if not idem_key:
+        return None
+    agent_id = getattr(g, 'current_agent_id', None) or 'anon'
+    full_key = f"{agent_id}:{idem_key}"
+    cached = IdempotencyKey.query.get(full_key)
+    if cached:
+        return jsonify(cached.response_body), cached.response_code
+    return None
+
+
+def save_idempotency(response_tuple):
+    """Save response for the current idempotency key."""
+    idem_key = request.headers.get('Idempotency-Key')
+    if not idem_key:
+        return
+    agent_id = getattr(g, 'current_agent_id', None) or 'anon'
+    full_key = f"{agent_id}:{idem_key}"
+    body, code = response_tuple
+    try:
+        entry = IdempotencyKey(
+            key=full_key,
+            agent_id=agent_id,
+            response_code=code,
+            response_body=body.get_json(),
+        )
+        db.session.add(entry)
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +492,7 @@ def list_jobs_endpoint():
 
 @app.route('/jobs', methods=['POST'])
 @require_auth
+@rate_limit()
 def create_job_endpoint():
     return _create_job()
 
@@ -488,14 +579,40 @@ def _create_job():
 
 
 def _list_jobs():
+    """G03: Enhanced job listing with filtering, sorting, pagination."""
     from services.job_service import JobService
 
     status = request.args.get('status')
     buyer_id = request.args.get('buyer_id')
     worker_id = request.args.get('worker_id')
+    artifact_type = request.args.get('artifact_type')
+    min_price = request.args.get('min_price')
+    max_price = request.args.get('max_price')
+    sort_by = request.args.get('sort_by', 'created_at')
+    sort_order = request.args.get('sort_order', 'desc')
 
-    jobs = JobService.list_jobs(status=status, buyer_id=buyer_id, worker_id=worker_id)
-    return jsonify([JobService.to_dict(j) for j in jobs]), 200
+    try:
+        limit = int(request.args.get('limit', 50))
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        offset = int(request.args.get('offset', 0))
+    except (ValueError, TypeError):
+        offset = 0
+
+    jobs, total = JobService.list_jobs(
+        status=status, buyer_id=buyer_id, worker_id=worker_id,
+        artifact_type=artifact_type, min_price=min_price, max_price=max_price,
+        sort_by=sort_by, sort_order=sort_order,
+        limit=limit, offset=offset,
+    )
+
+    return jsonify({
+        "jobs": [JobService.to_dict(j) for j in jobs],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }), 200
 
 
 # ===================================================================
@@ -521,6 +638,11 @@ def get_job(task_id):
 @app.route('/jobs/<task_id>/fund', methods=['POST'])
 @require_auth
 def fund_job(task_id):
+    # G17: Idempotency check
+    cached = check_idempotency()
+    if cached:
+        return cached
+
     from services.job_service import JobService
     from services.wallet_service import get_wallet_service
 
@@ -542,12 +664,14 @@ def fund_job(task_id):
         return jsonify({"error": "tx_hash is required"}), 400
 
     wallet = get_wallet_service()
+    overpayment = None
     if wallet.is_connected():
         # On-chain verification
         verify = wallet.verify_deposit(tx_hash, job.price)
         if not verify.get('valid'):
             return jsonify({"error": "Deposit verification failed"}), 400
         job.depositor_address = verify.get('depositor')
+        overpayment = verify.get('overpayment')  # G22
     elif not app.config.get('DEV_MODE', False):
         return jsonify({"error": "Chain not connected and DEV_MODE is disabled"}), 503
     # else: dev mode — accept any tx_hash
@@ -560,11 +684,17 @@ def fund_job(task_id):
         db.session.rollback()
         return jsonify({"error": "This transaction has already been used to fund a job"}), 409
 
-    return jsonify({
+    resp_data = {
         "status": "funded",
         "task_id": task_id,
         "tx_hash": tx_hash,
-    }), 200
+    }
+    # G22: Report overpayment in response
+    if overpayment:
+        resp_data["warnings"] = [f"Overpayment of {overpayment} USDC detected. Excess will be credited."]
+    result = jsonify(resp_data), 200
+    save_idempotency(result)
+    return result
 
 
 # ===================================================================
@@ -689,6 +819,7 @@ def unclaim_job(task_id):
 
 @app.route('/jobs/<task_id>/submit', methods=['POST'])
 @require_auth
+@rate_limit(get_submit_limiter())
 def submit_result(task_id):
     from services.job_service import JobService
 
@@ -832,6 +963,10 @@ def cancel_job(task_id):
     job.status = 'cancelled'
     db.session.commit()
 
+    # G04: Fire webhook
+    from services.webhook_service import fire_event
+    fire_event('job.cancelled', task_id, {"status": "cancelled"})
+
     return jsonify({
         "status": "cancelled",
         "task_id": task_id,
@@ -900,7 +1035,205 @@ def refund_job(task_id):
     }
     if refund_tx:
         result["refund_tx_hash"] = refund_tx
+
+    # G04: Fire webhook
+    from services.webhook_service import fire_event
+    fire_event('job.refunded', task_id, result)
+
     return jsonify(result), 200
+
+
+# ===================================================================
+# 15. Webhook CRUD — POST/GET/DELETE (G04)
+# ===================================================================
+
+
+@app.route('/agents/<agent_id>/webhooks', methods=['POST'])
+@require_auth
+def create_webhook(agent_id):
+    from services.webhook_service import create_webhook as _create_wh
+
+    if g.current_agent_id != agent_id:
+        return jsonify({"error": "Cannot manage webhooks for another agent"}), 403
+
+    data = request.get_json(silent=True) or {}
+    url = data.get('url')
+    events = data.get('events', [])
+
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+    if not url.startswith('https://'):
+        return jsonify({"error": "url must use HTTPS"}), 400
+    if not isinstance(events, list) or not events:
+        return jsonify({"error": "events must be a non-empty list"}), 400
+
+    result = _create_wh(agent_id, url, events)
+    return jsonify(result), 201
+
+
+@app.route('/agents/<agent_id>/webhooks', methods=['GET'])
+@require_auth
+def list_webhooks(agent_id):
+    from services.webhook_service import list_webhooks as _list_wh
+
+    if g.current_agent_id != agent_id:
+        return jsonify({"error": "Cannot view webhooks for another agent"}), 403
+
+    return jsonify(_list_wh(agent_id)), 200
+
+
+@app.route('/agents/<agent_id>/webhooks/<webhook_id>', methods=['DELETE'])
+@require_auth
+def delete_webhook(agent_id, webhook_id):
+    from services.webhook_service import delete_webhook as _delete_wh
+
+    if g.current_agent_id != agent_id:
+        return jsonify({"error": "Cannot manage webhooks for another agent"}), 403
+
+    if _delete_wh(webhook_id, agent_id):
+        return '', 204
+    return jsonify({"error": "Webhook not found"}), 404
+
+
+# ===================================================================
+# 16. PATCH /jobs/<task_id> — update job (G11)
+# ===================================================================
+
+
+@app.route('/jobs/<task_id>', methods=['PATCH'])
+@require_auth
+def update_job(task_id):
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    err = require_buyer(job)
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+
+    if job.status == 'open':
+        # Mutable when open: title, description, rubric, expiry, max_submissions, max_retries, min_reputation
+        for field in ('title', 'description', 'rubric'):
+            if field in data:
+                setattr(job, field, data[field])
+        if 'expiry' in data:
+            try:
+                job.expiry = datetime.datetime.utcfromtimestamp(int(data['expiry']))
+            except (ValueError, TypeError, OSError):
+                return jsonify({"error": "Invalid expiry timestamp"}), 400
+        for int_field in ('max_submissions', 'max_retries'):
+            if int_field in data:
+                val = data[int_field]
+                if isinstance(val, int) and val >= 1:
+                    setattr(job, int_field, val)
+        if 'min_reputation' in data:
+            try:
+                from decimal import Decimal, InvalidOperation
+                job.min_reputation = Decimal(str(data['min_reputation']))
+            except (InvalidOperation, ValueError, TypeError):
+                return jsonify({"error": "Invalid min_reputation"}), 400
+
+    elif job.status == 'funded':
+        # When funded: only extend expiry
+        if 'expiry' in data:
+            try:
+                new_expiry = datetime.datetime.utcfromtimestamp(int(data['expiry']))
+            except (ValueError, TypeError, OSError):
+                return jsonify({"error": "Invalid expiry timestamp"}), 400
+            if job.expiry and new_expiry <= job.expiry:
+                return jsonify({"error": "Can only extend expiry on funded jobs"}), 400
+            job.expiry = new_expiry
+        else:
+            return jsonify({"error": "Only expiry extension allowed on funded jobs"}), 400
+    else:
+        return jsonify({"error": f"Cannot update job in {job.status} state"}), 400
+
+    db.session.commit()
+    return jsonify(JobService.to_dict(job)), 200
+
+
+# ===================================================================
+# 17. GET /platform/solvency — solvency monitoring (G21)
+# ===================================================================
+
+
+@app.route('/platform/solvency', methods=['GET'])
+def platform_solvency():
+    """G21: Solvency overview — outstanding liabilities vs wallet balance."""
+    from sqlalchemy import func
+
+    # Outstanding liabilities: funded jobs that haven't been resolved/cancelled
+    liabilities = db.session.query(
+        func.coalesce(func.sum(Job.price), 0)
+    ).filter(Job.status == 'funded').scalar()
+
+    total_payouts = db.session.query(
+        func.coalesce(func.sum(Job.price), 0)
+    ).filter(
+        Job.status == 'resolved',
+        Job.payout_status == 'success',
+    ).scalar()
+
+    total_refunds = db.session.query(
+        func.count(Job.task_id)
+    ).filter(
+        Job.refund_tx_hash.isnot(None),
+        Job.refund_tx_hash != 'pending',
+    ).scalar()
+
+    funded_count = Job.query.filter_by(status='funded').count()
+    failed_payouts = Job.query.filter_by(payout_status='failed').count()
+
+    return jsonify({
+        "outstanding_liabilities": float(liabilities),
+        "funded_jobs_count": funded_count,
+        "total_payouts_value": float(total_payouts),
+        "total_refund_count": total_refunds,
+        "failed_payouts_count": failed_payouts,
+    }), 200
+
+
+# ===================================================================
+# 18. POST /jobs/<task_id>/dispute — dispute stub (G24)
+# ===================================================================
+
+
+@app.route('/jobs/<task_id>/dispute', methods=['POST'])
+@require_auth
+def dispute_job(task_id):
+    """G24: Dispute stub — records dispute request but doesn't resolve it."""
+    from services.job_service import JobService
+
+    job = JobService.get_job(task_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if job.status != 'resolved':
+        return jsonify({"error": f"Can only dispute resolved jobs (current: {job.status})"}), 400
+
+    data = request.get_json(silent=True) or {}
+    reason = data.get('reason', '')
+    if not reason:
+        return jsonify({"error": "reason is required"}), 400
+
+    # Only buyer or winner can dispute
+    agent_id = g.current_agent_id
+    if agent_id not in (job.buyer_id, job.winner_id):
+        return jsonify({"error": "Only buyer or winner can dispute"}), 403
+
+    # Stub: log the dispute, don't change state
+    logger.info("Dispute filed for task %s by %s: %s", task_id, agent_id, reason)
+
+    return jsonify({
+        "status": "dispute_filed",
+        "task_id": task_id,
+        "filed_by": agent_id,
+        "message": "Dispute recorded. Manual review required.",
+    }), 202
 
 
 # ---------------------------------------------------------------------------
