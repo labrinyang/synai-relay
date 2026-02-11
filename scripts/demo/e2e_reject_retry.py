@@ -5,23 +5,24 @@ E2E Demo: Reject + Retry Flow
 Tests the rejection, retry, and circuit-breaker flow against a running
 relay server at http://localhost:5005.
 
+Requires: WEBHOOK_SECRET env var set on both server and this test.
+
 Scenario A -- Reject then Retry (success):
   1. Register BOSS + WORKER agents
   2. Deposit funds
   3. Post task with webhook verifier (expected_payload = {"status":"ok"})
   4. Fund task
   5. WORKER claims task (stake locked)
-  6. WORKER submits BAD result  -> webhook mismatch -> auto-reject
-     - failure_count increments, status -> 'rejected', stake returned
-  7. WORKER re-claims the rejected task (retry)
-  8. WORKER submits GOOD result -> webhook match -> auto-settle
-     - payout + stake returned
-  9. Verify final balances
+  6. WORKER submits result (deferred — webhook is async)
+  7. Webhook callback with BAD payload -> reject (failure_count=1, stake returned)
+  8. WORKER re-submits from rejected (auto re-stake, deferred)
+  9. Webhook callback with GOOD payload -> settle (payout + stake returned)
+  10. Verify final balances
 
 Scenario B -- Circuit Breaker (max_retries exhausted):
   1. Post task with max_retries=2
-  2. Fund + claim + submit bad (reject #1)
-  3. Re-claim + submit bad (reject #2) -> failure_count >= max_retries -> 'expired'
+  2. Claim + submit + BAD webhook (reject #1)
+  3. Re-submit + BAD webhook (reject #2) -> failure_count >= max_retries -> 'expired'
   4. Verify task cannot be claimed again
 
 Scenario C -- Cancel pre-claim task:
@@ -31,14 +32,20 @@ Scenario C -- Cancel pre-claim task:
 """
 
 import sys
+import os
 import uuid
-import time
+import hmac as hmac_mod
+import hashlib
+import json
 import requests
 
 BASE_URL = "http://localhost:5005"
 SUFFIX = uuid.uuid4().hex[:6]
 BOSS_ID = f"BOSS_RR_{SUFFIX}"
 WORKER_ID = f"WORKER_RR_{SUFFIX}"
+
+# Must match server's WEBHOOK_SECRET
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "test_secret_e2e")
 
 passed = 0
 failed = 0
@@ -130,6 +137,21 @@ def submit_task(task_id, agent_id, result):
     return r
 
 
+def send_webhook(task_id, payload):
+    """Send a webhook callback with proper HMAC signature."""
+    body = json.dumps(payload).encode()
+    sig = hmac_mod.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    r = requests.post(
+        f"{BASE_URL}/v1/verify/webhook/{task_id}",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Signature": sig,
+        },
+    )
+    return r
+
+
 def get_job(task_id):
     r = requests.get(f"{BASE_URL}/jobs/{task_id}")
     assert r.status_code == 200, f"Get job failed: {r.status_code} {r.text}"
@@ -152,8 +174,8 @@ WEBHOOK_VERIFIER = [
     }
 ]
 
-BAD_RESULT = {"webhook_payload": {"status": "bad"}}
-GOOD_RESULT = {"webhook_payload": {"status": "ok"}}
+BAD_PAYLOAD = {"status": "bad"}
+GOOD_PAYLOAD = {"status": "ok"}
 
 
 # ===================================================================
@@ -205,22 +227,33 @@ def a5_claim_task():
     assert locked == 4.0, f"Expected locked 4.0, got {locked}"
 
 
-def a6_submit_bad_result():
-    """Submit bad result -> webhook mismatch -> auto-reject."""
-    r = submit_task(task_a_id, WORKER_ID, BAD_RESULT)
+def a6_submit_deferred():
+    """Submit result -> deferred (webhook is async, no eager verification)."""
+    r = submit_task(task_a_id, WORKER_ID, {"content": "attempt 1"})
     assert r.status_code == 200, f"Submit failed: {r.status_code} {r.text}"
     data = r.json()
-    print(f"  Submit response: status={data.get('status')}, settlement={data.get('settlement')}")
-    # The submit endpoint auto-settles via _settle_job(success=False)
-    # Status should be 'rejected'
+    print(f"  Submit response: status={data.get('status')}, message={data.get('message')}")
+    assert data.get("status") == "submitted", f"Expected 'submitted', got '{data.get('status')}'"
+    # Stake should still be locked
+    agent = get_agent(WORKER_ID)
+    locked = float(agent.get("locked_balance", 0))
+    assert locked == 4.0, f"Expected locked 4.0 while submitted, got {locked}"
+
+
+def a7_webhook_bad_reject():
+    """Webhook callback with BAD payload -> reject (failure_count=1)."""
+    r = send_webhook(task_a_id, BAD_PAYLOAD)
+    assert r.status_code == 200, f"Webhook failed: {r.status_code} {r.text}"
+    data = r.json()
+    print(f"  Webhook response: status={data.get('status')}, settlement={data.get('settlement')}")
     status = data.get("status")
-    assert status == "rejected", f"Expected status 'rejected', got '{status}'"
+    assert status == "rejected", f"Expected 'rejected', got '{status}'"
     settlement = data.get("settlement", {})
     assert settlement.get("failure_count") == 1, f"Expected failure_count 1, got {settlement.get('failure_count')}"
     assert settlement.get("payout") == 0, f"Expected payout 0, got {settlement.get('payout')}"
-    # Stake should be returned (no penalty on reject)
+    # Stake returned (no penalty on reject)
     assert settlement.get("stake_return") == 4.0, f"Expected stake_return 4.0, got {settlement.get('stake_return')}"
-    # Verify worker balance: 10 (initial) - 4 (staked) + 4 (returned) = 10
+    # Verify balances
     agent = get_agent(WORKER_ID)
     bal = float(agent["balance"])
     locked = float(agent.get("locked_balance", 0))
@@ -229,27 +262,32 @@ def a6_submit_bad_result():
     assert bal == 10.0, f"Expected balance 10.0 after reject, got {bal}"
 
 
-def a7_retry_claim():
-    """Re-claim the rejected task (retry)."""
+def a8_resubmit_from_rejected():
+    """Worker re-submits from rejected (auto re-stake via S3, deferred)."""
     job = get_job(task_a_id)
     assert job["status"] == "rejected", f"Expected rejected, got {job['status']}"
     assert job["failure_count"] == 1, f"Expected failure_count 1, got {job['failure_count']}"
-    r = claim_task(task_a_id, WORKER_ID)
-    assert r.status_code == 200, f"Retry claim failed: {r.status_code} {r.text}"
-    print(f"  Worker {WORKER_ID} re-claimed task {task_a_id} (retry)")
-    # Verify stake is locked again
+    r = submit_task(task_a_id, WORKER_ID, {"content": "attempt 2"})
+    assert r.status_code == 200, f"Re-submit failed: {r.status_code} {r.text}"
+    data = r.json()
+    print(f"  Re-submit response: status={data.get('status')}")
+    assert data.get("status") == "submitted", f"Expected 'submitted', got '{data.get('status')}'"
+    # Verify re-stake was applied
     agent = get_agent(WORKER_ID)
     locked = float(agent.get("locked_balance", 0))
+    bal = float(agent["balance"])
+    print(f"  After re-submit: balance={bal}, locked={locked}")
     assert locked == 4.0, f"Expected locked 4.0 on retry, got {locked}"
+    assert bal == 6.0, f"Expected balance 6.0 after re-stake, got {bal}"
 
 
-def a8_submit_good_result():
-    """Submit correct result -> webhook match -> auto-settle."""
-    r = submit_task(task_a_id, WORKER_ID, GOOD_RESULT)
-    assert r.status_code == 200, f"Submit failed: {r.status_code} {r.text}"
+def a9_webhook_good_settle():
+    """Webhook callback with GOOD payload -> settle (payout=64)."""
+    r = send_webhook(task_a_id, GOOD_PAYLOAD)
+    assert r.status_code == 200, f"Webhook failed: {r.status_code} {r.text}"
     data = r.json()
-    print(f"  Submit response: status={data.get('status')}, settlement={data.get('settlement')}")
-    assert data.get("status") == "settled", f"Expected settled, got {data.get('status')}"
+    print(f"  Webhook response: status={data.get('status')}, settlement={data.get('settlement')}")
+    assert data.get("status") == "settled", f"Expected 'settled', got '{data.get('status')}'"
     settlement = data.get("settlement", {})
     # Payout = 80 * 0.80 = 64 USDC
     assert settlement.get("payout") == 64.0, f"Expected payout 64.0, got {settlement.get('payout')}"
@@ -259,20 +297,18 @@ def a8_submit_good_result():
     assert settlement.get("stake_return") == 4.0, f"Expected stake_return 4.0, got {settlement.get('stake_return')}"
 
 
-def a9_verify_balances():
+def a10_verify_balances():
     """Final balance check after successful retry."""
     agent = get_agent(WORKER_ID)
     bal = float(agent["balance"])
     locked = float(agent.get("locked_balance", 0))
-    # Worker: 10 (initial) - 4 (stake) + 4 (returned) + 64 (payout) = 74 USDC
+    # Worker: 10 (initial) - 4 (re-stake) + 64 (payout) + 4 (stake return) = 74 USDC
     print(f"  Worker final: balance={bal}, locked={locked}")
     assert bal == 74.0, f"Expected worker balance 74.0, got {bal}"
     assert locked == 0.0, f"Expected locked 0 after settlement, got {locked}"
     # Job should be settled
     job = get_job(task_a_id)
     assert job["status"] == "settled", f"Expected settled, got {job['status']}"
-    # Reliability metric should have net 0 change (+1 success, -1 from reject)
-    # Actually: reject decrements by 1 (from 0 -> 0, clamped), success increments by 1 -> 1
     metrics = agent.get("metrics", {})
     print(f"  Worker metrics: {metrics}")
 
@@ -306,11 +342,15 @@ def b2_fund_task():
 
 
 def b3_first_bad_attempt():
-    """Claim + submit bad -> reject #1."""
+    """Claim + submit + BAD webhook -> reject #1."""
     r = claim_task(task_b_id, WORKER_B_ID)
     assert r.status_code == 200, f"Claim #1 failed: {r.status_code} {r.text}"
-    r = submit_task(task_b_id, WORKER_B_ID, BAD_RESULT)
+    r = submit_task(task_b_id, WORKER_B_ID, {"content": "bad attempt 1"})
     assert r.status_code == 200, f"Submit #1 failed: {r.status_code} {r.text}"
+    assert r.json().get("status") == "submitted", f"Expected submitted, got {r.json().get('status')}"
+    # Send BAD webhook to trigger rejection
+    r = send_webhook(task_b_id, BAD_PAYLOAD)
+    assert r.status_code == 200, f"Webhook #1 failed: {r.status_code} {r.text}"
     data = r.json()
     assert data.get("status") == "rejected", f"Expected rejected, got {data.get('status')}"
     fc = data.get("settlement", {}).get("failure_count", 0)
@@ -319,11 +359,13 @@ def b3_first_bad_attempt():
 
 
 def b4_second_bad_attempt():
-    """Re-claim + submit bad -> reject #2 -> max_retries hit -> expired."""
-    r = claim_task(task_b_id, WORKER_B_ID)
-    assert r.status_code == 200, f"Retry claim failed: {r.status_code} {r.text}"
-    r = submit_task(task_b_id, WORKER_B_ID, BAD_RESULT)
-    assert r.status_code == 200, f"Submit #2 failed: {r.status_code} {r.text}"
+    """Re-submit + BAD webhook -> reject #2 -> max_retries hit -> expired."""
+    r = submit_task(task_b_id, WORKER_B_ID, {"content": "bad attempt 2"})
+    assert r.status_code == 200, f"Re-submit #2 failed: {r.status_code} {r.text}"
+    assert r.json().get("status") == "submitted", f"Expected submitted, got {r.json().get('status')}"
+    # Send BAD webhook to trigger rejection #2
+    r = send_webhook(task_b_id, BAD_PAYLOAD)
+    assert r.status_code == 200, f"Webhook #2 failed: {r.status_code} {r.text}"
     data = r.json()
     settlement = data.get("settlement", {})
     fc = settlement.get("failure_count", 0)
@@ -407,22 +449,23 @@ def main():
         print(f"\nServer healthy: {r.json()}")
     except Exception as e:
         print(f"\nServer not reachable at {BASE_URL}: {e}")
-        print("Start the server with: python server.py")
+        print("Start the server with: WEBHOOK_SECRET=test_secret_e2e python server.py")
         sys.exit(1)
 
     # Scenario A: Reject then Retry (success)
     print("\n" + "=" * 60)
-    print("  SCENARIO A: Reject -> Retry -> Settle")
+    print("  SCENARIO A: Reject -> Retry -> Settle (async webhook)")
     print("=" * 60)
     step("A1. Register agents", a1_register_agents)
     step("A2. Deposit funds (BOSS=100, WORKER=10)", a2_deposit)
     step("A3. Post task (price=80, max_retries=3, webhook verifier)", a3_post_task)
     step("A4. Fund task", a4_fund_task)
     step("A5. Worker claims task (stake 4 USDC)", a5_claim_task)
-    step("A6. Submit BAD result -> auto-reject (failure_count=1)", a6_submit_bad_result)
-    step("A7. Worker re-claims rejected task (retry)", a7_retry_claim)
-    step("A8. Submit GOOD result -> auto-settle (payout=64)", a8_submit_good_result)
-    step("A9. Verify final balances", a9_verify_balances)
+    step("A6. Submit result (deferred — async webhook)", a6_submit_deferred)
+    step("A7. Webhook BAD callback -> reject (failure_count=1)", a7_webhook_bad_reject)
+    step("A8. Re-submit from rejected (auto re-stake, deferred)", a8_resubmit_from_rejected)
+    step("A9. Webhook GOOD callback -> settle (payout=64)", a9_webhook_good_settle)
+    step("A10. Verify final balances", a10_verify_balances)
 
     # Scenario B: Circuit Breaker
     print("\n" + "=" * 60)
@@ -431,8 +474,8 @@ def main():
     step("B0. Setup worker for circuit breaker test", b0_setup)
     step("B1. Post task (price=20, max_retries=2)", b1_post_task)
     step("B2. Fund task", b2_fund_task)
-    step("B3. Attempt #1: claim + submit bad -> reject", b3_first_bad_attempt)
-    step("B4. Attempt #2: re-claim + submit bad -> expired", b4_second_bad_attempt)
+    step("B3. Attempt #1: claim + submit + BAD webhook -> reject", b3_first_bad_attempt)
+    step("B4. Attempt #2: re-submit + BAD webhook -> expired", b4_second_bad_attempt)
     step("B5. Verify claim blocked on expired task", b5_claim_blocked)
     step("B6. Verify task status is expired", b6_verify_job_expired)
 
