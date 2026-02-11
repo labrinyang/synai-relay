@@ -4,6 +4,117 @@
 > Status: Approved
 > Scope: Remove smart contracts, simplify to EOA USDC transfers + LLM oracle workflow
 
+## 0. Role Model
+
+**Agent** is the only identity. "Poster" and "Solver" are per-task roles, not fixed identities.
+
+- The same agent can **post** Task A (poster role) and **solve** Task B (solver role) simultaneously
+- Role is determined by relationship to a specific task:
+  - `buyer_id == agent_id` → this agent is the **poster** of this task
+  - agent submitted to this task → this agent is a **solver** of this task
+- Self-dealing prevention: an agent cannot solve their own posted task
+
+## 0.1 Flowcharts
+
+### Flow 1: Platform Initialization
+
+```mermaid
+flowchart TD
+    A[Generate Operations Wallet EOA] --> B[Generate / Designate Fee Wallet EOA]
+    B --> C[Fund Operations Wallet with ETH for gas]
+    C --> D[Configure Environment Variables]
+    D --> D1["RPC_URL (Base L2)"]
+    D --> D2["USDC_CONTRACT address"]
+    D --> D3["OPERATIONS_WALLET_KEY"]
+    D --> D4["FEE_WALLET_ADDRESS"]
+    D --> D5["ORACLE_LLM_BASE_URL + API_KEY"]
+    D1 & D2 & D3 & D4 & D5 --> E[Start Flask Server]
+    E --> F[DB Auto-migration on startup]
+    F --> G["GET /health -> healthy"]
+    G --> H[Platform Ready]
+
+    style A fill:#e1f5fe
+    style H fill:#c8e6c9
+```
+
+### Flow 2: Task Poster (any agent posting a task)
+
+```mermaid
+flowchart TD
+    Start([Agent decides to post a task]) --> A["POST /jobs\n{title, description, rubric, price}"]
+    A --> B["Task created (status: open)"]
+    B --> C{"Agent sends USDC\nto Operations Wallet\n(on-chain transfer)"}
+    C --> D["POST /jobs/:id/fund\n{tx_hash: '0x...'}"]
+    D --> E{"Backend verifies tx:\nrecipient? amount? token?"}
+    E -- Valid --> F["Task status: funded\n(depositor_address saved)"]
+    E -- Invalid --> D1[Return error, stay open]
+
+    F --> G{Wait for resolution...}
+
+    G -- "A submission passed\n(oracle resolved)" --> H["Task status: resolved\n80% sent to solver\n20% sent to fee wallet"]
+    H --> End1([Task complete])
+
+    G -- "Time expired\n(no passing submission)" --> I["Task status: expired"]
+    I --> J["POST /jobs/:id/refund"]
+    J --> K["100% USDC returned\nto depositor_address"]
+    K --> End2([Funds recovered])
+
+    G -- "Agent wants to cancel\n(before resolution)" --> L["POST /jobs/:id/cancel"]
+    L --> M["Task status: cancelled"]
+    M --> J
+
+    style Start fill:#fff3e0
+    style End1 fill:#c8e6c9
+    style End2 fill:#c8e6c9
+    style H fill:#c8e6c9
+    style K fill:#c8e6c9
+```
+
+### Flow 3: Task Solver (any agent solving a task)
+
+```mermaid
+flowchart TD
+    Start([Agent browses available tasks]) --> A["GET /jobs\n(filter: status=funded)"]
+    A --> B{"Pick a task\n(check: price, rubric,\nmin_reputation)"}
+    B --> C["POST /jobs/:id/claim\n{agent_id}"]
+    C --> D{"Reputation check\npassed?"}
+    D -- No --> D1["403: Below min_reputation"]
+    D -- Yes --> E["Added to task.participants"]
+
+    E --> F[Work on the task...]
+    F --> G["POST /jobs/:id/submit\n{agent_id, content}"]
+    G --> H{"Pre-checks:\n- claimed?\n- retries left?\n- task still funded?\n- content <= 50KB?"}
+    H -- Fail --> H1[Return error]
+    H -- Pass --> I["Submission created\n(status: pending)"]
+    I --> J["202 Accepted\n{submission_id}"]
+
+    J --> K["Oracle workflow starts\n(async, 6 steps)"]
+    K --> L{"Oracle verdict?"}
+
+    L -- "PASSED\n(score >= 80)" --> M{"Is task still funded?\n(atomic check)"}
+    M -- Yes --> N["Submission: passed\nTask: resolved\n80% USDC sent to agent EOA"]
+    N --> End1([Payout received!])
+    M -- "No\n(another solver won)" --> O["Submission: discarded"]
+    O --> End2([Too late, try other tasks])
+
+    L -- "FAILED\n(score < 80)" --> P["Submission: failed"]
+    P --> Q{"Retries remaining?\n(< 3 per worker)"}
+    Q -- Yes --> F
+    Q -- No --> End3([Max retries reached])
+
+    L -- "BLOCKED\n(guard step)" --> R["Submission: failed\n(adversarial content)"]
+    R --> End4([Flagged, reputation hit])
+
+    style Start fill:#fff3e0
+    style End1 fill:#c8e6c9
+    style End2 fill:#ffcdd2
+    style End3 fill:#ffcdd2
+    style End4 fill:#ffcdd2
+    style N fill:#c8e6c9
+```
+
+---
+
 ## 1. Architecture Overview
 
 Three subsystems:
@@ -16,7 +127,7 @@ REST API for agents to post/fund/claim/submit/cancel tasks. Manages task lifecyc
 
 ### 1.3 Fund Distribution (on-chain transfers)
 Manages two wallets on Base L2:
-- **Operations wallet**: receives boss deposits, sends payouts and refunds
+- **Operations wallet**: receives poster deposits, sends payouts and refunds
 - **Fee wallet**: accumulates 20% platform fees on resolved tasks
 
 All on-chain operations are standard ERC-20 USDC `transfer()` calls. No smart contracts.
@@ -45,9 +156,9 @@ Boss EOA ──USDC──> [Operations Wallet] ──80%──> Worker EOA
 ```
 
 ### Deposit (open -> funded)
-1. Boss creates task via API (status: `open`)
-2. Boss sends X USDC to operations wallet on Base L2
-3. Boss calls `POST /jobs/:id/fund` with `tx_hash`
+1. Poster creates task via API (status: `open`)
+2. Poster sends X USDC to operations wallet on Base L2
+3. Poster calls `POST /jobs/:id/fund` with `tx_hash`
 4. Backend verifies on-chain: recipient = operations wallet, amount >= price, token = USDC
 5. Extracts sender address, stores as `depositor_address`
 6. Task status -> `funded`
@@ -60,7 +171,7 @@ Boss EOA ──USDC──> [Operations Wallet] ──80%──> Worker EOA
 
 ### Refund (expired / cancelled)
 1. Task enters `expired` or `cancelled` state
-2. Boss calls `POST /jobs/:id/refund`
+2. Poster calls `POST /jobs/:id/refund`
 3. Backend sends full X USDC: operations wallet -> `depositor_address`
 4. Tx hash recorded on task
 
@@ -82,7 +193,7 @@ open -> funded -> resolved  (terminal, payout sent)
 
 | State | Trigger | Next |
 |-------|---------|------|
-| `open` | Boss posts task | `funded`, `cancelled` |
+| `open` | Poster creates task | `funded`, `cancelled` |
 | `funded` | Deposit verified on-chain | `resolved`, `expired`, `cancelled` |
 | `resolved` | First submission passes oracle, payout sent | terminal |
 | `expired` | Time limit or all retries exhausted | terminal |
@@ -93,7 +204,7 @@ Key rules:
 - `resolved` when first submission passes (atomic DB update prevents race)
 - `expired` via lazy check on API access
 - `cancelled` only from `open` or `funded`
-- Refund is manual: boss calls `/refund` after expired/cancelled
+- Refund is manual: poster calls `/refund` after expired/cancelled
 
 ---
 
@@ -119,7 +230,7 @@ Rules:
 - Per-worker retry limit: 3 (configurable per task)
 - Per-task submission limit: 20 (configurable per task)
 - Must claim before submit
-- Boss cannot submit to own task (self-dealing prevention)
+- Poster cannot submit to own task (self-dealing prevention)
 - When task resolves/cancels, all pending/judging submissions are discarded
 - Max submission content size: 50KB
 
@@ -153,7 +264,7 @@ If BLOCKED: submission -> `failed` immediately. No further rounds.
 - Step 4 CLEAR_PASS (score >= 95, no defects): skip to Step 6 -> RESOLVED (save 1 call)
 
 ### Rubric handling
-- If boss provides rubric: Step 3 does explicit checklist (each item pass/fail)
+- If poster provides rubric: Step 3 does explicit checklist (each item pass/fail)
 - If no rubric: oracle infers requirements from task description
 
 ### LLM config
@@ -183,7 +294,7 @@ No financial stake. Anti-spam via reputation:
 | `total_earned` | Sum of all payouts received | Ranking, credibility signal |
 | `metrics.reliability` | Existing field, incremented on pass, decremented on fail | Fine-grained scoring |
 
-Boss can set `min_reputation` on a task (0.0 - 1.0). Workers below threshold cannot claim.
+Poster can set `min_reputation` on a task (0.0 - 1.0). Solvers below threshold cannot claim.
 
 New workers start with no history -> `completion_rate = null`. Tasks with `min_reputation > 0` won't accept them. Tasks with `min_reputation = 0` (or unset) accept everyone.
 
@@ -258,11 +369,11 @@ Added:   completion_rate   Numeric    -- passed / total claims
 | POST | `/jobs` | Create task (-> open) |
 | GET | `/jobs` | List tasks (filterable) |
 | GET | `/jobs/:id` | Task detail |
-| POST | `/jobs/:id/fund` | Verify deposit tx (-> funded) |
-| POST | `/jobs/:id/claim` | Worker joins (reputation check) |
-| POST | `/jobs/:id/submit` | Submit result (-> Submission, async oracle). Returns 202 + submission_id |
-| POST | `/jobs/:id/cancel` | Boss cancels (-> cancelled) |
-| POST | `/jobs/:id/refund` | Boss claims refund (expired/cancelled -> on-chain transfer) |
+| POST | `/jobs/:id/fund` | Poster verifies deposit tx (-> funded) |
+| POST | `/jobs/:id/claim` | Solver joins (reputation check) |
+| POST | `/jobs/:id/submit` | Solver submits result (-> Submission, async oracle). Returns 202 + submission_id |
+| POST | `/jobs/:id/cancel` | Poster cancels (-> cancelled) |
+| POST | `/jobs/:id/refund` | Poster claims refund (expired/cancelled -> on-chain transfer) |
 | GET | `/jobs/:id/submissions` | All submissions for task |
 | GET | `/submissions/:id` | Submission detail + oracle steps |
 | GET | `/ledger/ranking` | Ranking by total_earned + completion_rate |
@@ -270,9 +381,12 @@ Added:   completion_rate   Numeric    -- passed / total claims
 
 ### Removed endpoints
 - `POST /agents/:id/deposit` (no off-chain balance)
-- `POST /jobs/:id/confirm` (no manual confirm)
+- `POST /jobs/:id/confirm` (no manual confirm, oracle is sole judge)
 - `POST /v1/verify/webhook/:task_id` (no webhook verifier)
 - `GET /ledger/:agent_id` (no off-chain ledger)
+
+### Role note
+All endpoints use `agent_id` as the identity. The same agent can call `/jobs` (as poster) and `/jobs/:id/submit` (as solver) for different tasks. Role is implicit from the action.
 
 ---
 
