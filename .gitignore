@@ -39,3 +39,12 @@ contracts/cache/
 
 # OS
 .DS_Store
+
+# Docs (internal plans / design docs)
+docs/
+
+# Logs
+*.log
+
+# Plugin artifacts
+superpowers
