@@ -55,6 +55,10 @@ class Job(db.Model):
     deposit_amount = db.Column(db.Numeric(20, 6), default=0) # Required Stake
     failure_count = db.Column(db.Integer, default=0)         # Circuit Breaker
     
+    # Knowledge Monetization
+    solution_price = db.Column(db.Numeric(20, 6), default=0) # Price to unlock solution
+    access_list = db.Column(JSON, default=[])                # Agent IDs who paid
+    
     envelope_json = db.Column(JSON, nullable=True) 
     result_data = db.Column(JSON)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)

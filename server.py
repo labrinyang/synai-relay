@@ -62,6 +62,18 @@ with app.app_context():
                 print("[Relay] Adding failure_count to jobs table...")
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN failure_count INTEGER DEFAULT 0"))
 
+            if 'solution_price' not in existing_job_columns:
+                print("[Relay] Adding solution_price to jobs table...")
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN solution_price DECIMAL(20,6) DEFAULT 0"))
+
+            if 'access_list' not in existing_job_columns:
+                print("[Relay] Adding access_list to jobs table...")
+                # SQLite workaround for JSON
+                try:
+                    conn.execute(text("ALTER TABLE jobs ADD COLUMN access_list JSON DEFAULT '[]'"))
+                except:
+                    conn.execute(text("ALTER TABLE jobs ADD COLUMN access_list TEXT DEFAULT '[]'"))
+
             # Check Agent table columns for metrics
             if 'metrics' not in existing_columns:
                 print("[Relay] Adding metrics to agents table...")
@@ -554,6 +566,25 @@ def list_jobs():
 def get_job(task_id):
     job = Job.query.filter_by(task_id=task_id).first()
     if job:
+        # Knowledge Monetization: Access Control
+        can_access = True
+        buyer_id = request.args.get('buyer_id') or request.headers.get('X-Agent-ID')
+        
+        # Determine if result should be hidden
+        # 1. Job must be completed
+        # 2. If solution_price > 0, check access_list
+        if job.status == 'completed' and job.solution_price > 0:
+            access_list = job.access_list or []
+            is_owner = (buyer_id == job.buyer_id) or (buyer_id == job.claimed_by)
+            has_paid = buyer_id in access_list
+            
+            if not (is_owner or has_paid):
+                can_access = False
+
+        result = job.result_data
+        if not can_access:
+            result = {"preview": "LOCKED CONTENT", "buy_to_unlock": float(job.solution_price)}
+
         return jsonify({
             "task_id": str(job.task_id),
             "title": job.title,
@@ -561,9 +592,61 @@ def get_job(task_id):
             "price": float(job.price),
             "status": job.status,
             "claimed_by": job.claimed_by,
-            "result": job.result_data
+            "result": result,
+            "solution_price": float(job.solution_price),
+            "is_locked": not can_access
         }), 200
     return jsonify({"error": "Job not found"}), 404
+
+@app.route('/jobs/<task_id>/unlock', methods=['POST'])
+def unlock_solution(task_id):
+    buyer_id = request.json.get('agent_id')
+    if not buyer_id:
+        return jsonify({"error": "Agent ID required"}), 400
+        
+    job = Job.query.filter_by(task_id=task_id).first()
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+        
+    if job.status != 'completed':
+        return jsonify({"error": "Solution not ready (Job not completed)"}), 400
+        
+    if job.solution_price <= 0:
+        return jsonify({"status": "success", "message": "Solution is free"}), 200
+        
+    access_list = list(job.access_list or [])
+    if buyer_id in access_list:
+        return jsonify({"status": "success", "message": "Already unlocked"}), 200
+        
+    # Financial Transaction
+    buyer = Agent.query.filter_by(agent_id=buyer_id).first()
+    if not buyer or buyer.balance < job.solution_price:
+        return jsonify({"error": "Insufficient funds"}), 402
+        
+    # Transfer: Buyer -> Solver (80%) + Platform (20%)
+    price = job.solution_price
+    platform_fee = price * Decimal('0.20')
+    solver_payout = price * Decimal('0.80')
+    
+    solver = Agent.query.filter_by(agent_id=job.claimed_by).first()
+    
+    buyer.balance -= price
+    if solver:
+        solver.balance += solver_payout
+        
+    # Update Ledger
+    db.session.add(LedgerEntry(source_id=buyer_id, target_id=job.claimed_by, amount=solver_payout, transaction_type='solution_purchase', task_id=task_id))
+    db.session.add(LedgerEntry(source_id=buyer_id, target_id='platform_admin', amount=platform_fee, transaction_type='platform_fee', task_id=task_id))
+    
+    # Update Access List
+    access_list.append(buyer_id)
+    job.access_list = access_list # specific for SQLAlchemy JSON mutable tracking?
+    # Simple fix: reassign
+    # Actually, SQLAlchemy tracks mutation on JSON if using mutable extension, but reassign is safer
+    
+    db.session.commit()
+    
+    return jsonify({"status": "success", "message": "Solution unlocked"}), 200
 
 # Agent Adoption Verification (Tweet-to-Adopt)
 @app.route('/share/job/<task_id>', methods=['GET'])

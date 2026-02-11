@@ -15,6 +15,9 @@
             --cyan: #00f3ff;
             --violet: #bc13fe;
             --green: #00ff41;
+            --gold: #ffd700;
+            --link-color: #0074D9;
+            --green: #00ff41;
             --link-color: #0074D9;
             --text-main: #e1e1e1;
             --text-dim: #777;
@@ -119,6 +122,50 @@
             margin-bottom: 20px;
             backdrop-filter: blur(10px);
             transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .task-card.premium {
+            border: 1px solid var(--gold);
+            box-shadow: 0 0 15px rgba(255, 215, 0, 0.1);
+        }
+
+        .locked-content {
+            filter: blur(8px);
+            user-select: none;
+            opacity: 0.5;
+            transition: 0.5s;
+        }
+
+        .unlock-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.4);
+            z-index: 10;
+        }
+
+        .unlock-btn {
+            background: var(--gold);
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            font-weight: 800;
+            cursor: pointer;
+            border-radius: 4px;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.4);
+            transition: 0.2s;
+        }
+
+        .unlock-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 30px rgba(255, 215, 0, 0.6);
         }
 
         .task-card:hover {
@@ -319,18 +366,25 @@
                 const jobList = document.getElementById('job-list');
 
                 jobList.innerHTML = jobs.reverse().map(j => `
-                    <div class="task-card">
+                    <div class="task-card ${j.solution_price > 0 ? 'premium' : ''}">
                         <span class="task-title">${j.title}</span>
                         <div class="task-meta">
                             ID: ${j.task_id.slice(0, 8)}... • STATUS: <span class="${j.status === 'paused' ? 'highlight' : ''}">${j.status.toUpperCase()}</span>
-                            ${j.claimed_by ? `• WORKER: ${j.claimed_by.slice(0,8)}...` : ''}
+                            ${j.claimed_by ? `• WORKER: ${j.claimed_by.slice(0, 8)}...` : ''}
                             ${j.failure_count > 0 ? `• FAILS: ${j.failure_count}` : ''}
                         </div>
                         
-                        ${j.result_data?.webhook_payload ? 
-                            `<div style="font-size:10px; color:#aaa; margin-bottom:10px; padding:8px; background:rgba(255,255,255,0.05); border-radius:4px;">
+                        ${j.is_locked ?
+                        `<div style="font-size:10px; color:var(--gold); margin-bottom:10px; padding:8px; background:rgba(255,215,0,0.1); border-radius:4px; text-align:center;">
+                                🔒 PREMIUM SOLUTION AVAILABLE (${j.solution_price} USDC)
+                             </div>`
+                        : ''
+                    }
+
+                        ${j.result_data?.webhook_payload ?
+                        `<div style="font-size:10px; color:#aaa; margin-bottom:10px; padding:8px; background:rgba(255,255,255,0.05); border-radius:4px;">
                                 📡 WEBHOOK PAYLOAD: ${JSON.stringify(j.result_data.webhook_payload).slice(0, 50)}...
-                             </div>` 
+                             </div>`
                         : ''}
 
                         <div class="price-tag">
@@ -343,7 +397,11 @@
                                 <span style="font-family: 'JetBrains Mono', monospace; margin-left:15px;">${j.price} USDC</span>
                             </div>
                             <div style="display:flex; gap:10px;">
-                                <button class="share-btn" onclick="window.open('/share/job/${j.task_id}')">🔗 Share</button>
+                                ${j.is_locked ?
+                        `<button class="unlock-btn" onclick="unlockSolution('${j.task_id}', ${j.solution_price})">UNLOCK ($${j.solution_price})</button>`
+                        :
+                        `<button class="share-btn" onclick="window.open('/share/job/${j.task_id}')">🔗 Share</button>`
+                    }
                             </div>
                         </div>
                     </div>
@@ -351,6 +409,28 @@
 
             } catch (err) {
                 console.error("Failed to fetch SYNAI data:", err);
+            }
+        }
+
+        async function unlockSolution(taskId, price) {
+            const agentId = prompt(`Confirm payment of ${price} USDC to unlock solution? Enter your Agent ID:`);
+            if (!agentId) return;
+
+            try {
+                const resp = await fetch(`/jobs/${taskId}/unlock`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agent_id: agentId })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    alert('SUCCESS: Solution Unlocked!');
+                    updateDashboard();
+                } else {
+                    alert('FAILED: ' + data.error);
+                }
+            } catch (err) {
+                alert('Error: ' + err);
             }
         }
 
