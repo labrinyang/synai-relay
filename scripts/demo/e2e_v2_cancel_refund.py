@@ -137,26 +137,29 @@ def main():
     check("Fund returns 200", r.status_code == 200, f"got {r.status_code}")
     check("Response status=funded", r.json().get("status") == "funded")
 
-    section("6. Attempt Cancel on Funded Job (should fail)")
+    section("6. Cancel Funded Job (C2: now allowed)")
     r = requests.post(f"{BASE_URL}/jobs/{funded_task_id}/cancel", json={
         "buyer_id": BOSS_ID,
     })
-    check("Cancel funded job returns 400", r.status_code == 400, f"got {r.status_code}")
-    error_msg = r.json().get("error", "")
-    check("Error mentions current status", "funded" in error_msg.lower(), f"error: {error_msg}")
+    check("Cancel funded job returns 200", r.status_code == 200, f"got {r.status_code}")
+    check("Response status=cancelled", r.json().get("status") == "cancelled")
+
+    # Verify job status via GET
+    r = requests.get(f"{BASE_URL}/jobs/{funded_task_id}")
+    check("GET /jobs/<id> returns 200", r.status_code == 200)
+    check("Job status is cancelled", r.json().get("status") == "cancelled")
 
     # ==================================================================
-    # SCENARIO C: Refund on a funded (non-expired, non-cancelled) job
-    #   should fail because refund requires status in (expired, cancelled)
+    # SCENARIO C: Refund on the cancelled funded job
+    #   Now that the funded job is cancelled, refund should succeed
     # ==================================================================
-    section("7. Attempt Refund on Funded Job (should fail)")
+    section("7. Refund Cancelled (Funded) Job")
     r = requests.post(f"{BASE_URL}/jobs/{funded_task_id}/refund", json={
         "buyer_id": BOSS_ID,
     })
-    check("Refund on funded job returns 400", r.status_code == 400, f"got {r.status_code}")
-    refund_error = r.json().get("error", "")
-    check("Error mentions not refundable", "not refundable" in refund_error.lower() or "funded" in refund_error.lower(),
-          f"error: {refund_error}")
+    check("Refund on cancelled funded job returns 200", r.status_code == 200, f"got {r.status_code}")
+    refund_data = r.json()
+    check("Response has refund info", "status" in refund_data)
 
     # ==================================================================
     # SCENARIO D: Refund on the already-cancelled (unfunded) job
