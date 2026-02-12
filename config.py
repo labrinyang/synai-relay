@@ -3,10 +3,11 @@ import os
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class Config:
-    SQLALCHEMY_DATABASE_URI = os.environ.get(
-        'DATABASE_URL',
-        f'sqlite:///{os.path.join(_BASE_DIR, "atp_dev.db")}'
-    )
+    # DigitalOcean provides postgres://, but SQLAlchemy 2.0+ requires postgresql://
+    _raw_db_url = os.environ.get('DATABASE_URL', '')
+    if _raw_db_url.startswith('postgres://'):
+        _raw_db_url = _raw_db_url.replace('postgres://', 'postgresql://', 1)
+    SQLALCHEMY_DATABASE_URI = _raw_db_url or f'sqlite:///{os.path.join(_BASE_DIR, "atp_dev.db")}'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
 
