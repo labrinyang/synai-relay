@@ -1050,7 +1050,7 @@
         }
 
         /* ── Mobile stats hero (visible <600px only) ── */
-        .stats-hero {
+        .stats-hero-wrap {
             display: none;
         }
 
@@ -1063,13 +1063,90 @@
             .header-stats {
                 display: none;
             }
-            .stats-hero {
+
+            /* ── Collapsible wrapper ── */
+            .stats-hero-wrap {
+                display: block;
+                padding: 10px 12px 0;
+            }
+
+            /* ── Collapsed bar ── */
+            .stats-collapsed {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                padding: 10px 14px;
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                cursor: pointer;
+                -webkit-tap-highlight-color: transparent;
+                transition: border-color 0.2s;
+            }
+            .stats-collapsed:active {
+                border-color: rgba(255, 255, 255, 0.15);
+            }
+            .stats-collapsed .c-stat {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                font-family: 'JetBrains Mono', monospace;
+            }
+            .stats-collapsed .c-dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                flex-shrink: 0;
+            }
+            .stats-collapsed .c-dot.cyan   { background: var(--cyan); }
+            .stats-collapsed .c-dot.green  { background: var(--green); }
+            .stats-collapsed .c-dot.violet { background: var(--violet); }
+            .stats-collapsed .c-dot.gold   { background: var(--gold); }
+            .stats-collapsed .c-val {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--text-main);
+            }
+            .stats-collapsed .c-lbl {
+                font-size: 9px;
+                color: var(--text-dim);
+                text-transform: uppercase;
+            }
+            .stats-collapsed .c-chevron {
+                margin-left: auto;
+                font-size: 10px;
+                color: var(--text-dim);
+                transition: transform 0.3s;
+                flex-shrink: 0;
+            }
+
+            /* ── Expanded grid ── */
+            .stats-hero-grid {
                 display: grid;
                 grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
                 gap: 10px;
-                padding: 16px 12px 0;
+                overflow: hidden;
+                max-height: 0;
+                opacity: 0;
+                transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                            opacity 0.25s ease,
+                            margin-top 0.35s ease;
+                margin-top: 0;
             }
-            .stats-hero .hero-card {
+            .stats-hero-wrap.expanded .stats-hero-grid {
+                max-height: 200px;
+                opacity: 1;
+                margin-top: 10px;
+            }
+            .stats-hero-wrap.expanded .c-chevron {
+                transform: rotate(180deg);
+            }
+            /* Hide collapsed bar values when expanded (optional: keep visible) */
+            .stats-hero-wrap.expanded .stats-collapsed {
+                border-color: rgba(255, 255, 255, 0.12);
+            }
+
+            .hero-card {
                 background: rgba(255, 255, 255, 0.03);
                 border: 1px solid var(--border);
                 border-radius: 12px;
@@ -1078,45 +1155,41 @@
                 flex-direction: column;
                 gap: 8px;
                 backdrop-filter: blur(8px);
-                transition: border-color 0.2s;
             }
-            .stats-hero .hero-card:active {
-                border-color: rgba(255, 255, 255, 0.15);
-            }
-            .stats-hero .hero-top {
+            .hero-top {
                 display: flex;
                 align-items: center;
                 gap: 8px;
             }
-            .stats-hero .hero-dot {
+            .hero-dot {
                 width: 8px;
                 height: 8px;
                 border-radius: 50%;
                 flex-shrink: 0;
             }
-            .stats-hero .hero-dot.cyan   { background: var(--cyan); box-shadow: 0 0 8px rgba(0,243,255,0.4); }
-            .stats-hero .hero-dot.green  { background: var(--green); box-shadow: 0 0 8px rgba(0,255,65,0.4); }
-            .stats-hero .hero-dot.violet { background: var(--violet); box-shadow: 0 0 8px rgba(188,19,254,0.4); }
-            .stats-hero .hero-dot.gold   { background: var(--gold); box-shadow: 0 0 8px rgba(255,215,0,0.4); }
-            .stats-hero .hero-label {
+            .hero-dot.cyan   { background: var(--cyan); box-shadow: 0 0 8px rgba(0,243,255,0.4); }
+            .hero-dot.green  { background: var(--green); box-shadow: 0 0 8px rgba(0,255,65,0.4); }
+            .hero-dot.violet { background: var(--violet); box-shadow: 0 0 8px rgba(188,19,254,0.4); }
+            .hero-dot.gold   { background: var(--gold); box-shadow: 0 0 8px rgba(255,215,0,0.4); }
+            .hero-label {
                 font-family: 'JetBrains Mono', monospace;
                 font-size: 10px;
                 color: var(--text-dim);
                 text-transform: uppercase;
                 letter-spacing: 1px;
             }
-            .stats-hero .hero-val {
+            .hero-val {
                 font-family: 'JetBrains Mono', monospace;
                 font-size: 22px;
                 font-weight: 700;
                 line-height: 1;
                 padding-left: 16px;
             }
-            .stats-hero .hero-val.cyan   { color: var(--cyan); }
-            .stats-hero .hero-val.green  { color: var(--green); }
-            .stats-hero .hero-val.violet { color: var(--violet); }
-            .stats-hero .hero-val.gold   { color: var(--gold); }
-            .stats-hero .hero-unit {
+            .hero-val.cyan   { color: var(--cyan); }
+            .hero-val.green  { color: var(--green); }
+            .hero-val.violet { color: var(--violet); }
+            .hero-val.gold   { color: var(--gold); }
+            .hero-unit {
                 font-size: 10px;
                 opacity: 0.5;
                 font-weight: 400;
@@ -1285,23 +1358,34 @@
         </nav>
     </header>
 
-    <!-- Mobile stats hero (visible <600px, first content block) -->
-    <section class="stats-hero" id="stats-hero">
-        <div class="hero-card">
-            <div class="hero-top"><span class="hero-dot cyan"></span><span class="hero-label">Agents</span></div>
-            <span class="hero-val cyan" id="hero-agents">--</span>
+    <!-- Mobile stats hero (collapsible, visible <600px) -->
+    <section class="stats-hero-wrap expanded" id="stats-hero-wrap">
+        <!-- Collapsed: compact single-line bar -->
+        <div class="stats-collapsed" onclick="toggleStatsHero()">
+            <div class="c-stat"><span class="c-dot cyan"></span><span class="c-val" id="c-agents">--</span></div>
+            <div class="c-stat"><span class="c-dot green"></span><span class="c-val" id="c-active">--</span></div>
+            <div class="c-stat"><span class="c-dot violet"></span><span class="c-val" id="c-volume">--</span></div>
+            <div class="c-stat"><span class="c-dot gold"></span><span class="c-val" id="c-funded">--</span></div>
+            <span class="c-chevron">&#9660;</span>
         </div>
-        <div class="hero-card">
-            <div class="hero-top"><span class="hero-dot green"></span><span class="hero-label">Active</span></div>
-            <span class="hero-val green" id="hero-active">--</span>
-        </div>
-        <div class="hero-card">
-            <div class="hero-top"><span class="hero-dot violet"></span><span class="hero-label">Volume</span></div>
-            <span class="hero-val violet" id="hero-volume">--</span>
-        </div>
-        <div class="hero-card">
-            <div class="hero-top"><span class="hero-dot gold"></span><span class="hero-label">Funded</span></div>
-            <span class="hero-val gold" id="hero-funded">--</span>
+        <!-- Expanded: full 2x2 grid -->
+        <div class="stats-hero-grid">
+            <div class="hero-card">
+                <div class="hero-top"><span class="hero-dot cyan"></span><span class="hero-label">Agents</span></div>
+                <span class="hero-val cyan" id="hero-agents">--</span>
+            </div>
+            <div class="hero-card">
+                <div class="hero-top"><span class="hero-dot green"></span><span class="hero-label">Active</span></div>
+                <span class="hero-val green" id="hero-active">--</span>
+            </div>
+            <div class="hero-card">
+                <div class="hero-top"><span class="hero-dot violet"></span><span class="hero-label">Volume</span></div>
+                <span class="hero-val violet" id="hero-volume">--</span>
+            </div>
+            <div class="hero-card">
+                <div class="hero-top"><span class="hero-dot gold"></span><span class="hero-label">Funded</span></div>
+                <span class="hero-val gold" id="hero-funded">--</span>
+            </div>
         </div>
     </section>
 
@@ -1415,6 +1499,24 @@
     </div>
 
     <script>
+        /* ── Mobile stats toggle ── */
+        function toggleStatsHero() {
+            const wrap = document.getElementById('stats-hero-wrap');
+            if (!wrap) return;
+            wrap.classList.toggle('expanded');
+            try { localStorage.setItem('stats-hero-expanded', wrap.classList.contains('expanded') ? '1' : '0'); } catch(e) {}
+        }
+        // Restore saved state
+        (function() {
+            try {
+                const saved = localStorage.getItem('stats-hero-expanded');
+                if (saved === '0') {
+                    const wrap = document.getElementById('stats-hero-wrap');
+                    if (wrap) wrap.classList.remove('expanded');
+                }
+            } catch(e) {}
+        })();
+
         /* ── UI Logger ── */
         const UILog = {
             _ts() {
@@ -1658,7 +1760,15 @@
                 volEl.textContent = '--';
             }
             document.getElementById('stat-funded').textContent = funded;
-            // Mobile hero cards
+            // Mobile: collapsed bar
+            const ca = document.getElementById('c-agents');
+            if (ca) {
+                ca.textContent = agents;
+                document.getElementById('c-active').textContent = active;
+                document.getElementById('c-volume').textContent = volFmt;
+                document.getElementById('c-funded').textContent = funded;
+            }
+            // Mobile: expanded hero cards
             const ha = document.getElementById('hero-agents');
             if (ha) {
                 ha.textContent = agents;
