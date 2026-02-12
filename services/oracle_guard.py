@@ -22,7 +22,7 @@ INJECTION_PATTERNS = [
     r'(must|should|always)\s+(give|assign|score|rate|accept|approve|pass)',
     r'system\s*prompt',
     r'jailbreak',
-    r'(as|being)\s+an?\s+(ai|evaluator|judge|assistant)',
+    r'(as|being)\s+an?\s+(ai|evaluator|judge|reviewer|grader|assistant)',
     # Chinese patterns
     r'忽略.{0,10}(之前|以前|先前|所有).{0,10}(指令|规则|标准|提示)',
     r'(给|打|输出|设置|返回).{0,10}(满分|100分|最高分)',
@@ -46,6 +46,16 @@ INJECTION_PATTERNS = [
     r'(지시|규칙|명령).{0,5}(무시|무효|거부)',
     # Russian
     r'(игнорир|проигнорир).{0,10}(инструкц|правил|указан)',
+    # Delimiter escape attempts (prevent breaking out of <SUBMISSION> tags)
+    r'</?SUBMISSION>',
+    r'&lt;/?SUBMISSION&gt;',
+    # Score manipulation via indirect phrasing
+    r'(this|the)\s+(answer|submission|response|work)\s+(is|deserves?)\s+(perfect|excellent|flawless|100)',
+    r'(clearly|obviously|undeniably)\s+(meets?|exceeds?|satisf)',
+    # Meta-evaluation manipulation
+    r'(evaluation|grading|scoring)\s+(criteria|rubric|standards?)\s+(should|must|need)',
+    # Instructional framing targeting specific pipeline steps
+    r'(step\s+\d|phase\s+\d).{0,20}(should|must|always)\s+(pass|accept|approve|score)',
 ]
 
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS]
