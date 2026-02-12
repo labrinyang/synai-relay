@@ -32,6 +32,7 @@ ENV/
 # Environment Variables
 .env
 .flaskenv
+.ralph/
 
 # Foundry build artifacts
 contracts/out/
@@ -40,7 +41,7 @@ contracts/cache/
 # OS
 .DS_Store
 
-# Docs (internal plans / design docs)
+# Docs — track analysis/deliverable docs, ignore internal design docs
 docs/
 
 # Logs

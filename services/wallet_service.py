@@ -3,9 +3,24 @@ Base L2 USDC transfer service.
 Handles: deposit verification, payout, fee transfer, refund.
 Gracefully degrades when RPC/keys not configured (off-chain dev mode).
 """
+import logging
 import os
 import threading
 from decimal import Decimal
+
+logger = logging.getLogger('relay.wallet')
+
+
+class TransactionPendingError(Exception):
+    """Raised when wait_for_transaction_receipt times out but the tx may still
+    succeed on-chain.  Callers should treat the tx as *pending* rather than
+    definitively failed so they don't trigger a retry that would cause a double
+    payment.
+    """
+    def __init__(self, tx_hash: str):
+        self.tx_hash = tx_hash
+        super().__init__(f"Transaction {tx_hash} pending (receipt timeout)")
+
 
 # Standard USDC ERC-20 ABI (only Transfer event + transfer function needed)
 USDC_ABI = [
@@ -52,6 +67,12 @@ class WalletService:
         self.usdc_decimals = 6
         # H5: Nonce lock for concurrent transactions
         self._tx_lock = threading.Lock()
+        # F03: Local nonce counter to prevent nonce collisions on concurrent payouts
+        self._local_nonce = None
+        # P2-8: TTL cache for is_connected() to avoid RPC round-trips on every call
+        self._connected_cache = None
+        self._connected_cache_time = 0
+        self._connected_cache_ttl = 30  # 30 seconds
 
         if self.rpc_url and self.usdc_address:
             try:
@@ -65,16 +86,63 @@ class WalletService:
                 if self.ops_key:
                     acct = self.w3.eth.account.from_key(self.ops_key)
                     self.ops_address = acct.address
-                print(f"[WalletService] Connected to {self.rpc_url}, ops={self.ops_address}")
+                logger.info("Connected to %s, ops=%s", self.rpc_url, self.ops_address)
             except Exception as e:
-                print(f"[WalletService] Init failed: {e}. Running in off-chain mode.")
+                logger.warning("Init failed: %s. Running in off-chain mode.", e)
                 self.w3 = None
 
     def is_connected(self) -> bool:
-        return self.w3 is not None and self.ops_key and self.w3.is_connected()
+        """Check if connected to chain. Caches result for 30 seconds."""
+        import time
+        now = time.time()
+        cache = getattr(self, '_connected_cache', None)
+        cache_time = getattr(self, '_connected_cache_time', 0)
+        cache_ttl = getattr(self, '_connected_cache_ttl', 30)
+        if cache is not None and (now - cache_time) < cache_ttl:
+            return cache
+        result = self.w3 is not None and bool(self.ops_key) and self.w3.is_connected()
+        self._connected_cache = result
+        self._connected_cache_time = now
+        return result
 
     def get_ops_address(self) -> str:
         return self.ops_address or ''
+
+    def __repr__(self):
+        rpc_display = self.rpc_url[:30] + ('...' if len(self.rpc_url) > 30 else '')
+        return (
+            f"WalletService(rpc={rpc_display}, "
+            f"ops={self.ops_address}, "
+            f"connected={self.is_connected()})"
+        )
+
+    def estimate_gas(self, to_address: str, amount: Decimal) -> dict:
+        """Estimate gas for a USDC transfer. Returns gas info dict.
+        Used by both Operator (before send) and API (for Buyer/Worker display).
+        """
+        if not self.is_connected():
+            return {"error": "Chain not connected"}
+
+        from web3 import Web3
+        raw_amount = int(amount * Decimal(10 ** self.usdc_decimals))
+        to_addr = Web3.to_checksum_address(to_address)
+
+        try:
+            gas_estimate = self.usdc_contract.functions.transfer(
+                to_addr, raw_amount
+            ).estimate_gas({'from': self.ops_address})
+            gas_limit = int(gas_estimate * 1.2)  # 20% buffer
+            gas_price = self.w3.eth.gas_price
+
+            return {
+                "gas_limit": gas_limit,
+                "gas_price_wei": gas_price,
+                "gas_price_gwei": float(Web3.from_wei(gas_price, 'gwei')),
+                "estimated_cost_wei": gas_limit * gas_price,
+                "estimated_cost_eth": float(Web3.from_wei(gas_limit * gas_price, 'ether')),
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
     def verify_deposit(self, tx_hash: str, expected_amount: Decimal) -> dict:
         """Verify a USDC deposit tx. Returns {valid, depositor, amount, error}."""
@@ -100,11 +168,20 @@ class WalletService:
                     raw_amount = t['args']['value']
                     amount = Decimal(raw_amount) / Decimal(10 ** self.usdc_decimals)
                     if amount >= expected_amount:
-                        return {
+                        result = {
                             "valid": True,
                             "depositor": t['args']['from'],
                             "amount": amount,
                         }
+                        # G22: Flag overpayment
+                        if amount > expected_amount:
+                            overpayment = amount - expected_amount
+                            result["overpayment"] = float(overpayment)
+                            logger.warning(
+                                "Overpayment detected: tx=%s amount=%s expected=%s excess=%s",
+                                tx_hash, amount, expected_amount, overpayment,
+                            )
+                        return result
                     else:
                         return {"valid": False, "error": f"Amount {amount} < {expected_amount}"}
 
@@ -121,40 +198,103 @@ class WalletService:
         raw_amount = int(amount * Decimal(10 ** self.usdc_decimals))
         to_addr = Web3.to_checksum_address(to_address)
 
+        # Fetch real-time gas estimation before executing
+        gas_info = self.estimate_gas(to_address, amount)
+        if 'error' in gas_info:
+            raise RuntimeError(f"Gas estimation failed: {gas_info['error']}")
+        gas_limit = gas_info['gas_limit']
+        gas_price = gas_info['gas_price_wei']
+
+        logger.info(
+            "Gas estimate: limit=%d price=%d (%.4f Gwei) cost=%.8f ETH",
+            gas_limit, gas_price, gas_info['gas_price_gwei'],
+            gas_info['estimated_cost_eth'],
+        )
+
         # H5: Lock to prevent nonce collisions on concurrent transactions
+        # F03: Use a local nonce counter so back-to-back sends don't reuse the
+        #      same nonce (get_transaction_count('latest') only sees mined txs).
         with self._tx_lock:
+            if self._local_nonce is None:
+                self._local_nonce = self.w3.eth.get_transaction_count(
+                    self.ops_address, 'pending',
+                )
             tx = self.usdc_contract.functions.transfer(to_addr, raw_amount).build_transaction({
                 'from': self.ops_address,
-                'nonce': self.w3.eth.get_transaction_count(self.ops_address),
-                'gas': 100_000,
-                'gasPrice': self.w3.eth.gas_price,
+                'nonce': self._local_nonce,
+                'gas': gas_limit,
+                'gasPrice': gas_price,
             })
             signed = self.w3.eth.account.sign_transaction(tx, self.ops_key)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            try:
+                tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+                self._local_nonce += 1
+            except Exception:
+                # F03: Do NOT change nonce on failure — let the caller retry
+                # with the same nonce, or the stuck tx will eventually clear.
+                raise
+
+        # F07: Distinguish receipt-timeout (tx still pending on-chain) from a
+        #      definitive revert so callers don't mark it as "failed" and then
+        #      accidentally retry, creating a double payment.
+        try:
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        except Exception as e:
+            if 'timeout' in str(e).lower() or 'timed out' in str(e).lower() \
+                    or type(e).__name__ == 'TimeExhausted':
+                raise TransactionPendingError(tx_hash.hex()) from e
+            raise
 
         if receipt['status'] != 1:
             raise RuntimeError(f"USDC transfer reverted: {tx_hash.hex()}")
 
         return tx_hash.hex()
 
-    def payout(self, worker_address: str, task_price: Decimal) -> dict:
-        """Send 80% to worker, 20% to fee wallet. Returns tx hashes."""
-        worker_amount = task_price * Decimal('0.80')
-        fee_amount = task_price * Decimal('0.20')
+    def payout(self, worker_address: str, task_price: Decimal, fee_bps: int = 2000) -> dict:
+        """Send worker share to worker, fee share to fee wallet. Returns tx hashes.
+        fee_bps: fee in basis points (default 2000 = 20%)."""
+        # C5: Bounds validation
+        if fee_bps < 0 or fee_bps > 10000:
+            raise ValueError(f"fee_bps must be 0-10000, got {fee_bps}")
+        logger.info("Payout initiated: worker=%s amount=%s fee_bps=%d", worker_address, task_price, fee_bps)
+        fee_rate = Decimal(fee_bps) / Decimal(10000)
+        worker_amount = task_price * (Decimal(1) - fee_rate)
+        fee_amount = task_price * fee_rate
 
-        payout_tx = self.send_usdc(worker_address, worker_amount)
+        # F07: If the worker payout tx is still pending (receipt timeout), surface
+        #      that to the caller so it can set payout_status='pending_confirmation'
+        #      instead of 'failed', preventing accidental retry double-payments.
+        try:
+            payout_tx = self.send_usdc(worker_address, worker_amount)
+        except TransactionPendingError as e:
+            logger.warning("Worker payout tx pending (timeout): %s", e.tx_hash)
+            return {
+                "payout_tx": e.tx_hash,
+                "fee_tx": None,
+                "pending": True,
+                "error": str(e),
+            }
+
         try:
             fee_tx = self.send_usdc(self.fee_address, fee_amount)
+        except TransactionPendingError as e:
+            logger.warning("Fee transfer tx pending (timeout): %s", e.tx_hash)
+            return {
+                "payout_tx": payout_tx,
+                "fee_tx": e.tx_hash,
+                "pending": True,
+                "error": str(e),
+            }
         except Exception as e:
             # Worker paid but fee failed — log and return partial result
-            print(f"[WalletService] WARN: Fee transfer failed after payout: {e}")
+            logger.warning("Fee transfer failed after payout: %s", e)
             return {"payout_tx": payout_tx, "fee_tx": None, "fee_error": str(e)}
 
         return {"payout_tx": payout_tx, "fee_tx": fee_tx}
 
     def refund(self, depositor_address: str, amount: Decimal) -> str:
         """Refund full amount to depositor. Returns tx_hash."""
+        logger.info("Refund initiated: depositor=%s amount=%s", depositor_address, amount)
         return self.send_usdc(depositor_address, amount)
 
 
