@@ -29,6 +29,9 @@ def client():
     with app.app_context():
         db.create_all()
         yield app.test_client()
+        # Wait for any pending oracle evaluations to complete
+        from server import _oracle_executor
+        _oracle_executor.shutdown(wait=True)
         db.session.remove()
         db.drop_all()
 

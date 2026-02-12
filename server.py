@@ -116,6 +116,7 @@ def _add_request_id_header(response):
 class _ScheduledExecutor:
     """G18: Wrapper around ThreadPoolExecutor with error recovery and dead-letter logging."""
     def __init__(self, max_workers=4):
+        self._max_workers = max_workers
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='oracle')
         self._dead_letters = []  # Recent failures for monitoring
         self._lock = threading.Lock()
@@ -133,6 +134,15 @@ class _ScheduledExecutor:
             # Keep only last 100 failures
             if len(self._dead_letters) > 100:
                 self._dead_letters = self._dead_letters[-100:]
+
+    def shutdown(self, wait=True):
+        """Shutdown the executor, wait for pending tasks, then reinitialize the pool."""
+        if self._pool:
+            self._pool.shutdown(wait=wait)
+            self._pool = ThreadPoolExecutor(
+                max_workers=self._max_workers,
+                thread_name_prefix='oracle',
+            )
 
     @property
     def dead_letters(self):
