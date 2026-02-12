@@ -1,5 +1,5 @@
 import re as _re
-from models import db, Agent, Job, Submission
+from models import db, Agent, Job, Submission, JobParticipant
 
 
 class AgentService:
@@ -39,9 +39,7 @@ class AgentService:
         if not agent:
             return
         # Count tasks where this agent is a participant (claimed)
-        # M1: Use Python-level check for portability across DB engines
-        all_jobs = Job.query.filter(Job.participants.isnot(None)).all()
-        total_claims = sum(1 for j in all_jobs if agent_id in (j.participants or []))
+        total_claims = JobParticipant.query.filter_by(worker_id=agent_id).count()
         passed = db.session.query(db.func.count(Submission.id)).filter(
             Submission.worker_id == agent_id,
             Submission.status == 'passed',

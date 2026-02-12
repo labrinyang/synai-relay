@@ -7,11 +7,12 @@ Submission statuses: pending -> judging -> passed | failed
 """
 
 from flask import Flask, request, jsonify, g
-from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey
+from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant
 from config import Config
 from sqlalchemy.exc import IntegrityError
-from services.auth_service import generate_api_key, require_auth, require_buyer
+from services.auth_service import generate_api_key, require_auth, require_buyer, verify_api_key
 from services.rate_limiter import rate_limit, get_submit_limiter
+import re
 
 import json
 import logging
@@ -22,13 +23,31 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from decimal import Decimal, InvalidOperation
 
 # ---------------------------------------------------------------------------
-# Structured logging setup (G14)
+# Structured logging setup (G14, M7 fix: proper JSON escaping)
 # ---------------------------------------------------------------------------
 
+
+class _JsonFormatter(logging.Formatter):
+    """Produce valid JSON log lines even when message contains quotes/newlines."""
+    def format(self, record):
+        import json as _json
+        from flask import has_request_context
+        entry = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if has_request_context():
+            from flask import g as _g
+            rid = getattr(_g, 'request_id', None)
+            if rid:
+                entry["request_id"] = rid
+        return _json.dumps(entry)
+
+
 _log_handler = logging.StreamHandler()
-_log_handler.setFormatter(logging.Formatter(
-    '{"timestamp":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}'
-))
+_log_handler.setFormatter(_JsonFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
 logger = logging.getLogger('relay')
 
@@ -46,7 +65,11 @@ db.init_app(app)
 
 logger.info("Starting SYNAI Relay Protocol V2")
 if Config.DEV_MODE:
-    logger.warning("⚠️  DEV_MODE ENABLED — chain verification disabled, accepting any tx_hash")
+    logger.warning("DEV_MODE ENABLED — chain verification disabled, accepting any tx_hash")
+# C7: Warn about SQLite limitations
+if 'sqlite' in Config.SQLALCHEMY_DATABASE_URI:
+    logger.warning("SQLite detected — row-level locking (with_for_update) is NOT supported. "
+                    "Use PostgreSQL for production deployments.")
 
 with app.app_context():
     try:
@@ -75,8 +98,48 @@ if Config.DEV_MODE:
         response.headers['X-Dev-Mode'] = 'true'
         return response
 
+# G14: Correlation ID — attach unique request ID to every request
+@app.before_request
+def _attach_request_id():
+    import uuid as _uuid
+    rid = request.headers.get('X-Request-ID') or str(_uuid.uuid4())
+    g.request_id = rid
+
+@app.after_request
+def _add_request_id_header(response):
+    rid = getattr(g, 'request_id', None)
+    if rid:
+        response.headers['X-Request-ID'] = rid
+    return response
+
 # Thread pool for oracle evaluations with timeout support (G07)
-_oracle_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='oracle')
+class _ScheduledExecutor:
+    """G18: Wrapper around ThreadPoolExecutor with error recovery and dead-letter logging."""
+    def __init__(self, max_workers=4):
+        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='oracle')
+        self._dead_letters = []  # Recent failures for monitoring
+        self._lock = threading.Lock()
+
+    def submit(self, fn, *args, **kwargs):
+        return self._pool.submit(fn, *args, **kwargs)
+
+    def record_failure(self, submission_id: str, error: str):
+        with self._lock:
+            self._dead_letters.append({
+                "submission_id": submission_id,
+                "error": error,
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+            # Keep only last 100 failures
+            if len(self._dead_letters) > 100:
+                self._dead_letters = self._dead_letters[-100:]
+
+    @property
+    def dead_letters(self):
+        with self._lock:
+            return list(self._dead_letters)
+
+_oracle_executor = _ScheduledExecutor(max_workers=4)
 
 
 # ---------------------------------------------------------------------------
@@ -85,10 +148,13 @@ _oracle_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='oracle'
 
 def _expiry_checker_loop():
     """Background thread: check for expired funded jobs every 60 seconds."""
+    import time
+    consecutive_errors = 0
     while True:
         try:
-            import time
-            time.sleep(60)
+            # m6 fix: Exponential backoff on consecutive errors (60s, 120s, 240s, max 600s)
+            sleep_time = min(60 * (2 ** consecutive_errors), 600)
+            time.sleep(sleep_time)
             with app.app_context():
                 from services.job_service import JobService
                 now = datetime.datetime.now(datetime.timezone.utc)
@@ -100,13 +166,14 @@ def _expiry_checker_loop():
                 for job in expired_jobs:
                     if JobService.check_expiry(job):
                         logger.info("Proactively expired job %s", job.task_id)
-                        # Fire webhook
                         from services.webhook_service import fire_event
                         fire_event('job.expired', job.task_id, {"status": "expired"})
                 if expired_jobs:
                     db.session.commit()
+            consecutive_errors = 0  # Reset on success
         except Exception as e:
-            logger.error("Expiry checker error: %s", e)
+            consecutive_errors += 1
+            logger.error("Expiry checker error (consecutive=%d): %s", consecutive_errors, e)
 
 _expiry_thread = threading.Thread(target=_expiry_checker_loop, daemon=True, name='expiry-checker')
 _expiry_thread.start()
@@ -119,7 +186,8 @@ _expiry_thread.start()
 def _run_oracle(app, submission_id):
     """Background thread: guard check + 6-step oracle evaluation."""
     with app.app_context():
-        sub = Submission.query.get(submission_id)
+        # C1 fix: Re-read with lock to prevent race with timeout handler
+        sub = db.session.query(Submission).filter_by(id=submission_id).with_for_update().first()
         if not sub or sub.status != 'judging':
             return
 
@@ -151,6 +219,12 @@ def _run_oracle(app, submission_id):
             oracle = OracleService()
             result = oracle.evaluate(job.title, job.description, job.rubric, sub.content)
 
+            # C1 fix: Re-check status under lock before writing results
+            # (timeout handler may have set status='failed' while we were evaluating)
+            sub = db.session.query(Submission).filter_by(id=submission_id).with_for_update().first()
+            if not sub or sub.status != 'judging':
+                return  # Timeout handler already marked this submission
+
             sub.oracle_score = result['score']
             sub.oracle_reason = result['reason']
             sub.oracle_steps = (
@@ -158,9 +232,7 @@ def _run_oracle(app, submission_id):
             )
 
             if result['verdict'] == 'RESOLVED':
-                sub.status = 'passed'
-
-                # Atomic resolve: only the first passer wins
+                # C4 fix: Atomic resolve FIRST, then mark submission
                 updated = Job.query.filter_by(
                     task_id=sub.task_id, status='funded'
                 ).update({
@@ -170,6 +242,7 @@ def _run_oracle(app, submission_id):
                 })
 
                 if updated:
+                    sub.status = 'passed'
                     # H7: Discard other in-flight submissions
                     Submission.query.filter(
                         Submission.task_id == sub.task_id,
@@ -188,14 +261,14 @@ def _run_oracle(app, submission_id):
                             db.session.flush()
                             try:
                                 # G19: Use per-job fee_bps
-                                fee_bps = job_obj.fee_bps or Config.PLATFORM_FEE_BPS
-                                txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
+                                fee_bps = job_obj.fee_bps if job_obj.fee_bps is not None else Config.PLATFORM_FEE_BPS
+                                txs = wallet.payout(worker.wallet_address, job_obj.price, fee_bps=fee_bps)
                                 job_obj.payout_tx_hash = txs['payout_tx']
                                 job_obj.fee_tx_hash = txs.get('fee_tx')
                                 job_obj.payout_status = 'success'
                                 worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
                                 worker.total_earned = (
-                                    (worker.total_earned or 0) + job.price * worker_share
+                                    (worker.total_earned or 0) + job_obj.price * worker_share
                                 )
                             except Exception as e:
                                 job_obj.payout_status = 'failed'
@@ -217,6 +290,10 @@ def _run_oracle(app, submission_id):
                     # Update reputation
                     from services.agent_service import AgentService
                     AgentService.update_reputation(sub.worker_id)
+                else:
+                    # C4: Job was no longer funded (cancelled/expired during evaluation)
+                    sub.status = 'failed'
+                    sub.oracle_reason = "Job was no longer in funded state"
             else:
                 sub.status = 'failed'
                 # Increment failure count
@@ -244,11 +321,25 @@ def _run_oracle(app, submission_id):
             sub.oracle_reason = "Internal processing error"
             sub.oracle_steps = [{"step": 0, "name": "error", "output": {"error": "internal"}}]
             logger.exception("Oracle exception for submission %s", sub.id)
+            _oracle_executor.record_failure(submission_id, str(e))
             db.session.commit()
 
 
 def _launch_oracle_with_timeout(submission_id):
     """Submit oracle evaluation to thread pool with timeout (G07)."""
+    # F08: Prevent unbounded wrapper thread creation
+    pending = _oracle_executor._pool._work_queue.qsize()
+    if pending >= 20:
+        logger.warning("Oracle queue saturated (%d pending), rejecting submission %s", pending, submission_id)
+        with app.app_context():
+            sub = db.session.query(Submission).filter_by(id=submission_id).first()
+            if sub and sub.status == 'judging':
+                sub.status = 'failed'
+                sub.oracle_reason = "Oracle evaluation queue full — please retry later"
+                db.session.commit()
+        _oracle_executor.record_failure(submission_id, "queue saturated")
+        return
+
     timeout = Config.ORACLE_TIMEOUT_SECONDS
 
     def _oracle_with_timeout():
@@ -256,17 +347,21 @@ def _launch_oracle_with_timeout(submission_id):
             future = _oracle_executor.submit(_run_oracle, app, submission_id)
             future.result(timeout=timeout)
         except FuturesTimeoutError:
-            # Oracle timed out — mark submission as failed
+            # Oracle timed out — mark submission as failed (C1 fix: lock row)
             with app.app_context():
-                sub = Submission.query.get(submission_id)
+                sub = db.session.query(Submission).filter_by(
+                    id=submission_id
+                ).with_for_update().first()
                 if sub and sub.status == 'judging':
                     sub.status = 'failed'
                     sub.oracle_reason = f"Evaluation timed out after {timeout}s"
                     sub.oracle_steps = [{"step": 0, "name": "timeout", "output": {"error": "timeout"}}]
                     db.session.commit()
                     logger.warning("Oracle timeout for submission %s after %ds", submission_id, timeout)
+            _oracle_executor.record_failure(submission_id, f"timeout after {timeout}s")
         except Exception as e:
             logger.exception("Oracle launcher error for submission %s", submission_id)
+            _oracle_executor.record_failure(submission_id, str(e))
 
     t = threading.Thread(target=_oracle_with_timeout, daemon=True)
     t.start()
@@ -278,14 +373,22 @@ def _launch_oracle_with_timeout(submission_id):
 
 
 def check_idempotency():
-    """Check for Idempotency-Key header. Returns cached response if found, else None."""
+    """Check for Idempotency-Key header. Returns cached response if found, else None.
+    M5: Respects 24h TTL. M10: Requires authenticated agent (no 'anon' fallback)."""
     idem_key = request.headers.get('Idempotency-Key')
     if not idem_key:
         return None
-    agent_id = getattr(g, 'current_agent_id', None) or 'anon'
+    agent_id = getattr(g, 'current_agent_id', None)
+    if not agent_id:
+        return None  # M10: Skip idempotency for unauthenticated requests
     full_key = f"{agent_id}:{idem_key}"
     cached = IdempotencyKey.query.get(full_key)
     if cached:
+        if cached.is_expired:
+            # M5: Expired — remove and allow re-use
+            db.session.delete(cached)
+            db.session.commit()
+            return None
         return jsonify(cached.response_body), cached.response_code
     return None
 
@@ -295,7 +398,9 @@ def save_idempotency(response_tuple):
     idem_key = request.headers.get('Idempotency-Key')
     if not idem_key:
         return
-    agent_id = getattr(g, 'current_agent_id', None) or 'anon'
+    agent_id = getattr(g, 'current_agent_id', None)
+    if not agent_id:
+        return
     full_key = f"{agent_id}:{idem_key}"
     body, code = response_tuple
     try:
@@ -309,6 +414,22 @@ def save_idempotency(response_tuple):
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Helper: optional auth viewer extraction (G16)
+# ---------------------------------------------------------------------------
+
+
+def _get_viewer_id() -> str:
+    """Extract agent_id from Bearer token if present, without requiring auth."""
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        agent = verify_api_key(token)
+        if agent:
+            return agent.agent_id
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -345,12 +466,22 @@ def _sanitize_oracle_steps(steps):
     return sanitized
 
 
-def _submission_to_dict(sub: Submission) -> dict:
-    return {
+def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
+    """Serialize submission. Content is only shown to the submitting worker or the job buyer (G16)."""
+    # Determine if viewer is allowed to see content
+    show_content = False
+    if viewer_id:
+        if viewer_id == sub.worker_id:
+            show_content = True
+        else:
+            job = Job.query.get(sub.task_id)
+            if job and viewer_id == job.buyer_id:
+                show_content = True
+
+    result = {
         "submission_id": sub.id,
         "task_id": sub.task_id,
         "worker_id": sub.worker_id,
-        "content": sub.content,
         "status": sub.status,
         "oracle_score": sub.oracle_score,
         "oracle_reason": sub.oracle_reason,
@@ -358,6 +489,11 @@ def _submission_to_dict(sub: Submission) -> dict:
         "attempt": sub.attempt,
         "created_at": sub.created_at.isoformat() if sub.created_at else None,
     }
+    if show_content:
+        result["content"] = sub.content
+    else:
+        result["content"] = "[redacted]"
+    return result
 
 
 # ===================================================================
@@ -397,6 +533,7 @@ def deposit_info():
 
 
 @app.route('/agents', methods=['POST'])
+@rate_limit()  # C2: Rate limit registration to prevent DoS
 def register_agent():
     from services.agent_service import AgentService
 
@@ -407,6 +544,14 @@ def register_agent():
 
     if not agent_id:
         return jsonify({"error": "agent_id is required"}), 400
+
+    # C2: Validate agent_id format
+    if not re.match(r'^[a-zA-Z0-9_-]{3,100}$', agent_id):
+        return jsonify({"error": "agent_id must be 3-100 alphanumeric/hyphen/underscore characters"}), 400
+
+    # M6: Validate wallet before calling service
+    if wallet_address and not re.match(r'^0x[0-9a-fA-F]{40}$', wallet_address):
+        return jsonify({"error": "Invalid wallet address format"}), 400
 
     result = AgentService.register(agent_id, name, wallet_address)
 
@@ -453,8 +598,6 @@ def get_agent(agent_id):
 @app.route('/agents/<agent_id>', methods=['PATCH'])
 @require_auth
 def update_agent(agent_id):
-    import re
-
     # Must be the agent themselves
     if g.current_agent_id != agent_id:
         return jsonify({"error": "Cannot update another agent's profile"}), 403
@@ -466,7 +609,10 @@ def update_agent(agent_id):
     data = request.get_json(silent=True) or {}
 
     if 'name' in data:
-        agent.name = data['name']
+        name = data['name']
+        if not isinstance(name, str) or len(name) < 1 or len(name) > 200:
+            return jsonify({"error": "name must be 1-200 characters"}), 400
+        agent.name = name
 
     if 'wallet_address' in data:
         wallet = data['wallet_address']
@@ -509,8 +655,12 @@ def _create_job():
 
     if not title:
         return jsonify({"error": "title is required"}), 400
+    if len(title) > 500:
+        return jsonify({"error": "title must be <= 500 characters"}), 400
     if not description:
         return jsonify({"error": "description is required"}), 400
+    if len(description) > 50000:
+        return jsonify({"error": "description must be <= 50000 characters"}), 400
 
     # Price validation
     raw_price = data.get('price')
@@ -533,7 +683,7 @@ def _create_job():
     raw_expiry = data.get('expiry')
     if raw_expiry is not None:
         try:
-            expiry = datetime.datetime.utcfromtimestamp(int(raw_expiry))
+            expiry = datetime.datetime.fromtimestamp(int(raw_expiry), tz=datetime.timezone.utc)
         except (ValueError, TypeError, OSError):
             return jsonify({"error": "Invalid expiry timestamp"}), 400
 
@@ -553,6 +703,16 @@ def _create_job():
         except (InvalidOperation, ValueError, TypeError):
             return jsonify({"error": "Invalid min_reputation value"}), 400
 
+    # G19: Per-job fee configuration
+    fee_bps = data.get('fee_bps')
+    if fee_bps is not None:
+        try:
+            fee_bps = int(fee_bps)
+            if fee_bps < 0 or fee_bps > 10000:
+                return jsonify({"error": "fee_bps must be 0-10000"}), 400
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid fee_bps value"}), 400
+
     job = Job(
         title=title,
         description=description,
@@ -565,7 +725,7 @@ def _create_job():
         max_submissions=max_submissions,
         max_retries=max_retries,
         min_reputation=min_reputation,
-        participants=[],
+        fee_bps=fee_bps if fee_bps is not None else Config.PLATFORM_FEE_BPS,
     )
 
     db.session.add(job)
@@ -588,7 +748,10 @@ def _list_jobs():
     artifact_type = request.args.get('artifact_type')
     min_price = request.args.get('min_price')
     max_price = request.args.get('max_price')
+    _ALLOWED_SORT_FIELDS = {'created_at', 'price', 'expiry'}
     sort_by = request.args.get('sort_by', 'created_at')
+    if sort_by not in _ALLOWED_SORT_FIELDS:
+        sort_by = 'created_at'
     sort_order = request.args.get('sort_order', 'desc')
 
     try:
@@ -646,9 +809,11 @@ def fund_job(task_id):
     from services.job_service import JobService
     from services.wallet_service import get_wallet_service
 
-    job = JobService.get_job(task_id)
+    # F02: Row lock to prevent double-fund race condition
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
     if not job:
         return jsonify({"error": "Job not found"}), 404
+    JobService.check_expiry(job)
 
     if job.status != 'open':
         return jsonify({"error": f"Job not in open state (current: {job.status})"}), 400
@@ -671,6 +836,7 @@ def fund_job(task_id):
         if not verify.get('valid'):
             return jsonify({"error": "Deposit verification failed"}), 400
         job.depositor_address = verify.get('depositor')
+        job.deposit_amount = verify.get('amount')
         overpayment = verify.get('overpayment')  # G22
     elif not app.config.get('DEV_MODE', False):
         return jsonify({"error": "Chain not connected and DEV_MODE is disabled"}), 503
@@ -740,13 +906,26 @@ def claim_job(task_id):
             }), 403
 
     # Check worker not already a participant
-    participants = list(job.participants or [])
-    if worker_id in participants:
+    existing = JobParticipant.query.filter_by(task_id=task_id, worker_id=worker_id, unclaimed_at=None).first()
+    if existing:
         return jsonify({"error": "Worker already claimed this task"}), 409
 
-    # Add to participants
-    participants.append(worker_id)
-    job.participants = participants
+    # F04: Check for previously unclaimed record — reactivate instead of creating new
+    previously_unclaimed = JobParticipant.query.filter_by(task_id=task_id, worker_id=worker_id).filter(
+        JobParticipant.unclaimed_at.isnot(None)
+    ).first()
+    if previously_unclaimed:
+        previously_unclaimed.unclaimed_at = None
+        previously_unclaimed.claimed_at = datetime.datetime.now(datetime.timezone.utc)
+        db.session.commit()
+        result = {"status": "claimed", "task_id": task_id, "worker_id": worker_id}
+        if not worker.wallet_address:
+            result["warnings"] = ["wallet_address not set — payouts will be skipped"]
+        return jsonify(result), 200
+
+    # Add to participants (new claim)
+    jp = JobParticipant(task_id=task_id, worker_id=worker_id)
+    db.session.add(jp)
     db.session.commit()
 
     result = {
@@ -770,9 +949,8 @@ def claim_job(task_id):
 @app.route('/jobs/<task_id>/unclaim', methods=['POST'])
 @require_auth
 def unclaim_job(task_id):
-    from services.job_service import JobService
-
-    job = JobService.get_job(task_id)
+    # M3 fix: Use row lock to match claim_job pattern
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
@@ -781,8 +959,8 @@ def unclaim_job(task_id):
     if job.status not in ('funded',):
         return jsonify({"error": f"Cannot unclaim from job in {job.status} state"}), 400
 
-    participants = list(job.participants or [])
-    if worker_id not in participants:
+    jp = JobParticipant.query.filter_by(task_id=task_id, worker_id=worker_id, unclaimed_at=None).first()
+    if not jp:
         return jsonify({"error": "Worker has not claimed this task"}), 400
 
     # Block unclaim if worker has active judging submissions
@@ -801,8 +979,7 @@ def unclaim_job(task_id):
         Submission.status == 'pending',
     ).update({'status': 'failed'}, synchronize_session='fetch')
 
-    participants.remove(worker_id)
-    job.participants = participants
+    jp.unclaimed_at = datetime.datetime.now(datetime.timezone.utc)
     db.session.commit()
 
     return jsonify({
@@ -845,8 +1022,8 @@ def submit_result(task_id):
         return jsonify({"error": "Submission content exceeds 50KB limit"}), 400
 
     # Worker must be a participant
-    participants = list(job.participants or [])
-    if worker_id not in participants:
+    jp = JobParticipant.query.filter_by(task_id=task_id, worker_id=worker_id, unclaimed_at=None).first()
+    if not jp:
         return jsonify({"error": "Worker has not claimed this task"}), 403
 
     # H10: Check submission limits within a locked read
@@ -897,11 +1074,29 @@ def list_submissions(task_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    subs = Submission.query.filter_by(task_id=task_id).order_by(
-        Submission.created_at.asc()
-    ).all()
+    viewer_id = _get_viewer_id()
 
-    return jsonify([_submission_to_dict(s) for s in subs]), 200
+    try:
+        limit = min(max(1, int(request.args.get('limit', 50))), 200)
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (ValueError, TypeError):
+        offset = 0
+
+    query = Submission.query.filter_by(task_id=task_id).order_by(
+        Submission.created_at.asc()
+    )
+    total = query.count()
+    subs = query.offset(offset).limit(limit).all()
+
+    return jsonify({
+        "submissions": [_submission_to_dict(s, viewer_id=viewer_id) for s in subs],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }), 200
 
 
 # ===================================================================
@@ -914,7 +1109,45 @@ def get_submission(submission_id):
     sub = Submission.query.get(submission_id)
     if not sub:
         return jsonify({"error": "Submission not found"}), 404
-    return jsonify(_submission_to_dict(sub)), 200
+    viewer_id = _get_viewer_id()
+    return jsonify(_submission_to_dict(sub, viewer_id=viewer_id)), 200
+
+
+# ===================================================================
+# 12b. GET /submissions — cross-job submission query (G16)
+# ===================================================================
+
+
+@app.route('/submissions', methods=['GET'])
+def list_all_submissions():
+    """G16: Cross-job submission query with worker_id filter."""
+    worker_id = request.args.get('worker_id')
+    if not worker_id:
+        return jsonify({"error": "worker_id query parameter is required"}), 400
+
+    viewer_id = _get_viewer_id()
+
+    try:
+        limit = min(max(1, int(request.args.get('limit', 50))), 200)
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (ValueError, TypeError):
+        offset = 0
+
+    query = Submission.query.filter_by(worker_id=worker_id).order_by(
+        Submission.created_at.desc()
+    )
+    total = query.count()
+    subs = query.offset(offset).limit(limit).all()
+
+    return jsonify({
+        "submissions": [_submission_to_dict(s, viewer_id=viewer_id) for s in subs],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }), 200
 
 
 # ===================================================================
@@ -955,9 +1188,10 @@ def cancel_job(task_id):
         if active_judging > 0:
             return jsonify({"error": "Cannot cancel: submissions are being judged"}), 409
 
+        # Cancel pending submissions (judging already confirmed == 0 above)
         Submission.query.filter(
             Submission.task_id == task_id,
-            Submission.status.in_(['pending', 'judging']),
+            Submission.status == 'pending',
         ).update({'status': 'failed'}, synchronize_session='fetch')
 
     job.status = 'cancelled'
@@ -1064,10 +1298,19 @@ def create_webhook(agent_id):
         return jsonify({"error": "url is required"}), 400
     if not url.startswith('https://'):
         return jsonify({"error": "url must use HTTPS"}), 400
+
+    # C1: SSRF protection — validate URL resolves to a public IP
+    from services.webhook_service import is_safe_webhook_url
+    if not is_safe_webhook_url(url):
+        return jsonify({"error": "Webhook URL must resolve to a public IP address"}), 400
+
     if not isinstance(events, list) or not events:
         return jsonify({"error": "events must be a non-empty list"}), 400
 
-    result = _create_wh(agent_id, url, events)
+    try:
+        result = _create_wh(agent_id, url, events)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify(result), 201
 
 
@@ -1105,9 +1348,12 @@ def delete_webhook(agent_id, webhook_id):
 def update_job(task_id):
     from services.job_service import JobService
 
-    job = JobService.get_job(task_id)
+    # M4 fix: Lock row to prevent concurrent state changes
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
     if not job:
         return jsonify({"error": "Job not found"}), 404
+    # Check expiry under lock
+    JobService.check_expiry(job)
 
     err = require_buyer(job)
     if err:
@@ -1122,7 +1368,7 @@ def update_job(task_id):
                 setattr(job, field, data[field])
         if 'expiry' in data:
             try:
-                job.expiry = datetime.datetime.utcfromtimestamp(int(data['expiry']))
+                job.expiry = datetime.datetime.fromtimestamp(int(data['expiry']), tz=datetime.timezone.utc)
             except (ValueError, TypeError, OSError):
                 return jsonify({"error": "Invalid expiry timestamp"}), 400
         for int_field in ('max_submissions', 'max_retries'):
@@ -1141,11 +1387,15 @@ def update_job(task_id):
         # When funded: only extend expiry
         if 'expiry' in data:
             try:
-                new_expiry = datetime.datetime.utcfromtimestamp(int(data['expiry']))
+                new_expiry = datetime.datetime.fromtimestamp(int(data['expiry']), tz=datetime.timezone.utc)
             except (ValueError, TypeError, OSError):
                 return jsonify({"error": "Invalid expiry timestamp"}), 400
+            # m7 fix: Must extend existing expiry; if no expiry was set, new one must be >= 24h out
+            now = datetime.datetime.now(datetime.timezone.utc)
             if job.expiry and new_expiry <= job.expiry:
                 return jsonify({"error": "Can only extend expiry on funded jobs"}), 400
+            if not job.expiry and new_expiry < now + datetime.timedelta(hours=24):
+                return jsonify({"error": "New expiry on funded job must be at least 24h from now"}), 400
             job.expiry = new_expiry
         else:
             return jsonify({"error": "Only expiry extension allowed on funded jobs"}), 400
@@ -1162,6 +1412,7 @@ def update_job(task_id):
 
 
 @app.route('/platform/solvency', methods=['GET'])
+@require_auth  # C6: Require auth for financial data
 def platform_solvency():
     """G21: Solvency overview — outstanding liabilities vs wallet balance."""
     from sqlalchemy import func
@@ -1198,6 +1449,64 @@ def platform_solvency():
 
 
 # ===================================================================
+# 17b. POST /admin/jobs/<task_id>/retry-payout (G06)
+# ===================================================================
+
+
+@app.route('/admin/jobs/<task_id>/retry-payout', methods=['POST'])
+@require_auth
+def retry_payout(task_id):
+    """G06: Retry failed payout for a resolved job."""
+    job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    if job.status != 'resolved':
+        return jsonify({"error": f"Job is not resolved (current: {job.status})"}), 400
+
+    if job.payout_status != 'failed':
+        return jsonify({"error": f"Payout is not in failed state (current: {job.payout_status})"}), 400
+
+    if not job.winner_id:
+        return jsonify({"error": "No winner to pay"}), 400
+
+    # F05: Only buyer or winner can retry payout
+    if g.current_agent_id not in (job.buyer_id, job.winner_id):
+        return jsonify({"error": "Only buyer or winner can retry payout"}), 403
+
+    worker = Agent.query.get(job.winner_id)
+    if not worker or not worker.wallet_address:
+        return jsonify({"error": "Winner has no wallet address"}), 400
+
+    from services.wallet_service import get_wallet_service
+    wallet = get_wallet_service()
+    if not wallet.is_connected():
+        return jsonify({"error": "Chain not connected"}), 503
+
+    try:
+        fee_bps = job.fee_bps if job.fee_bps is not None else Config.PLATFORM_FEE_BPS
+        txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
+        job.payout_tx_hash = txs['payout_tx']
+        job.fee_tx_hash = txs.get('fee_tx')
+        job.payout_status = 'success'
+
+        worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
+        worker.total_earned = (worker.total_earned or 0) + job.price * worker_share
+
+        db.session.commit()
+        return jsonify({
+            "status": "payout_retried",
+            "task_id": task_id,
+            "payout_tx_hash": job.payout_tx_hash,
+            "payout_status": "success",
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Payout retry failed for task %s: %s", task_id, e)
+        return jsonify({"error": "Payout retry failed"}), 500
+
+
+# ===================================================================
 # 18. POST /jobs/<task_id>/dispute — dispute stub (G24)
 # ===================================================================
 
@@ -1225,11 +1534,17 @@ def dispute_job(task_id):
     if agent_id not in (job.buyer_id, job.winner_id):
         return jsonify({"error": "Only buyer or winner can dispute"}), 403
 
-    # Stub: log the dispute, don't change state
-    logger.info("Dispute filed for task %s by %s: %s", task_id, agent_id, reason)
+    dispute = Dispute(
+        task_id=task_id,
+        filed_by=agent_id,
+        reason=reason,
+    )
+    db.session.add(dispute)
+    db.session.commit()
 
     return jsonify({
         "status": "dispute_filed",
+        "dispute_id": dispute.id,
         "task_id": task_id,
         "filed_by": agent_id,
         "message": "Dispute recorded. Manual review required.",

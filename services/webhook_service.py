@@ -3,16 +3,19 @@ G04: Webhook service — registration, delivery, HMAC signing.
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import secrets
+import socket
 import threading
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 import requests as http_requests
 
-from models import db, Webhook
+from models import db, Webhook, JobParticipant
 
 logger = logging.getLogger('relay.webhooks')
 
@@ -22,8 +25,30 @@ MAX_RETRIES = 3
 BACKOFF_BASE = 1
 
 
+def is_safe_webhook_url(url: str) -> bool:
+    """C1 fix: Validate webhook URL is not targeting internal infrastructure."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        # Resolve hostname and check IP is globally routable
+        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+        return ip.is_global
+    except (socket.gaierror, ValueError, OSError):
+        return False
+
+
+MAX_WEBHOOKS_PER_AGENT = 10
+
+
 def create_webhook(agent_id: str, url: str, events: list) -> dict:
     """Register a new webhook for an agent."""
+    # m5 fix: Limit webhook count per agent
+    active_count = Webhook.query.filter_by(agent_id=agent_id, active=True).count()
+    if active_count >= MAX_WEBHOOKS_PER_AGENT:
+        raise ValueError(f"Maximum {MAX_WEBHOOKS_PER_AGENT} webhooks per agent")
+
     secret = secrets.token_hex(32)
     wh = Webhook(
         agent_id=agent_id,
@@ -64,8 +89,9 @@ def fire_event(event: str, task_id: str, data: dict):
     agent_ids = set()
     if job.buyer_id:
         agent_ids.add(job.buyer_id)
-    for p in (job.participants or []):
-        agent_ids.add(p)
+    # G10: Use JobParticipant join table instead of deprecated JSON array
+    for jp in JobParticipant.query.filter_by(task_id=task_id, unclaimed_at=None).all():
+        agent_ids.add(jp.worker_id)
 
     if not agent_ids:
         return
@@ -98,6 +124,11 @@ def fire_event(event: str, task_id: str, data: dict):
 
 def _deliver_webhook(url: str, secret: str, payload: dict):
     """Deliver a webhook with retries and HMAC signature."""
+    # M8 fix: Re-validate URL at delivery time to prevent DNS rebinding
+    if not is_safe_webhook_url(url):
+        logger.warning("Webhook URL %s failed safety re-check at delivery time, skipping", url)
+        return
+
     body = json.dumps(payload, default=str)
     signature = hmac.new(
         secret.encode() if secret else b'',
