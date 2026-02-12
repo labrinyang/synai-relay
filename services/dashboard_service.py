@@ -1,13 +1,16 @@
 """Dashboard data service for the SYNAI Relay protocol."""
 
 import hashlib
+import logging
 import threading
 import time
 
 from flask import request, make_response, jsonify
 from sqlalchemy import func
 
-from models import db, Agent, Job, JobParticipant, Submission, Owner
+from models import db, Agent, Job, JobParticipant, Submission, Owner, utc_iso
+
+logger = logging.getLogger('relay.dashboard')
 
 
 # ---------------------------------------------------------------------------
@@ -26,16 +29,25 @@ class TTLCache:
         with self._lock:
             entry = self._store.get(key)
             if entry is None:
+                logger.debug("cache MISS key=%s (no entry)", key)
                 return None
             value, expiry_ts = entry
-            if time.time() > expiry_ts:
+            remaining = expiry_ts - time.time()
+            if remaining <= 0:
                 del self._store[key]
+                logger.debug("cache MISS key=%s (expired %.1fs ago)", key, -remaining)
                 return None
+            logger.debug("cache HIT key=%s (%.1fs remaining)", key, remaining)
             return value
 
     def set(self, key, value):
         with self._lock:
             self._store[key] = (value, time.time() + self._ttl)
+            logger.debug("cache SET key=%s ttl=%ds", key, self._ttl)
+
+    def clear(self):
+        with self._lock:
+            self._store.clear()
 
 
 # Module-level cache instances
@@ -47,7 +59,7 @@ _leaderboard_cache = TTLCache(60)
 # etag_response helper
 # ---------------------------------------------------------------------------
 
-def etag_response(data, cache_max_age=15):
+def etag_response(data, cache_max_age=0):
     """Return a JSON response with ETag / 304 support.
 
     Args:
@@ -64,7 +76,7 @@ def etag_response(data, cache_max_age=15):
         return ('', 304)
 
     resp.headers['ETag'] = etag
-    resp.headers['Cache-Control'] = f'private, max-age={cache_max_age}'
+    resp.headers['Cache-Control'] = 'private, no-cache, must-revalidate'
     return resp
 
 
@@ -76,13 +88,26 @@ class DashboardService:
     """Read-only analytics queries for the public dashboard."""
 
     @staticmethod
+    def invalidate_caches():
+        """Clear all dashboard caches after data-mutating operations."""
+        _stats_cache.clear()
+        _leaderboard_cache.clear()
+
+    @staticmethod
     def get_stats():
         """Aggregated platform statistics (cached 30 s)."""
         cached = _stats_cache.get('stats')
         if cached is not None:
             return cached
 
+        # Force a fresh transaction so we see the latest committed data
+        # (fixes stale reads when another process wrote to SQLite WAL).
+        db.session.close()
+        logger.info("get_stats: session closed for fresh transaction, db=%s",
+                     db.engine.url)
+
         total_agents = db.session.query(func.count(Agent.agent_id)).scalar() or 0
+        logger.info("get_stats: total_agents=%d", total_agents)
 
         total_volume = (
             db.session.query(func.sum(Job.price))
@@ -103,6 +128,9 @@ class DashboardService:
             .filter(Agent.total_earned > 0)
             .scalar()
         ) or 0
+
+        logger.info("get_stats: volume=%.2f tasks=%s active_agents=%d",
+                     total_volume, tasks_by_status, total_active_agents)
 
         result = {
             'total_agents': total_agents,
@@ -127,6 +155,11 @@ class DashboardService:
         cached = _leaderboard_cache.get(cache_key)
         if cached is not None:
             return cached
+
+        # Force a fresh transaction (same rationale as get_stats).
+        db.session.close()
+        logger.info("get_leaderboard: fresh transaction, sort=%s limit=%d offset=%d",
+                     sort_by, limit, offset)
 
         # Subquery: tasks won per agent
         tasks_won_sq = (
@@ -176,6 +209,7 @@ class DashboardService:
             })
 
         result = {'agents': agents, 'total': total}
+        logger.info("get_leaderboard: returned %d agents (total=%d)", len(agents), total)
 
         _leaderboard_cache.set(cache_key, result)
         return result
@@ -187,6 +221,10 @@ class DashboardService:
         Args:
             limit: max rows to return.
         """
+        # Force a fresh transaction (same rationale as get_stats).
+        db.session.close()
+        logger.info("get_hot_tasks: fresh transaction, limit=%d", limit)
+
         # Subquery: active participant count per task
         participant_sq = (
             db.session.query(
@@ -235,8 +273,9 @@ class DashboardService:
                 'participant_count': p_count,
                 'submission_count': s_count,
                 'failure_count': job.failure_count or 0,
-                'expiry': job.expiry.isoformat() if job.expiry else None,
-                'created_at': job.created_at.isoformat() if job.created_at else None,
+                'expiry': utc_iso(job.expiry),
+                'created_at': utc_iso(job.created_at),
             })
 
+        logger.info("get_hot_tasks: returned %d tasks", len(tasks))
         return tasks

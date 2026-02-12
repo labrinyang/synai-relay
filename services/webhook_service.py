@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 import requests as http_requests
 
-from models import db, Webhook, JobParticipant
+from models import db, Webhook, JobParticipant, utc_iso
 
 logger = logging.getLogger('relay.webhooks')
 
@@ -215,7 +215,7 @@ def _to_dict(wh: Webhook, include_secret: bool = False) -> dict:
         "url": wh.url,
         "events": wh.events or [],
         "active": wh.active,
-        "created_at": wh.created_at.isoformat() if wh.created_at else None,
+        "created_at": utc_iso(wh.created_at),
     }
     if include_secret:
         d["secret"] = wh.secret

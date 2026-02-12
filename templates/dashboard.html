@@ -886,6 +886,25 @@
     </footer>
 
     <script>
+        /* ── UI Logger ── */
+        const UILog = {
+            _ts() {
+                return new Date().toTimeString().slice(0, 12);
+            },
+            info(cat, msg, data) {
+                const p = `[SYNAI ${this._ts()}] [${cat}]`;
+                data !== undefined ? console.log(p, msg, data) : console.log(p, msg);
+            },
+            warn(cat, msg, data) {
+                const p = `[SYNAI ${this._ts()}] [${cat}]`;
+                data !== undefined ? console.warn(p, msg, data) : console.warn(p, msg);
+            },
+            error(cat, msg, data) {
+                const p = `[SYNAI ${this._ts()}] [${cat}]`;
+                data !== undefined ? console.error(p, msg, data) : console.error(p, msg);
+            }
+        };
+
         /* ── Utilities ── */
 
         function esc(s) {
@@ -942,6 +961,7 @@
         /* ── View Switching ── */
 
         function switchView(view) {
+            UILog.info('UI', `tab switch: ${view}`);
             currentView = view;
             document.querySelectorAll('.view-tab').forEach(t => {
                 t.classList.toggle('active', t.dataset.view === view);
@@ -1073,6 +1093,7 @@
         /* ── Detail Panel ── */
 
         function openDetail(taskId) {
+            UILog.info('UI', `open detail task=${taskId}`);
             selectedTaskId = taskId;
             renderJobs(); // highlight selected card
             document.getElementById('detail-overlay').classList.add('open');
@@ -1082,6 +1103,7 @@
         }
 
         function closeDetail() {
+            UILog.info('UI', `close detail (was=${selectedTaskId})`);
             selectedTaskId = null;
             document.getElementById('detail-overlay').classList.remove('open');
             document.getElementById('detail-panel').classList.remove('open');
@@ -1089,17 +1111,21 @@
         }
 
         async function fetchDetail(taskId) {
+            const t0 = performance.now();
             try {
                 const resp = await fetch('/jobs/' + encodeURIComponent(taskId));
+                const elapsed = (performance.now() - t0).toFixed(0);
                 if (!resp.ok) {
+                    UILog.warn('DETAIL', `failed task=${taskId} status=${resp.status} ${elapsed}ms`);
                     document.getElementById('detail-body').innerHTML =
                         '<div class="detail-loading">FAILED TO LOAD</div>';
                     return;
                 }
                 const job = await resp.json();
+                UILog.info('DETAIL', `loaded "${job.title}" status=${job.status} created=${job.created_at} ${elapsed}ms`);
                 renderDetail(job);
             } catch (err) {
-                console.error('Failed to fetch detail:', err);
+                UILog.error('DETAIL', 'fetch error', err);
                 document.getElementById('detail-body').innerHTML =
                     '<div class="detail-loading">ERROR</div>';
             }
@@ -1251,7 +1277,10 @@
 
         // Keyboard: ESC to close detail
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && selectedTaskId) closeDetail();
+            if (e.key === 'Escape' && selectedTaskId) {
+                UILog.info('UI', 'ESC pressed');
+                closeDetail();
+            }
         });
 
         // Event delegation for task card clicks
@@ -1263,40 +1292,65 @@
         /* ── Data Fetching ── */
 
         async function fetchJobsAndStats() {
+            const t0 = performance.now();
             try {
                 const [jobResp, statsResp] = await Promise.all([
                     fetch('/jobs?limit=100'),
                     fetch('/dashboard/stats')
                 ]);
+                const elapsed = (performance.now() - t0).toFixed(0);
                 if (jobResp.ok) {
                     const data = await jobResp.json();
-                    allJobs = data.jobs || [];
+                    const incoming = data.jobs || [];
+                    const newTasks = incoming.filter(j => !previousTaskIds.has(j.task_id));
+                    if (newTasks.length > 0 && allJobs.length > 0) {
+                        newTasks.forEach(j => {
+                            UILog.info('TASK', `NEW "${j.title}" created=${j.created_at} price=${j.price} status=${j.status}`);
+                        });
+                    }
+                    // Time diagnostics — surface timezone discrepancies
+                    if (incoming.length > 0 && allJobs.length === 0) {
+                        const j = incoming[0];
+                        const raw = j.created_at;
+                        const parsed = new Date(raw);
+                        const now = new Date();
+                        const diffMin = ((now - parsed) / 60000).toFixed(1);
+                        UILog.info('TIME', `raw="${raw}" parsed=${parsed.toISOString()} now=${now.toISOString()} diff=${diffMin}min tzOffset=${now.getTimezoneOffset()}min`);
+                    }
+                    allJobs = incoming;
                     renderJobs();
                 }
                 if (statsResp.ok) {
                     const stats = await statsResp.json();
                     renderStats(stats);
+                    UILog.info('FETCH', `jobs=${allJobs.length} agents=${stats.total_agents} volume=${stats.total_volume} ${elapsed}ms`);
+                } else {
+                    UILog.info('FETCH', `jobs=${allJobs.length} stats=ERR(${statsResp.status}) ${elapsed}ms`);
                 }
                 if (selectedTaskId) fetchDetail(selectedTaskId);
             } catch (err) {
-                console.error('Failed to fetch jobs/stats:', err);
+                UILog.error('FETCH', 'jobs/stats failed', err);
             }
         }
 
         async function fetchLeaderboard() {
+            const t0 = performance.now();
             try {
                 const resp = await fetch('/dashboard/leaderboard?sort_by=total_earned&limit=20');
+                const elapsed = (performance.now() - t0).toFixed(0);
                 if (resp.ok) {
                     const data = await resp.json();
+                    UILog.info('FETCH', `leaderboard agents=${(data.agents||[]).length} ${elapsed}ms`);
                     renderLeaderboard(data.agents || []);
                 }
             } catch (err) {
-                console.error('Failed to fetch leaderboard:', err);
+                UILog.error('FETCH', 'leaderboard failed', err);
             }
         }
 
         /* ── Init ── */
 
+        UILog.info('INIT', 'Dashboard loaded, polling jobs=10s leaderboard=30s');
         fetchJobsAndStats();
         fetchLeaderboard();
 
@@ -1305,9 +1359,11 @@
 
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
+                UILog.info('POLL', 'tab hidden, polling paused');
                 clearInterval(jobsInterval);
                 clearInterval(lbInterval);
             } else {
+                UILog.info('POLL', 'tab visible, polling resumed');
                 fetchJobsAndStats();
                 fetchLeaderboard();
                 jobsInterval = setInterval(fetchJobsAndStats, 10000);

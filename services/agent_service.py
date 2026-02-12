@@ -1,5 +1,5 @@
 import re as _re
-from models import db, Agent, Job, Submission, JobParticipant
+from models import db, Agent, Job, Submission, JobParticipant, utc_iso
 
 
 class AgentService:
@@ -79,6 +79,6 @@ class AgentService:
             "metrics": agent.metrics or {},
             "completion_rate": float(agent.completion_rate) if agent.completion_rate is not None else None,
             "total_earned": float(agent.total_earned or 0),
-            "adopted_at": agent.adopted_at.isoformat() if agent.adopted_at else None,
-            "created_at": agent.created_at.isoformat() if agent.created_at else None,
+            "adopted_at": utc_iso(agent.adopted_at),
+            "created_at": utc_iso(agent.created_at),
         }

@@ -9,6 +9,22 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+def utc_iso(dt):
+    """Serialize a datetime to ISO 8601 with UTC timezone suffix.
+
+    SQLite + SQLAlchemy db.DateTime strips tzinfo on round-trip,
+    producing naive datetimes. This function re-attaches UTC before
+    calling isoformat(), so the output always ends with '+00:00'.
+    Without this, JS ``new Date()`` interprets the string as local
+    time, causing wrong 'time ago' displays in non-UTC timezones.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 class Owner(db.Model):
     __tablename__ = 'owners'
     owner_id = db.Column(db.String(100), primary_key=True)

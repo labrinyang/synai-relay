@@ -1,4 +1,4 @@
-from models import db, Agent, Job, Submission, JobParticipant
+from models import db, Agent, Job, Submission, JobParticipant, utc_iso
 from datetime import datetime, timezone
 
 
@@ -127,7 +127,7 @@ class JobService:
             "max_submissions": job.max_submissions,
             "max_retries": job.max_retries,
             "min_reputation": float(job.min_reputation) if job.min_reputation else None,
-            "expiry": job.expiry.isoformat() if job.expiry else None,
+            "expiry": utc_iso(job.expiry),
             "deposit_tx_hash": job.deposit_tx_hash,
             "payout_tx_hash": job.payout_tx_hash,
             "payout_status": job.payout_status,
@@ -138,6 +138,6 @@ class JobService:
             "deposit_amount": float(job.deposit_amount) if job.deposit_amount else None,
             "refund_tx_hash": job.refund_tx_hash,
             "solution_price": float(job.solution_price or 0),
-            "created_at": job.created_at.isoformat() if job.created_at else None,
-            "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+            "created_at": utc_iso(job.created_at),
+            "updated_at": utc_iso(job.updated_at),
         }
