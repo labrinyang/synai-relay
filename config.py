@@ -27,3 +27,28 @@ class Config:
 
     # Platform fee (basis points: 2000 = 20%)
     PLATFORM_FEE_BPS = int(os.environ.get('PLATFORM_FEE_BPS', '2000'))
+
+    # Operator: Ethereum address authorized for privileged operations (solvency, etc.)
+    OPERATOR_ADDRESS = os.environ.get('OPERATOR_ADDRESS', '')
+    OPERATOR_SIGNATURE_MAX_AGE = int(os.environ.get('OPERATOR_SIGNATURE_MAX_AGE', '300'))  # seconds
+
+    @classmethod
+    def validate_production(cls):
+        """Startup check: reject SQLite in non-DEV_MODE."""
+        if not cls.DEV_MODE and 'sqlite' in cls.SQLALCHEMY_DATABASE_URI:
+            raise RuntimeError(
+                "FATAL: SQLite is not supported in production mode. "
+                "Set DATABASE_URL to a PostgreSQL connection string, "
+                "or set DEV_MODE=true for development."
+            )
+        if not cls.DEV_MODE and cls.SECRET_KEY == 'dev-secret-key-change-me':
+            raise RuntimeError(
+                "FATAL: SECRET_KEY must be changed from default in production. "
+                "Set FLASK_SECRET_KEY environment variable."
+            )
+        if not cls.DEV_MODE and not cls.OPERATOR_ADDRESS:
+            raise RuntimeError(
+                "FATAL: OPERATOR_ADDRESS must be set in production. "
+                "Set the OPERATOR_ADDRESS environment variable to the "
+                "Ethereum address authorized for operator operations."
+            )

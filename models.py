@@ -1,8 +1,12 @@
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 db = SQLAlchemy()
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class Owner(db.Model):
@@ -11,7 +15,7 @@ class Owner(db.Model):
     username = db.Column(db.String(100), nullable=False)
     twitter_handle = db.Column(db.String(100))
     avatar_url = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
     agents = db.relationship('Agent', backref='owner', lazy=True)
 
 
@@ -33,7 +37,7 @@ class Agent(db.Model):
     encrypted_privkey = db.Column(db.Text)
     # Auth (G01)
     api_key_hash = db.Column(db.String(128), nullable=True, index=True, unique=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
 
 
 class Job(db.Model):
@@ -75,8 +79,8 @@ class Job(db.Model):
     # Data
     envelope_json = db.Column(db.JSON, nullable=True)
     result_data = db.Column(db.JSON)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
     # Relationships
     submissions = db.relationship('Submission', backref='job', lazy=True,
                                   foreign_keys='Submission.task_id')
@@ -96,7 +100,7 @@ class JobParticipant(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)
     worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)
-    claimed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    claimed_at = db.Column(db.DateTime, default=_utcnow)
     unclaimed_at = db.Column(db.DateTime, nullable=True)
 
     __table_args__ = (
@@ -116,7 +120,7 @@ class Submission(db.Model):
     oracle_reason = db.Column(db.Text, nullable=True)
     oracle_steps = db.Column(db.JSON, nullable=True)
     attempt = db.Column(db.Integer, default=1)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
     # Relationships
     worker = db.relationship('Agent', foreign_keys=[worker_id])
 
@@ -135,11 +139,11 @@ class IdempotencyKey(db.Model):
     agent_id = db.Column(db.String(100), nullable=False)
     response_code = db.Column(db.Integer, nullable=False)
     response_body = db.Column(db.JSON, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
 
     @property
     def is_expired(self):
-        from datetime import timezone, timedelta
+        from datetime import timedelta
         if not self.created_at:
             return True
         now = datetime.now(timezone.utc)
@@ -156,7 +160,10 @@ class Webhook(db.Model):
     events = db.Column(db.JSON, default=lambda: [])  # e.g., ["job.resolved", "submission.completed"]
     secret = db.Column(db.String(128), nullable=True)  # HMAC secret for signature
     active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    failure_count = db.Column(db.Integer, default=0)
+    last_failure_at = db.Column(db.DateTime, nullable=True)
+    disabled_reason = db.Column(db.String(200), nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
 
 
 class Dispute(db.Model):
@@ -168,4 +175,4 @@ class Dispute(db.Model):
     reason = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default='open')  # open, resolved
     resolution = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
