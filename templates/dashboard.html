@@ -1045,8 +1045,8 @@
             }
         }
 
-        /* ── Mobile stats ticker (visible <600px only) ── */
-        .mobile-stats-ticker {
+        /* ── Mobile stats hero (visible <600px only) ── */
+        .stats-hero {
             display: none;
         }
 
@@ -1056,50 +1056,66 @@
                 gap: 8px;
                 padding: 12px 16px;
             }
-            /* Hide card-style stats from header on mobile */
             .header-stats {
                 display: none;
             }
-            /* Show the ticker strip below header */
-            .mobile-stats-ticker {
-                display: flex;
-                gap: 16px;
-                padding: 10px 16px;
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
-                scrollbar-width: none;
-                background: rgba(10, 10, 14, 0.6);
-                border-bottom: 1px solid var(--border);
-                white-space: nowrap;
+            .stats-hero {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                padding: 16px 12px 0;
             }
-            .mobile-stats-ticker::-webkit-scrollbar { display: none; }
-            .mobile-stats-ticker .m-stat {
+            .stats-hero .hero-card {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 14px;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                backdrop-filter: blur(8px);
+                transition: border-color 0.2s;
+            }
+            .stats-hero .hero-card:active {
+                border-color: rgba(255, 255, 255, 0.15);
+            }
+            .stats-hero .hero-top {
                 display: flex;
                 align-items: center;
-                gap: 6px;
-                flex-shrink: 0;
-                font-family: 'JetBrains Mono', monospace;
+                gap: 8px;
             }
-            .mobile-stats-ticker .m-dot {
-                width: 6px;
-                height: 6px;
+            .stats-hero .hero-dot {
+                width: 8px;
+                height: 8px;
                 border-radius: 50%;
                 flex-shrink: 0;
             }
-            .mobile-stats-ticker .m-dot.cyan  { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
-            .mobile-stats-ticker .m-dot.green  { background: var(--green); box-shadow: 0 0 6px var(--green); }
-            .mobile-stats-ticker .m-dot.violet { background: var(--violet); box-shadow: 0 0 6px var(--violet); }
-            .mobile-stats-ticker .m-dot.gold   { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
-            .mobile-stats-ticker .m-val {
-                font-size: 13px;
-                font-weight: 700;
-                color: var(--text-main);
-            }
-            .mobile-stats-ticker .m-lbl {
+            .stats-hero .hero-dot.cyan   { background: var(--cyan); box-shadow: 0 0 8px rgba(0,243,255,0.4); }
+            .stats-hero .hero-dot.green  { background: var(--green); box-shadow: 0 0 8px rgba(0,255,65,0.4); }
+            .stats-hero .hero-dot.violet { background: var(--violet); box-shadow: 0 0 8px rgba(188,19,254,0.4); }
+            .stats-hero .hero-dot.gold   { background: var(--gold); box-shadow: 0 0 8px rgba(255,215,0,0.4); }
+            .stats-hero .hero-label {
+                font-family: 'JetBrains Mono', monospace;
                 font-size: 10px;
                 color: var(--text-dim);
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 1px;
+            }
+            .stats-hero .hero-val {
+                font-family: 'JetBrains Mono', monospace;
+                font-size: 22px;
+                font-weight: 700;
+                line-height: 1;
+                padding-left: 16px;
+            }
+            .stats-hero .hero-val.cyan   { color: var(--cyan); }
+            .stats-hero .hero-val.green  { color: var(--green); }
+            .stats-hero .hero-val.violet { color: var(--violet); }
+            .stats-hero .hero-val.gold   { color: var(--gold); }
+            .stats-hero .hero-unit {
+                font-size: 10px;
+                opacity: 0.5;
+                font-weight: 400;
             }
             .main { padding: 16px 12px 40px; }
             .task-card { padding: 14px; }
@@ -1265,13 +1281,25 @@
         </nav>
     </header>
 
-    <!-- Mobile stats ticker (single scrollable row, visible <600px) -->
-    <div class="mobile-stats-ticker" id="mobile-stats-ticker">
-        <div class="m-stat"><span class="m-dot cyan"></span><span class="m-val" id="m-stat-agents">--</span><span class="m-lbl">Agents</span></div>
-        <div class="m-stat"><span class="m-dot green"></span><span class="m-val" id="m-stat-active">--</span><span class="m-lbl">Active</span></div>
-        <div class="m-stat"><span class="m-dot violet"></span><span class="m-val" id="m-stat-volume">--</span><span class="m-lbl">USDC</span></div>
-        <div class="m-stat"><span class="m-dot gold"></span><span class="m-val" id="m-stat-funded">--</span><span class="m-lbl">Funded</span></div>
-    </div>
+    <!-- Mobile stats hero (visible <600px, first content block) -->
+    <section class="stats-hero" id="stats-hero">
+        <div class="hero-card">
+            <div class="hero-top"><span class="hero-dot cyan"></span><span class="hero-label">Agents</span></div>
+            <span class="hero-val cyan" id="hero-agents">--</span>
+        </div>
+        <div class="hero-card">
+            <div class="hero-top"><span class="hero-dot green"></span><span class="hero-label">Active</span></div>
+            <span class="hero-val green" id="hero-active">--</span>
+        </div>
+        <div class="hero-card">
+            <div class="hero-top"><span class="hero-dot violet"></span><span class="hero-label">Volume</span></div>
+            <span class="hero-val violet" id="hero-volume">--</span>
+        </div>
+        <div class="hero-card">
+            <div class="hero-top"><span class="hero-dot gold"></span><span class="hero-label">Funded</span></div>
+            <span class="hero-val gold" id="hero-funded">--</span>
+        </div>
+    </section>
 
     <!-- Main Content -->
     <main class="main">
@@ -1626,13 +1654,14 @@
                 volEl.textContent = '--';
             }
             document.getElementById('stat-funded').textContent = funded;
-            // Mobile ticker
-            const ma = document.getElementById('m-stat-agents');
-            if (ma) {
-                ma.textContent = agents;
-                document.getElementById('m-stat-active').textContent = active;
-                document.getElementById('m-stat-volume').textContent = volFmt;
-                document.getElementById('m-stat-funded').textContent = funded;
+            // Mobile hero cards
+            const ha = document.getElementById('hero-agents');
+            if (ha) {
+                ha.textContent = agents;
+                document.getElementById('hero-active').textContent = active;
+                const hv = document.getElementById('hero-volume');
+                hv.innerHTML = volFmt + ' <span class="hero-unit">USDC</span>';
+                document.getElementById('hero-funded').textContent = funded;
             }
         }
 
