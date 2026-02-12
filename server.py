@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify, g
 from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant
 from config import Config
 from sqlalchemy.exc import IntegrityError
-from services.auth_service import generate_api_key, require_auth, require_admin, require_buyer, verify_api_key
+from services.auth_service import generate_api_key, require_auth, require_operator, require_buyer, verify_api_key
 from services.rate_limiter import rate_limit, get_submit_limiter
 import re
 
@@ -1615,8 +1615,7 @@ def update_job(task_id):
 
 
 @app.route('/platform/solvency', methods=['GET'])
-@require_auth  # C6: Require auth for financial data
-@require_admin
+@require_operator  # Operator-only: financial data requires signature verification
 def platform_solvency():
     """G21: Solvency overview — outstanding liabilities vs wallet balance."""
     from sqlalchemy import func
@@ -1658,8 +1657,7 @@ def platform_solvency():
 
 
 @app.route('/admin/jobs/<task_id>/retry-payout', methods=['POST'])
-@require_auth
-@require_admin
+@require_auth  # F05: buyer/winner check inside function body
 def retry_payout(task_id):
     """G06: Retry failed payout for a resolved job."""
     job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()

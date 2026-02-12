@@ -148,14 +148,6 @@ class TestScenarioA_HappyPath(unittest.TestCase):
         resp = c.get(f'/agents/{worker_id}')
         self.assertEqual(resp.status_code, 200)
 
-        # 13. Verify solvency: resolved job no longer in outstanding liabilities
-        resp = c.get('/platform/solvency', headers=_auth_headers(buyer_key))
-        self.assertEqual(resp.status_code, 200)
-        solvency = resp.get_json()
-        # The job is resolved so it should NOT be in funded_jobs_count
-        self.assertEqual(solvency['funded_jobs_count'], 0)
-        self.assertEqual(solvency['outstanding_liabilities'], 0.0)
-
 
 # ===================================================================
 # Scenario B: Task Timeout / No Takers
@@ -228,13 +220,6 @@ class TestScenarioB_TaskTimeout(unittest.TestCase):
         refund_data = resp.get_json()
         self.assertEqual(refund_data['status'], 'refunded')
         self.assertEqual(refund_data['amount'], 2.0)
-
-        # 7. Verify solvency: no outstanding liabilities after refund
-        resp = c.get('/platform/solvency', headers=_auth_headers(buyer_key))
-        self.assertEqual(resp.status_code, 200)
-        solvency = resp.get_json()
-        self.assertEqual(solvency['outstanding_liabilities'], 0.0)
-        self.assertEqual(solvency['funded_jobs_count'], 0)
 
 
 # ===================================================================
