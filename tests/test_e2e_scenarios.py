@@ -689,5 +689,766 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
         self.assertIn('not accepting submissions', resp.get_json()['error'].lower())
 
 
+# ===================================================================
+# Scenario F: Oracle Low Score (REJECTED)
+# ===================================================================
+
+class TestScenarioF_OracleLowScore(unittest.TestCase):
+    """
+    Scenario F: Worker submits low quality -> oracle rejects (score < threshold) ->
+    Worker retries with improved submission -> oracle passes -> job resolved.
+    Also tests max_retries exhaustion.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_oracle_rejection_then_retry_pass(self, mock_oracle):
+        c = self.client
+
+        # Register buyer + worker
+        buyer_id, buyer_key = _register_agent(c, 'f-buyer', 'Buyer F',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'f-worker', 'Worker F',
+                                                 wallet='0x' + 'bb' * 20)
+
+        # Create job with max_retries=3
+        resp = c.post('/jobs', json={
+            'title': 'Low Score Task',
+            'description': 'Needs high quality',
+            'price': 1.0,
+            'rubric': 'Must score above 70',
+            'max_retries': 3,
+        }, headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 201)
+        task_id = resp.get_json()['task_id']
+
+        # Fund
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xf-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # Worker claims
+        resp = c.post(f'/jobs/{task_id}/claim', json={},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # Submit attempt 1
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'sloppy work'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub1_id = resp.get_json()['submission_id']
+        self.assertEqual(resp.get_json()['attempt'], 1)
+
+        # Simulate rejection: score 40
+        sub1 = db.session.get(Submission, sub1_id)
+        sub1.status = 'failed'
+        sub1.oracle_score = 40
+        sub1.oracle_reason = 'Below threshold'
+        job = db.session.get(Job, task_id)
+        job.failure_count = (job.failure_count or 0) + 1
+        db.session.commit()
+
+        # Verify: submission failed, job still funded
+        resp = c.get(f'/submissions/{sub1_id}',
+                      headers=_auth_headers(worker_key))
+        self.assertEqual(resp.get_json()['status'], 'failed')
+
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.get_json()['status'], 'funded')
+
+        # Submit attempt 2
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'much better work'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub2_id = resp.get_json()['submission_id']
+        self.assertEqual(resp.get_json()['attempt'], 2)
+
+        # Simulate pass: score 85
+        sub2 = db.session.get(Submission, sub2_id)
+        sub2.status = 'passed'
+        sub2.oracle_score = 85
+        sub2.oracle_reason = 'Meets criteria'
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_id
+        job.payout_status = 'skipped'
+        db.session.commit()
+
+        # Verify: job resolved, winner correct, attempt=2
+        resp = c.get(f'/jobs/{task_id}')
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'resolved')
+        self.assertEqual(job_data['winner_id'], worker_id)
+
+        resp = c.get(f'/submissions/{sub2_id}',
+                      headers=_auth_headers(worker_key))
+        sub2_data = resp.get_json()
+        self.assertEqual(sub2_data['status'], 'passed')
+        self.assertEqual(sub2_data['oracle_score'], 85)
+        self.assertEqual(sub2_data['attempt'], 2)
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_oracle_max_retries_exhausted(self, mock_oracle):
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'f2-buyer', 'Buyer F2',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'f2-worker', 'Worker F2',
+                                                 wallet='0x' + 'bb' * 20)
+
+        # Create job with max_retries=2
+        resp = c.post('/jobs', json={
+            'title': 'Max Retry Task',
+            'description': 'Limited retries',
+            'price': 1.0,
+            'max_retries': 2,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xf2-fund'},
+               headers=_auth_headers(buyer_key))
+
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_key))
+
+        # Attempt 1 → fail
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'attempt 1'},
+                       headers=_auth_headers(worker_key))
+        sub1_id = resp.get_json()['submission_id']
+        sub1 = db.session.get(Submission, sub1_id)
+        sub1.status = 'failed'
+        sub1.oracle_score = 30
+        job = db.session.get(Job, task_id)
+        job.failure_count = 1
+        db.session.commit()
+
+        # Attempt 2 → fail
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'attempt 2'},
+                       headers=_auth_headers(worker_key))
+        sub2_id = resp.get_json()['submission_id']
+        sub2 = db.session.get(Submission, sub2_id)
+        sub2.status = 'failed'
+        sub2.oracle_score = 35
+        job = db.session.get(Job, task_id)
+        job.failure_count = 2
+        db.session.commit()
+
+        # Attempt 3 → should be rejected (max_retries=2 means 3 total attempts: 1 + 2 retries)
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'attempt 3'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('retr', resp.get_json()['error'].lower())
+
+
+# ===================================================================
+# Scenario G: Payout Partial Failure
+# ===================================================================
+
+class TestScenarioG_PayoutPartialFailure(unittest.TestCase):
+    """
+    Scenario G: Job resolved, worker payout succeeds but fee transfer fails ->
+    payout_status='partial', payout_tx_hash set, fee_tx_hash is None.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_partial_payout_state(self, mock_oracle):
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'g-buyer', 'Buyer G',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'g-worker', 'Worker G',
+                                                 wallet='0x' + 'bb' * 20)
+
+        # Create + fund job
+        resp = c.post('/jobs', json={
+            'title': 'Partial Payout Task',
+            'description': 'Test partial failure',
+            'price': 5.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xg-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # Worker claims + submits
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_key))
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'good solution'},
+                       headers=_auth_headers(worker_key))
+        sub_id = resp.get_json()['submission_id']
+
+        # Simulate oracle pass + partial payout directly in DB
+        sub = db.session.get(Submission, sub_id)
+        sub.status = 'passed'
+        sub.oracle_score = 90
+
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_id
+        job.payout_tx_hash = '0xWorkerPaid'
+        job.fee_tx_hash = None
+        job.payout_status = 'partial'
+        db.session.commit()
+
+        # Verify via GET /jobs
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.status_code, 200)
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'resolved')
+        self.assertEqual(job_data['payout_status'], 'partial')
+        self.assertEqual(job_data['payout_tx_hash'], '0xWorkerPaid')
+        self.assertIsNone(job_data.get('fee_tx_hash'))
+
+        # Job should still be resolved (not rolled back)
+        self.assertEqual(job_data['winner_id'], worker_id)
+
+
+# ===================================================================
+# Scenario H: Refund Cooldown
+# ===================================================================
+
+class TestScenarioH_RefundCooldown(unittest.TestCase):
+    """
+    Scenario H: Tests the 1-hour refund cooldown per depositor address.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    def test_refund_cooldown_blocks_second_refund(self):
+        import datetime as dt
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'h-buyer', 'Buyer H',
+                                               wallet='0x' + 'aa' * 20)
+
+        # Create 2 jobs from same buyer
+        resp1 = c.post('/jobs', json={
+            'title': 'Cooldown Job 1',
+            'description': 'First job',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id_1 = resp1.get_json()['task_id']
+
+        resp2 = c.post('/jobs', json={
+            'title': 'Cooldown Job 2',
+            'description': 'Second job',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id_2 = resp2.get_json()['task_id']
+
+        # Fund both with different tx hashes
+        c.post(f'/jobs/{task_id_1}/fund',
+               json={'tx_hash': '0xh-fund-1'},
+               headers=_auth_headers(buyer_key))
+        c.post(f'/jobs/{task_id_2}/fund',
+               json={'tx_hash': '0xh-fund-2'},
+               headers=_auth_headers(buyer_key))
+
+        # Set depositor_address on both (DEV_MODE doesn't set it automatically)
+        depositor = '0x' + 'aa' * 20
+        job1 = db.session.get(Job, task_id_1)
+        job1.depositor_address = depositor
+        job2 = db.session.get(Job, task_id_2)
+        job2.depositor_address = depositor
+        db.session.commit()
+
+        # Expire both
+        job1.status = 'expired'
+        job2.status = 'expired'
+        db.session.commit()
+
+        # Refund job 1: expect 200
+        resp = c.post(f'/jobs/{task_id_1}/refund',
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # Refund job 2 immediately (same depositor): expect 429
+        resp = c.post(f'/jobs/{task_id_2}/refund',
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 429)
+        data = resp.get_json()
+        self.assertIn('cooldown', data['error'].lower())
+        self.assertIn('retry_after_seconds', data)
+
+    def test_refund_cooldown_different_depositor_ok(self):
+        c = self.client
+
+        buyer1_id, buyer1_key = _register_agent(c, 'h2-buyer1', 'Buyer H2a',
+                                                  wallet='0x' + 'aa' * 20)
+        buyer2_id, buyer2_key = _register_agent(c, 'h2-buyer2', 'Buyer H2b',
+                                                  wallet='0x' + 'cc' * 20)
+
+        # Job 1 from buyer 1
+        resp = c.post('/jobs', json={
+            'title': 'Cooldown Diff 1',
+            'description': 'First',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer1_key))
+        task_id_1 = resp.get_json()['task_id']
+
+        # Job 2 from buyer 2
+        resp = c.post('/jobs', json={
+            'title': 'Cooldown Diff 2',
+            'description': 'Second',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer2_key))
+        task_id_2 = resp.get_json()['task_id']
+
+        # Fund
+        c.post(f'/jobs/{task_id_1}/fund',
+               json={'tx_hash': '0xh2-fund-1'},
+               headers=_auth_headers(buyer1_key))
+        c.post(f'/jobs/{task_id_2}/fund',
+               json={'tx_hash': '0xh2-fund-2'},
+               headers=_auth_headers(buyer2_key))
+
+        # Set different depositor addresses
+        job1 = db.session.get(Job, task_id_1)
+        job1.depositor_address = '0x' + 'aa' * 20
+        job2 = db.session.get(Job, task_id_2)
+        job2.depositor_address = '0x' + 'cc' * 20
+        db.session.commit()
+
+        # Expire both
+        job1.status = 'expired'
+        job2.status = 'expired'
+        db.session.commit()
+
+        # Refund job 1: expect 200
+        resp = c.post(f'/jobs/{task_id_1}/refund',
+                       headers=_auth_headers(buyer1_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # Refund job 2 (different depositor): expect 200
+        resp = c.post(f'/jobs/{task_id_2}/refund',
+                       headers=_auth_headers(buyer2_key))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_refund_cooldown_expires(self):
+        import datetime as dt
+        from models import _utcnow
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'h3-buyer', 'Buyer H3',
+                                               wallet='0x' + 'aa' * 20)
+
+        # Create 2 jobs
+        resp = c.post('/jobs', json={
+            'title': 'Cooldown Expire 1',
+            'description': 'First',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id_1 = resp.get_json()['task_id']
+
+        resp = c.post('/jobs', json={
+            'title': 'Cooldown Expire 2',
+            'description': 'Second',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id_2 = resp.get_json()['task_id']
+
+        # Fund both
+        depositor = '0x' + 'aa' * 20
+        c.post(f'/jobs/{task_id_1}/fund',
+               json={'tx_hash': '0xh3-fund-1'},
+               headers=_auth_headers(buyer_key))
+        c.post(f'/jobs/{task_id_2}/fund',
+               json={'tx_hash': '0xh3-fund-2'},
+               headers=_auth_headers(buyer_key))
+
+        job1 = db.session.get(Job, task_id_1)
+        job1.depositor_address = depositor
+        job2 = db.session.get(Job, task_id_2)
+        job2.depositor_address = depositor
+        db.session.commit()
+
+        # Expire both
+        job1.status = 'expired'
+        job2.status = 'expired'
+        db.session.commit()
+
+        # Refund job 1
+        resp = c.post(f'/jobs/{task_id_1}/refund',
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # Backdate job1.updated_at by 2 hours so cooldown expires
+        job1 = db.session.get(Job, task_id_1)
+        job1.updated_at = _utcnow() - dt.timedelta(hours=2)
+        db.session.commit()
+
+        # Refund job 2: should succeed (cooldown expired)
+        resp = c.post(f'/jobs/{task_id_2}/refund',
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+
+
+# ===================================================================
+# Scenario I: Deposit Wrong Target
+# ===================================================================
+
+class TestScenarioI_DepositWrongTarget(unittest.TestCase):
+    """
+    Scenario I: Buyer funds job but deposit verification fails
+    (e.g., USDC sent to wrong address) -> job stays open.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('services.wallet_service.get_wallet_service')
+    def test_fund_deposit_to_wrong_address(self, mock_get_wallet):
+        from unittest.mock import MagicMock
+        c = self.client
+
+        # Mock wallet: connected but verify_deposit fails
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.verify_deposit.return_value = {
+            'valid': False,
+            'error': 'No USDC transfer to operations wallet found',
+        }
+        mock_get_wallet.return_value = mock_wallet
+
+        buyer_id, buyer_key = _register_agent(c, 'i-buyer', 'Buyer I',
+                                               wallet='0x' + 'aa' * 20)
+
+        resp = c.post('/jobs', json={
+            'title': 'Wrong Deposit Task',
+            'description': 'Will send to wrong address',
+            'price': 2.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        # Try to fund with bad deposit
+        resp = c.post(f'/jobs/{task_id}/fund',
+                       json={'tx_hash': '0xwrong-target'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('verification failed', resp.get_json()['error'].lower())
+
+        # Verify job is still open
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.get_json()['status'], 'open')
+
+
+# ===================================================================
+# Scenario J: Replay Attack
+# ===================================================================
+
+class TestScenarioJ_ReplayAttack(unittest.TestCase):
+    """
+    Scenario J: Buyer uses same tx_hash to fund two different jobs ->
+    second fund should fail with 409 (unique constraint on deposit_tx_hash).
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    def test_replay_attack_same_tx_hash(self):
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'j-buyer', 'Buyer J',
+                                               wallet='0x' + 'aa' * 20)
+
+        # Create job A
+        resp = c.post('/jobs', json={
+            'title': 'Replay Job A',
+            'description': 'First job',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id_a = resp.get_json()['task_id']
+
+        # Create job B
+        resp = c.post('/jobs', json={
+            'title': 'Replay Job B',
+            'description': 'Second job',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id_b = resp.get_json()['task_id']
+
+        # Fund job A with tx_hash
+        resp = c.post(f'/jobs/{task_id_a}/fund',
+                       json={'tx_hash': '0xreplay123'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # Fund job B with SAME tx_hash → expect 409
+        resp = c.post(f'/jobs/{task_id_b}/fund',
+                       json={'tx_hash': '0xreplay123'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn('already been used', resp.get_json()['error'].lower())
+
+        # Verify job B is still open
+        resp = c.get(f'/jobs/{task_id_b}')
+        self.assertEqual(resp.get_json()['status'], 'open')
+
+
+# ===================================================================
+# Scenario K: Concurrent Payout
+# ===================================================================
+
+class TestScenarioK_ConcurrentPayout(unittest.TestCase):
+    """
+    Scenario K: Two workers submit, both oracle-pass, but only the first
+    resolution wins. Second worker's submission is failed because job
+    was no longer in funded state.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_concurrent_resolution_only_first_wins(self, mock_oracle):
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'k-buyer', 'Buyer K',
+                                               wallet='0x' + 'aa' * 20)
+        worker_a_id, worker_a_key = _register_agent(c, 'k-worker-a', 'Worker KA',
+                                                      wallet='0x' + 'bb' * 20)
+        worker_b_id, worker_b_key = _register_agent(c, 'k-worker-b', 'Worker KB',
+                                                      wallet='0x' + 'cc' * 20)
+
+        # Create + fund job
+        resp = c.post('/jobs', json={
+            'title': 'Concurrent Payout Task',
+            'description': 'Two workers race',
+            'price': 5.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xk-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # Both workers claim
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_a_key))
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_b_key))
+
+        # Both submit
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'Worker A solution'},
+                       headers=_auth_headers(worker_a_key))
+        sub_a_id = resp.get_json()['submission_id']
+
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'Worker B solution'},
+                       headers=_auth_headers(worker_b_key))
+        sub_b_id = resp.get_json()['submission_id']
+
+        # Simulate: Worker A's oracle passes first → job resolved
+        sub_a = db.session.get(Submission, sub_a_id)
+        sub_a.status = 'passed'
+        sub_a.oracle_score = 88
+
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_a_id
+        job.payout_status = 'skipped'
+
+        # Worker B's oracle also passes, but job already resolved
+        sub_b = db.session.get(Submission, sub_b_id)
+        sub_b.status = 'failed'
+        sub_b.oracle_reason = 'Job was no longer in funded state'
+        db.session.commit()
+
+        # Verify via API
+        resp = c.get(f'/jobs/{task_id}')
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'resolved')
+        self.assertEqual(job_data['winner_id'], worker_a_id)
+
+        resp = c.get(f'/submissions/{sub_a_id}',
+                      headers=_auth_headers(worker_a_key))
+        self.assertEqual(resp.get_json()['status'], 'passed')
+
+        resp = c.get(f'/submissions/{sub_b_id}',
+                      headers=_auth_headers(worker_b_key))
+        sub_b_data = resp.get_json()
+        self.assertEqual(sub_b_data['status'], 'failed')
+        self.assertIn('no longer in funded state', sub_b_data['oracle_reason'])
+
+
+# ===================================================================
+# Scenario L: Oracle Timeout
+# ===================================================================
+
+class TestScenarioL_OracleTimeout(unittest.TestCase):
+    """
+    Scenario L: Oracle evaluation times out -> submission marked failed
+    with timeout reason -> worker can resubmit.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_oracle_timeout_marks_failed_and_allows_retry(self, mock_oracle):
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'l-buyer', 'Buyer L',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'l-worker', 'Worker L',
+                                                 wallet='0x' + 'bb' * 20)
+
+        # Create + fund job
+        resp = c.post('/jobs', json={
+            'title': 'Timeout Task',
+            'description': 'Oracle will time out',
+            'price': 3.0,
+            'max_retries': 3,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xl-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # Worker claims + submits
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_key))
+
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'solution that times out'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub1_id = resp.get_json()['submission_id']
+
+        # Simulate timeout
+        sub1 = db.session.get(Submission, sub1_id)
+        sub1.status = 'failed'
+        sub1.oracle_reason = 'Evaluation timed out after 120s'
+        sub1.oracle_steps = [{"step": 0, "name": "timeout", "output": {"error": "timeout"}}]
+        job = db.session.get(Job, task_id)
+        job.failure_count = (job.failure_count or 0) + 1
+        db.session.commit()
+
+        # Verify submission is failed with timeout reason
+        resp = c.get(f'/submissions/{sub1_id}',
+                      headers=_auth_headers(worker_key))
+        sub_data = resp.get_json()
+        self.assertEqual(sub_data['status'], 'failed')
+        self.assertIn('timed out', sub_data['oracle_reason'])
+
+        # Worker resubmits
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'retry after timeout'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.get_json()['attempt'], 2)
+
+        # Job is still funded (not resolved, not failed)
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.get_json()['status'], 'funded')
+
+
 if __name__ == '__main__':
     unittest.main()
