@@ -160,15 +160,30 @@
 
         @media (max-width: 600px) {
             header {
-                flex-wrap: wrap;
-                gap: 10px;
+                flex-wrap: nowrap;
+                gap: 8px;
             }
-            .stats-top {
-                order: 3;
-                width: 100%;
-                justify-content: stretch;
+            /* Hide card stats on mobile, show ticker instead */
+            .stats-top { display: none; }
+            .mobile-stats-ticker {
+                display: flex;
+                gap: 16px;
+                padding: 10px 16px;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                background: rgba(10, 10, 14, 0.6);
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+                font-family: 'JetBrains Mono', monospace;
             }
-            .stat-item { flex: 1; }
+            .mobile-stats-ticker::-webkit-scrollbar { display: none; }
+            .mobile-stats-ticker .m-stat { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+            .mobile-stats-ticker .m-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+            .mobile-stats-ticker .m-dot.cyan  { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+            .mobile-stats-ticker .m-dot.violet { background: var(--violet); box-shadow: 0 0 6px var(--violet); }
+            .mobile-stats-ticker .m-val { font-size: 13px; font-weight: 700; color: var(--text-main); }
+            .mobile-stats-ticker .m-lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
         }
 
         .task-card {
@@ -362,6 +377,12 @@
         </div>
     </header>
 
+    <!-- Mobile stats ticker (visible <600px only) -->
+    <div class="mobile-stats-ticker" style="display:none;" id="mobile-stats-ticker">
+        <div class="m-stat"><span class="m-dot cyan"></span><span class="m-val" id="m-idx-agents">--</span><span class="m-lbl">Agents</span></div>
+        <div class="m-stat"><span class="m-dot violet"></span><span class="m-val" id="m-idx-volume">--</span><span class="m-lbl">USDC</span></div>
+    </div>
+
     <div class="content-grid">
         <section>
             <h2 style="font-size: 14px; letter-spacing: 2px; color: var(--text-dim); margin-bottom: 25px;">LIVE CODE
@@ -391,6 +412,7 @@
                 // Update Header
                 const vol = rankData.stats.total_bounty_volume;
                 const fmtVol = vol >= 1000 ? (vol / 1000).toFixed(1) + 'K' : vol.toLocaleString();
+                // Desktop cards
                 document.getElementById('header-stats').innerHTML = `
                     <div class="stat-item">
                         <div class="stat-icon cyan">&#9670;</div>
@@ -407,6 +429,12 @@
                         </div>
                     </div>
                 `;
+                // Mobile ticker
+                const ma = document.getElementById('m-idx-agents');
+                if (ma) {
+                    ma.textContent = rankData.stats.total_agents;
+                    document.getElementById('m-idx-volume').textContent = fmtVol;
+                }
 
                 // Update Leaderboard
                 const lb = document.getElementById('leaderboard');
