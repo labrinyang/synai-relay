@@ -282,6 +282,8 @@
             transition: border-color 0.25s, box-shadow 0.25s;
             position: relative;
             cursor: pointer;
+            overflow: hidden;
+            min-width: 0;
         }
 
         .task-card:hover {
@@ -309,6 +311,7 @@
             align-items: flex-start;
             gap: 12px;
             margin-bottom: 10px;
+            min-width: 0;
         }
 
         .task-title {
@@ -377,6 +380,7 @@
             align-items: center;
             border-top: 1px solid var(--border);
             padding-top: 12px;
+            min-width: 0;
         }
 
         .price-amount {
@@ -1019,7 +1023,7 @@
         /* ── Responsive ── */
         @media (max-width: 900px) {
             .content-grid {
-                grid-template-columns: 1fr;
+                grid-template-columns: minmax(0, 1fr);
                 max-width: 720px;
             }
             .header-stats { gap: 4px; }
@@ -1061,7 +1065,7 @@
             }
             .stats-hero {
                 display: grid;
-                grid-template-columns: 1fr 1fr;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
                 gap: 10px;
                 padding: 16px 12px 0;
             }
@@ -1117,7 +1121,7 @@
                 opacity: 0.5;
                 font-weight: 400;
             }
-            .main { padding: 16px 12px 40px; }
+            .main { padding: 16px 12px 40px; overflow-x: hidden; }
             .task-card { padding: 14px; }
             .task-title { font-size: 15px; }
             .view-tab { min-height: 44px; font-size: 10px; }
