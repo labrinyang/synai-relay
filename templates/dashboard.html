@@ -1045,26 +1045,62 @@
             }
         }
 
+        /* ── Mobile stats ticker (visible <600px only) ── */
+        .mobile-stats-ticker {
+            display: none;
+        }
+
         @media (max-width: 600px) {
             .header {
-                flex-wrap: wrap;
-                gap: 12px;
-                padding: 14px 16px;
-            }
-            .header-stats {
-                order: 3;
-                width: 100%;
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 6px;
-            }
-            .stat-block {
-                padding: 8px 10px;
+                flex-wrap: nowrap;
                 gap: 8px;
+                padding: 12px 16px;
             }
-            .stat-icon { width: 30px; height: 30px; font-size: 13px; border-radius: 6px; }
-            .stat-label { font-size: 9px; letter-spacing: 0.8px; }
-            .stat-value { font-size: 15px; }
+            /* Hide card-style stats from header on mobile */
+            .header-stats {
+                display: none;
+            }
+            /* Show the ticker strip below header */
+            .mobile-stats-ticker {
+                display: flex;
+                gap: 16px;
+                padding: 10px 16px;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                background: rgba(10, 10, 14, 0.6);
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+            }
+            .mobile-stats-ticker::-webkit-scrollbar { display: none; }
+            .mobile-stats-ticker .m-stat {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                flex-shrink: 0;
+                font-family: 'JetBrains Mono', monospace;
+            }
+            .mobile-stats-ticker .m-dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                flex-shrink: 0;
+            }
+            .mobile-stats-ticker .m-dot.cyan  { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+            .mobile-stats-ticker .m-dot.green  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+            .mobile-stats-ticker .m-dot.violet { background: var(--violet); box-shadow: 0 0 6px var(--violet); }
+            .mobile-stats-ticker .m-dot.gold   { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
+            .mobile-stats-ticker .m-val {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--text-main);
+            }
+            .mobile-stats-ticker .m-lbl {
+                font-size: 10px;
+                color: var(--text-dim);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
             .main { padding: 16px 12px 40px; }
             .task-card { padding: 14px; }
             .task-title { font-size: 15px; }
@@ -1228,6 +1264,14 @@
             <a href="/" class="home-link">&#9664; HOME</a>
         </nav>
     </header>
+
+    <!-- Mobile stats ticker (single scrollable row, visible <600px) -->
+    <div class="mobile-stats-ticker" id="mobile-stats-ticker">
+        <div class="m-stat"><span class="m-dot cyan"></span><span class="m-val" id="m-stat-agents">--</span><span class="m-lbl">Agents</span></div>
+        <div class="m-stat"><span class="m-dot green"></span><span class="m-val" id="m-stat-active">--</span><span class="m-lbl">Active</span></div>
+        <div class="m-stat"><span class="m-dot violet"></span><span class="m-val" id="m-stat-volume">--</span><span class="m-lbl">USDC</span></div>
+        <div class="m-stat"><span class="m-dot gold"></span><span class="m-val" id="m-stat-funded">--</span><span class="m-lbl">Funded</span></div>
+    </div>
 
     <!-- Main Content -->
     <main class="main">
@@ -1564,18 +1608,32 @@
 
         function renderStats(stats) {
             if (!stats) return;
-            document.getElementById('stat-agents').textContent = stats.total_agents ?? '--';
-            document.getElementById('stat-active').textContent = stats.total_active_agents ?? '--';
-            const volEl = document.getElementById('stat-volume');
+            const agents = stats.total_agents ?? '--';
+            const active = stats.total_active_agents ?? '--';
+            const funded = stats.tasks_by_status?.funded ?? 0;
+            let volFmt = '--';
             if (stats.total_volume != null) {
                 const v = parseFloat(stats.total_volume);
-                const fmt = v >= 1000 ? (v / 1000).toFixed(1) + 'K' : fmtPrice(v);
-                volEl.innerHTML = fmt + ' <span style="font-size:10px;opacity:0.6;">USDC</span>';
+                volFmt = v >= 1000 ? (v / 1000).toFixed(1) + 'K' : fmtPrice(v);
+            }
+            // Desktop header cards
+            document.getElementById('stat-agents').textContent = agents;
+            document.getElementById('stat-active').textContent = active;
+            const volEl = document.getElementById('stat-volume');
+            if (stats.total_volume != null) {
+                volEl.innerHTML = volFmt + ' <span style="font-size:10px;opacity:0.6;">USDC</span>';
             } else {
                 volEl.textContent = '--';
             }
-            const funded = stats.tasks_by_status?.funded ?? 0;
             document.getElementById('stat-funded').textContent = funded;
+            // Mobile ticker
+            const ma = document.getElementById('m-stat-agents');
+            if (ma) {
+                ma.textContent = agents;
+                document.getElementById('m-stat-active').textContent = active;
+                document.getElementById('m-stat-volume').textContent = volFmt;
+                document.getElementById('m-stat-funded').textContent = funded;
+            }
         }
 
         /* ── Detail Panel ── */
