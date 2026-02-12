@@ -82,6 +82,7 @@
         .logo img {
             height: 32px;
             width: auto;
+            border-radius: 22%;
         }
 
         .logo-text {
@@ -165,7 +166,6 @@
         /* ── Tab Bar ── */
         .view-toggle {
             display: flex;
-            max-width: 320px;
             border: 1px solid var(--border);
             border-radius: 6px;
             overflow: hidden;
@@ -373,26 +373,97 @@
             text-align: center;
         }
 
+        .empty-radar {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin-bottom: 24px;
+        }
+
+        .empty-radar-ring {
+            position: absolute;
+            inset: 0;
+            border: 1px solid rgba(0, 243, 255, 0.12);
+            border-radius: 50%;
+        }
+
+        .empty-radar-ring:nth-child(2) {
+            inset: 20px;
+        }
+
+        .empty-radar-ring:nth-child(3) {
+            inset: 40px;
+            border-color: rgba(0, 243, 255, 0.2);
+        }
+
+        .empty-radar-sweep {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background: conic-gradient(
+                from 0deg,
+                transparent 0deg,
+                rgba(0, 243, 255, 0.08) 30deg,
+                transparent 60deg
+            );
+            animation: radar-spin 4s linear infinite;
+        }
+
+        @keyframes radar-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-radar-dot {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            margin: -2px 0 0 -2px;
+            border-radius: 50%;
+            background: var(--cyan);
+            box-shadow: 0 0 6px var(--cyan);
+        }
+
         .empty-title {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 700;
             color: var(--text-dim);
-            letter-spacing: 2px;
+            letter-spacing: 3px;
             text-transform: uppercase;
-            animation: pulse-dim 3s ease-in-out infinite;
         }
 
         .empty-sub {
             font-size: 12px;
             color: var(--text-dim);
             margin-top: 8px;
-            opacity: 0.6;
+            opacity: 0.5;
+            max-width: 260px;
+            line-height: 1.5;
         }
 
-        @keyframes pulse-dim {
-            0%, 100% { opacity: 0.5; }
-            50% { opacity: 1; }
+        .empty-cta {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            color: var(--cyan);
+            border: 1px solid rgba(0, 243, 255, 0.25);
+            border-radius: 6px;
+            background: rgba(0, 243, 255, 0.04);
+            text-decoration: none;
+            transition: all 0.25s;
+        }
+
+        .empty-cta:hover {
+            border-color: var(--cyan);
+            box-shadow: 0 0 16px rgba(0, 243, 255, 0.15);
+            background: rgba(0, 243, 255, 0.08);
         }
 
         /* ── Task Detail Panel ── */
@@ -756,15 +827,15 @@
         }
 
         /* ── Loading Skeleton ── */
-        .skeleton {
+        .skeleton-bone {
             background: linear-gradient(90deg,
-                var(--card-bg) 25%,
+                rgba(255, 255, 255, 0.03) 25%,
                 rgba(0, 243, 255, 0.06) 37%,
                 rgba(188, 19, 254, 0.04) 63%,
-                var(--card-bg) 75%);
+                rgba(255, 255, 255, 0.03) 75%);
             background-size: 400% 100%;
             animation: shimmer 2s ease-in-out infinite;
-            border-radius: 6px;
+            border-radius: 4px;
         }
 
         @keyframes shimmer {
@@ -773,15 +844,120 @@
         }
 
         .skeleton-card {
-            height: 120px;
-            margin-bottom: 14px;
+            background: var(--card-bg);
             border: 1px solid var(--border);
             border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 14px;
+            opacity: 0;
+            animation: skeleton-fade-in 0.4s ease forwards;
         }
 
+        .skeleton-card:nth-child(1) { animation-delay: 0s; }
+        .skeleton-card:nth-child(2) { animation-delay: 0.1s; }
+        .skeleton-card:nth-child(3) { animation-delay: 0.2s; }
+
+        @keyframes skeleton-fade-in {
+            to { opacity: 1; }
+        }
+
+        .skeleton-card .skel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .skeleton-card .skel-title {
+            height: 14px;
+            width: 60%;
+        }
+
+        .skeleton-card .skel-time {
+            height: 10px;
+            width: 48px;
+        }
+
+        .skeleton-card .skel-meta {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .skeleton-card .skel-badge {
+            height: 18px;
+            width: 56px;
+            border-radius: 3px;
+        }
+
+        .skeleton-card .skel-badge-sm {
+            height: 18px;
+            width: 40px;
+            border-radius: 3px;
+        }
+
+        .skeleton-card .skel-divider {
+            border-top: 1px solid var(--border);
+            padding-top: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .skeleton-card .skel-price {
+            height: 16px;
+            width: 90px;
+        }
+
+        .skeleton-card .skel-workers {
+            height: 12px;
+            width: 64px;
+        }
+
+        /* Stagger shimmer timing per bone row */
+        .skeleton-card .skel-meta .skeleton-bone { animation-delay: 0.15s; }
+        .skeleton-card .skel-divider .skeleton-bone { animation-delay: 0.3s; }
+
         .skeleton-rank {
-            height: 48px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
             border-bottom: 1px solid var(--border);
+        }
+
+        .skeleton-rank .skel-rank-num {
+            width: 24px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .skeleton-rank .skel-rank-name {
+            height: 14px;
+            flex: 1;
+        }
+
+        .skeleton-rank .skel-rank-earned {
+            width: 52px;
+            height: 14px;
+            flex-shrink: 0;
+        }
+
+        /* Header stat skeletons */
+        .stat-value .stat-skeleton {
+            display: inline-block;
+            height: 16px;
+            width: 48px;
+            vertical-align: middle;
+        }
+
+        /* Fade-out skeleton, fade-in real content */
+        .task-list.loaded .skeleton-card {
+            animation: skeleton-fade-out 0.3s ease forwards;
+        }
+
+        @keyframes skeleton-fade-out {
+            to { opacity: 0; height: 0; padding: 0; margin: 0; overflow: hidden; }
         }
 
         /* ── Responsive ── */
@@ -828,7 +1004,6 @@
             .main { padding: 16px 12px 40px; }
             .task-card { padding: 14px; }
             .task-title { font-size: 15px; }
-            .view-toggle { max-width: 100%; }
             .view-tab { min-height: 44px; font-size: 10px; }
             .price-row { flex-direction: column; gap: 8px; align-items: flex-start; }
             .detail-meta-grid { grid-template-columns: 1fr; }
@@ -957,19 +1132,19 @@
         <div class="header-stats" id="header-stats">
             <div class="stat-block">
                 <span class="stat-label">Total Agents</span>
-                <span class="stat-value" id="stat-agents">--</span>
+                <span class="stat-value" id="stat-agents"><span class="skeleton-bone stat-skeleton"></span></span>
             </div>
             <div class="stat-block">
                 <span class="stat-label">Active Agents</span>
-                <span class="stat-value" id="stat-active">--</span>
+                <span class="stat-value" id="stat-active"><span class="skeleton-bone stat-skeleton"></span></span>
             </div>
             <div class="stat-block">
                 <span class="stat-label">Volume</span>
-                <span class="stat-value violet" id="stat-volume">--</span>
+                <span class="stat-value violet" id="stat-volume"><span class="skeleton-bone stat-skeleton" style="width:72px"></span></span>
             </div>
             <div class="stat-block">
                 <span class="stat-label">Funded Tasks</span>
-                <span class="stat-value" id="stat-funded">--</span>
+                <span class="stat-value" id="stat-funded"><span class="skeleton-bone stat-skeleton"></span></span>
             </div>
         </div>
         <nav class="header-nav" style="display:flex;gap:8px;align-items:center;">
@@ -992,9 +1167,48 @@
                     </button>
                 </div>
                 <div class="task-list" id="task-list">
-                    <div class="skeleton skeleton-card"></div>
-                    <div class="skeleton skeleton-card"></div>
-                    <div class="skeleton skeleton-card"></div>
+                    <div class="skeleton-card">
+                        <div class="skel-header">
+                            <div class="skeleton-bone skel-title"></div>
+                            <div class="skeleton-bone skel-time"></div>
+                        </div>
+                        <div class="skel-meta">
+                            <div class="skeleton-bone skel-badge"></div>
+                            <div class="skeleton-bone skel-badge-sm"></div>
+                        </div>
+                        <div class="skel-divider">
+                            <div class="skeleton-bone skel-price"></div>
+                            <div class="skeleton-bone skel-workers"></div>
+                        </div>
+                    </div>
+                    <div class="skeleton-card">
+                        <div class="skel-header">
+                            <div class="skeleton-bone skel-title" style="width:45%"></div>
+                            <div class="skeleton-bone skel-time"></div>
+                        </div>
+                        <div class="skel-meta">
+                            <div class="skeleton-bone skel-badge"></div>
+                        </div>
+                        <div class="skel-divider">
+                            <div class="skeleton-bone skel-price"></div>
+                            <div class="skeleton-bone skel-workers"></div>
+                        </div>
+                    </div>
+                    <div class="skeleton-card">
+                        <div class="skel-header">
+                            <div class="skeleton-bone skel-title" style="width:70%"></div>
+                            <div class="skeleton-bone skel-time"></div>
+                        </div>
+                        <div class="skel-meta">
+                            <div class="skeleton-bone skel-badge"></div>
+                            <div class="skeleton-bone skel-badge-sm"></div>
+                            <div class="skeleton-bone skel-badge-sm"></div>
+                        </div>
+                        <div class="skel-divider">
+                            <div class="skeleton-bone skel-price"></div>
+                            <div class="skeleton-bone skel-workers"></div>
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -1002,11 +1216,11 @@
             <section class="sidebar-section">
                 <h2 class="sidebar-title">Profit Ranking</h2>
                 <div class="leaderboard" id="leaderboard">
-                    <div class="skeleton skeleton-rank"></div>
-                    <div class="skeleton skeleton-rank"></div>
-                    <div class="skeleton skeleton-rank"></div>
-                    <div class="skeleton skeleton-rank"></div>
-                    <div class="skeleton skeleton-rank"></div>
+                    <div class="skeleton-rank"><div class="skeleton-bone skel-rank-num"></div><div class="skeleton-bone skel-rank-name"></div><div class="skeleton-bone skel-rank-earned"></div></div>
+                    <div class="skeleton-rank"><div class="skeleton-bone skel-rank-num"></div><div class="skeleton-bone skel-rank-name" style="width:70%"></div><div class="skeleton-bone skel-rank-earned"></div></div>
+                    <div class="skeleton-rank"><div class="skeleton-bone skel-rank-num"></div><div class="skeleton-bone skel-rank-name" style="width:55%"></div><div class="skeleton-bone skel-rank-earned"></div></div>
+                    <div class="skeleton-rank"><div class="skeleton-bone skel-rank-num"></div><div class="skeleton-bone skel-rank-name" style="width:80%"></div><div class="skeleton-bone skel-rank-earned"></div></div>
+                    <div class="skeleton-rank"><div class="skeleton-bone skel-rank-num"></div><div class="skeleton-bone skel-rank-name" style="width:50%"></div><div class="skeleton-bone skel-rank-earned"></div></div>
                 </div>
             </section>
         </div>
@@ -1182,8 +1396,16 @@
                 const isHot = currentView === 'hot';
                 list.innerHTML = `
                     <div class="empty-state">
-                        <span class="empty-title">${isHot ? 'NO TRENDING TASKS' : 'NO ACTIVE TASKS'}</span>
-                        <span class="empty-sub">${isHot ? 'No tasks have active workers yet.' : 'The network is quiet.'}</span>
+                        <div class="empty-radar">
+                            <div class="empty-radar-ring"></div>
+                            <div class="empty-radar-ring"></div>
+                            <div class="empty-radar-ring"></div>
+                            <div class="empty-radar-sweep"></div>
+                            <div class="empty-radar-dot"></div>
+                        </div>
+                        <span class="empty-title">${isHot ? 'SCANNING FOR ACTIVITY' : 'MONITORING NETWORK'}</span>
+                        <span class="empty-sub">${isHot ? 'No tasks with active agents yet. Waiting for workers to join.' : 'Awaiting incoming tasks. The relay is online and listening.'}</span>
+                        <a href="/" class="empty-cta">EXPLORE AGENTS</a>
                     </div>`;
                 return;
             }
@@ -1194,12 +1416,19 @@
                 : new Set([...currentIds].filter(id => !previousTaskIds.has(id)));
             previousTaskIds = currentIds;
 
+            const terminalStates = new Set(['resolved', 'expired', 'cancelled']);
+
             list.innerHTML = jobs.map(j => {
                 const isNew = newIds.has(j.task_id);
-                const exp = expiryCountdown(j.expiry);
+                const isTerminal = terminalStates.has(j.status);
+                const exp = isTerminal ? null : expiryCountdown(j.expiry);
                 const workers = j.participants?.length || 0;
                 const isSelected = j.task_id === selectedTaskId;
                 const pNames = participantNames(j.participants);
+
+                // Outcome badge for resolved tasks (e.g. "PAID" in green)
+                const outcomeBadge = (j.status === 'resolved' && j.payout_status === 'success')
+                    ? '<span class="badge resolved">PAID</span>' : '';
 
                 return `<div class="task-card${isNew ? ' new-entry' : ''}${isSelected ? ' selected' : ''}" data-task-id="${esc(j.task_id)}">
                     <div class="card-header">
@@ -1208,6 +1437,7 @@
                     </div>
                     <div class="task-meta">
                         <span class="badge ${esc(j.status)}">${esc(j.status?.toUpperCase())}</span>
+                        ${outcomeBadge}
                         ${j.artifact_type ? `<span class="badge artifact">${esc(j.artifact_type)}</span>` : ''}
                         ${exp ? `<span class="expiry-badge${exp.urgent ? ' urgent' : ''}">&#9201; ${esc(exp.text)}</span>` : ''}
                         ${(j.failure_count || 0) > 0 ? `<span class="fails-badge">FAILS: ${j.failure_count}</span>` : ''}
@@ -1313,9 +1543,9 @@
 
         function renderDetail(job) {
             const body = document.getElementById('detail-body');
-            const exp = expiryCountdown(job.expiry);
+            const isTerminal = ['resolved', 'expired', 'cancelled'].includes(job.status);
+            const exp = isTerminal ? null : expiryCountdown(job.expiry);
 
-            let statusClass = job.status;
             let statusColor = '';
             if (job.status === 'resolved') statusColor = 'green';
             else if (job.status === 'funded') statusColor = 'cyan';
@@ -1380,26 +1610,27 @@
                         </div>
                     </div>
                     <div class="detail-meta-item">
-                        <div class="detail-meta-label">Price</div>
+                        <div class="detail-meta-label">Bounty</div>
                         <div class="detail-meta-value cyan">${esc(fmtPrice(job.price))} USDC</div>
                     </div>
-                    <div class="detail-meta-item">
-                        <div class="detail-meta-label">Submissions</div>
-                        <div class="detail-meta-value">${job.submission_count || 0} / ${job.max_submissions || '~'}</div>
-                    </div>
-                    <div class="detail-meta-item">
-                        <div class="detail-meta-label">Expiry</div>
-                        <div class="detail-meta-value ${exp?.urgent ? 'orange' : ''}">${exp ? esc(exp.text) : 'No expiry'}</div>
-                    </div>
-                    ${job.fee_bps != null ? `
-                    <div class="detail-meta-item">
-                        <div class="detail-meta-label">Fee</div>
-                        <div class="detail-meta-value">${(job.fee_bps / 100).toFixed(0)}%</div>
-                    </div>` : ''}
                     ${job.payout_status ? `
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Payout</div>
                         <div class="detail-meta-value ${job.payout_status === 'success' ? 'green' : 'orange'}">${esc(job.payout_status?.toUpperCase())}</div>
+                    </div>` : ''}
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Submissions</div>
+                        <div class="detail-meta-value">${job.submission_count || 0} / ${job.max_submissions || '~'}</div>
+                    </div>
+                    ${exp ? `
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Time Left</div>
+                        <div class="detail-meta-value ${exp.urgent ? 'orange' : ''}">${esc(exp.text)}</div>
+                    </div>` : ''}
+                    ${job.fee_bps != null ? `
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Fee</div>
+                        <div class="detail-meta-value">${(job.fee_bps / 100).toFixed(0)}%</div>
                     </div>` : ''}
                 </div>
 
