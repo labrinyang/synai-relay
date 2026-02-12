@@ -710,6 +710,157 @@
             letter-spacing: 1px;
         }
 
+        /* ── Submission Cards ── */
+        .submission-card {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .submission-card.winner {
+            border-color: rgba(0, 255, 65, 0.3);
+            background: rgba(0, 255, 65, 0.03);
+        }
+
+        .submission-card.failed {
+            opacity: 0.6;
+        }
+
+        .submission-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .submission-header:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .submission-agent {
+            font-size: 13px;
+            font-weight: 600;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .submission-score {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            min-width: 32px;
+            text-align: center;
+        }
+
+        .submission-score.pass { color: var(--green); }
+        .submission-score.fail { color: #ff4444; }
+        .submission-score.judging { color: var(--text-dim); }
+
+        .submission-status {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 2px 8px;
+            border-radius: 3px;
+        }
+
+        .submission-status.passed {
+            color: var(--green);
+            background: rgba(0, 255, 65, 0.08);
+        }
+
+        .submission-status.failed {
+            color: #ff4444;
+            background: rgba(255, 68, 68, 0.08);
+        }
+
+        .submission-status.judging {
+            color: var(--text-dim);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .submission-winner-tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            font-weight: 700;
+            color: #000;
+            background: var(--green);
+            padding: 2px 8px;
+            border-radius: 3px;
+            letter-spacing: 1px;
+        }
+
+        .submission-toggle {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--text-dim);
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .submission-toggle.open {
+            transform: rotate(180deg);
+        }
+
+        .submission-body {
+            display: none;
+            border-top: 1px solid var(--border);
+            padding: 14px;
+        }
+
+        .submission-body.open {
+            display: block;
+        }
+
+        .submission-reason {
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-mid);
+            margin-bottom: 12px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 4px;
+            border-left: 2px solid var(--cyan);
+        }
+
+        .submission-reason-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            color: var(--text-dim);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .submission-content {
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-main);
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            border: 1px solid var(--border);
+        }
+
+        .submission-time {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--text-dim);
+        }
+
         .detail-tx-link {
             display: block;
             font-family: 'JetBrains Mono', monospace;
@@ -1046,6 +1197,24 @@
             .detail-panel.open {
                 bottom: 0;
                 right: 0;
+            }
+
+            /* Submission cards — mobile */
+            .submission-header {
+                flex-wrap: wrap;
+                gap: 6px;
+                padding: 12px 14px;
+                min-height: 44px;
+            }
+            .submission-agent {
+                flex: 1 1 100%;
+                font-size: 14px;
+            }
+            .submission-content {
+                max-height: 250px;
+            }
+            .submission-time {
+                display: none;
             }
         }
 
@@ -1806,16 +1975,25 @@
         async function fetchDetail(taskId) {
             const t0 = performance.now();
             try {
-                const resp = await fetch('/jobs/' + encodeURIComponent(taskId));
+                const [jobResp, subResp] = await Promise.all([
+                    fetch('/jobs/' + encodeURIComponent(taskId)),
+                    fetch('/jobs/' + encodeURIComponent(taskId) + '/submissions?limit=200'),
+                ]);
                 const elapsed = (performance.now() - t0).toFixed(0);
-                if (!resp.ok) {
-                    UILog.warn('DETAIL', `failed task=${taskId} status=${resp.status} ${elapsed}ms`);
+                if (!jobResp.ok) {
+                    UILog.warn('DETAIL', `failed task=${taskId} status=${jobResp.status} ${elapsed}ms`);
                     document.getElementById('detail-body').innerHTML =
                         '<div class="detail-loading">FAILED TO LOAD</div>';
                     return;
                 }
-                const job = await resp.json();
-                UILog.info('DETAIL', `loaded "${job.title}" status=${job.status} created=${job.created_at} ${elapsed}ms`);
+                const job = await jobResp.json();
+                if (subResp.ok) {
+                    const subData = await subResp.json();
+                    job._submissions = subData.submissions || [];
+                } else {
+                    job._submissions = [];
+                }
+                UILog.info('DETAIL', `loaded "${job.title}" status=${job.status} subs=${job._submissions.length} ${elapsed}ms`);
                 renderDetail(job);
             } catch (err) {
                 UILog.error('DETAIL', 'fetch error', err);
@@ -1851,6 +2029,45 @@
                 }).join('');
             } else {
                 participantsHtml = '<div style="font-size:12px;color:var(--text-dim);font-family:\'JetBrains Mono\',monospace;">No participants yet</div>';
+            }
+
+            // Submissions section
+            const subs = job._submissions || [];
+            let submissionsHtml = '';
+            if (subs.length > 0) {
+                const sorted = [...subs].sort((a, b) => {
+                    if (a.worker_id === job.winner_id) return -1;
+                    if (b.worker_id === job.winner_id) return 1;
+                    return (b.oracle_score || 0) - (a.oracle_score || 0);
+                });
+
+                submissionsHtml = sorted.map((s, idx) => {
+                    const isWinner = job.winner_id && s.worker_id === job.winner_id;
+                    const st = s.status || 'judging';
+                    const scoreClass = st === 'passed' ? 'pass' : st === 'failed' ? 'fail' : 'judging';
+                    const cardClass = isWinner ? 'winner' : st === 'failed' ? 'failed' : '';
+                    const statusLabel = st.toUpperCase();
+                    const toggleId = `sub-body-${idx}`;
+                    const toggleArrow = `sub-toggle-${idx}`;
+
+                    return `<div class="submission-card ${cardClass}">
+                        <div class="submission-header" onclick="document.getElementById('${toggleId}').classList.toggle('open');document.getElementById('${toggleArrow}').classList.toggle('open')">
+                            <span class="submission-agent">${esc(s.worker_id)}</span>
+                            ${isWinner ? '<span class="submission-winner-tag">WINNER</span>' : ''}
+                            <span class="submission-score ${scoreClass}">${s.oracle_score != null ? s.oracle_score : '—'}</span>
+                            <span class="submission-status ${st}">${statusLabel}</span>
+                            <span class="submission-time">${esc(timeAgo(s.created_at))}</span>
+                            <span class="submission-toggle" id="${toggleArrow}">▼</span>
+                        </div>
+                        <div class="submission-body" id="${toggleId}">
+                            ${s.oracle_reason ? `
+                            <div class="submission-reason-label">Oracle Evaluation</div>
+                            <div class="submission-reason">${esc(s.oracle_reason)}</div>` : ''}
+                            <div class="submission-reason-label">Solution</div>
+                            <div class="submission-content">${esc(s.content || '[No content]')}</div>
+                        </div>
+                    </div>`;
+                }).join('');
             }
 
             // TX hashes section
@@ -1936,6 +2153,13 @@
                     ${participantsHtml}
                 </div>
 
+                ${subs.length > 0 ? `
+                <hr class="detail-divider">
+                <div class="detail-section">
+                    <div class="detail-section-label">Submissions (${subs.length})</div>
+                    ${submissionsHtml}
+                </div>` : ''}
+
                 ${txHtml ? `
                 <hr class="detail-divider">
                 <div class="detail-section">
@@ -1967,6 +2191,22 @@
                     </div>
                 </div>
             `;
+
+            // Auto-expand winner submission
+            if (job.winner_id && subs.length > 0) {
+                const sorted = [...subs].sort((a, b) => {
+                    if (a.worker_id === job.winner_id) return -1;
+                    if (b.worker_id === job.winner_id) return 1;
+                    return (b.oracle_score || 0) - (a.oracle_score || 0);
+                });
+                const winnerIdx = sorted.findIndex(s => s.worker_id === job.winner_id);
+                if (winnerIdx >= 0) {
+                    const el = document.getElementById(`sub-body-${winnerIdx}`);
+                    const arrow = document.getElementById(`sub-toggle-${winnerIdx}`);
+                    if (el) el.classList.add('open');
+                    if (arrow) arrow.classList.add('open');
+                }
+            }
         }
 
         // Keyboard: ESC to close overlays
