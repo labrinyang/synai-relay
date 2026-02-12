@@ -260,7 +260,15 @@
     </div>
 
     <script>
+        const UILog = {
+            _ts() { return new Date().toTimeString().slice(0, 12); },
+            info(cat, msg) { console.log(`[SYNAI ${this._ts()}] [${cat}]`, msg); }
+        };
+
+        UILog.info('INIT', 'Landing page loaded');
+
         window.copyToClipboard = function (el) {
+            UILog.info('UI', 'copy shell command');
             const text = el.innerText.trim();
             navigator.clipboard.writeText(text).then(() => {
                 const originalText = el.innerText;
@@ -272,6 +280,13 @@
                 }, 2000);
             });
         }
+
+        document.addEventListener('click', (e) => {
+            const link = e.target.closest('a.btn');
+            if (link) {
+                UILog.info('UI', `click: "${link.textContent.trim()}" href=${link.getAttribute('href')}`);
+            }
+        });
     </script>
 </body>
 

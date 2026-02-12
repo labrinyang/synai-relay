@@ -962,3 +962,169 @@ def test_validate_production_noop():
     """validate_production is a no-op (guards removed)."""
     import config
     config.Config.validate_production()  # Should not raise
+
+
+# ===================================================================
+# 1.9 DashboardService — TTLCache + cache invalidation
+# ===================================================================
+
+class TestTTLCache:
+    """TTLCache unit tests."""
+
+    def test_cache_returns_none_on_miss(self):
+        from services.dashboard_service import TTLCache
+        cache = TTLCache(30)
+        assert cache.get('nonexistent') is None
+
+    def test_cache_hit_within_ttl(self):
+        from services.dashboard_service import TTLCache
+        cache = TTLCache(30)
+        cache.set('k', {'value': 42})
+        assert cache.get('k') == {'value': 42}
+
+    def test_cache_expires_after_ttl(self):
+        from services.dashboard_service import TTLCache
+        cache = TTLCache(0.1)  # 100ms TTL
+        cache.set('k', 'old')
+        time.sleep(0.15)
+        assert cache.get('k') is None
+
+    def test_cache_clear(self):
+        from services.dashboard_service import TTLCache
+        cache = TTLCache(30)
+        cache.set('a', 1)
+        cache.set('b', 2)
+        cache.clear()
+        assert cache.get('a') is None
+        assert cache.get('b') is None
+
+
+class TestDashboardCacheInvalidation:
+    """Confirm that dashboard stats reflect data immediately after writes."""
+
+    def test_stats_stale_without_invalidation(self, ctx):
+        """BUG REPRO: get_stats() caches empty result, misses subsequent writes."""
+        from services.dashboard_service import DashboardService, _stats_cache
+
+        # Prime the cache with empty stats
+        stats1 = DashboardService.get_stats()
+        assert stats1['total_agents'] == 0
+
+        # Write an agent
+        agent = Agent(agent_id='cache-test-1', name='Cache Test')
+        db.session.add(agent)
+        db.session.commit()
+
+        # Without invalidation, cache still returns 0
+        stats2 = DashboardService.get_stats()
+        assert stats2['total_agents'] == 0, "Cache should still return stale data"
+
+        # Clean up cache for other tests
+        _stats_cache.clear()
+
+    def test_stats_fresh_after_invalidation(self, ctx):
+        """FIX VERIFY: invalidate_caches() makes get_stats() see new data."""
+        from services.dashboard_service import DashboardService
+
+        # Prime the cache
+        stats1 = DashboardService.get_stats()
+        assert stats1['total_agents'] == 0
+
+        # Write an agent
+        agent = Agent(agent_id='cache-test-2', name='Cache Test 2')
+        db.session.add(agent)
+        db.session.commit()
+
+        # Invalidate, then query — should see 1
+        DashboardService.invalidate_caches()
+        stats2 = DashboardService.get_stats()
+        assert stats2['total_agents'] == 1
+
+    def test_after_request_hook_invalidates_on_post(self, ctx):
+        """Integration: POST /agents triggers cache invalidation via after_request."""
+        from services.dashboard_service import DashboardService
+        DashboardService.invalidate_caches()  # clear residue from prior tests
+
+        client = app.test_client()
+
+        # Prime the cache via the API
+        rv = client.get('/dashboard/stats')
+        assert rv.status_code == 200
+        assert rv.get_json()['total_agents'] == 0
+
+        # Register agent via POST (triggers after_request invalidation)
+        rv = client.post('/agents', json={
+            'agent_id': 'cache-hook-1',
+            'name': 'Cache Hook Test',
+        })
+        assert rv.status_code == 201
+
+        # Stats should immediately reflect the new agent
+        rv = client.get('/dashboard/stats')
+        assert rv.status_code == 200
+        assert rv.get_json()['total_agents'] == 1
+
+    def test_leaderboard_cache_invalidated_on_write(self, ctx):
+        """Leaderboard cache also cleared after writes."""
+        from services.dashboard_service import DashboardService, _leaderboard_cache
+
+        # Prime leaderboard cache
+        lb1 = DashboardService.get_leaderboard()
+        assert lb1['total'] == 0
+
+        # Write agent with earnings
+        agent = Agent(agent_id='lb-test-1', name='LB Test',
+                      total_earned=100.0, is_ghost=False)
+        db.session.add(agent)
+        db.session.commit()
+
+        # Without invalidation, cache returns stale
+        lb2 = DashboardService.get_leaderboard()
+        assert lb2['total'] == 0
+
+        # After invalidation, see new data
+        DashboardService.invalidate_caches()
+        lb3 = DashboardService.get_leaderboard()
+        assert lb3['total'] == 1
+        assert lb3['agents'][0]['agent_id'] == 'lb-test-1'
+
+
+# ===================================================================
+# 1.10 API Timestamp Format — timezone suffix
+# ===================================================================
+
+class TestTimestampFormat:
+    """API timestamps must include timezone suffix so JS parses them as UTC."""
+
+    def test_job_created_at_has_timezone(self, ctx):
+        """created_at from /jobs endpoint must end with +00:00 or Z."""
+        from services.job_service import JobService
+        job = Job(
+            task_id='tz-test-001', title='TZ test', price=0.1,
+            buyer_id='buyer-tz', fee_bps=2000,
+        )
+        db.session.add(job)
+        db.session.commit()
+
+        d = JobService.to_dict(job)
+        ts = d['created_at']
+        assert ts is not None, "created_at should not be None"
+        assert ts.endswith('+00:00') or ts.endswith('Z'), (
+            f"created_at lacks timezone suffix: '{ts}'. "
+            f"JS will parse this as local time, causing wrong 'time ago' display."
+        )
+
+    def test_agent_created_at_has_timezone(self, ctx):
+        """Agent created_at in API response must have timezone."""
+        from services.agent_service import AgentService
+        agent = Agent(agent_id='tz-agent-001', name='TZ Agent')
+        db.session.add(agent)
+        db.session.commit()
+
+        # Go through the service layer — same path as the API endpoint
+        d = AgentService._to_dict(agent)
+        ts = d['created_at']
+        assert ts is not None
+        assert ts.endswith('+00:00') or ts.endswith('Z'), (
+            f"Agent created_at lacks timezone suffix: '{ts}'"
+        )

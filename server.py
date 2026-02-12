@@ -7,7 +7,7 @@ Submission statuses: pending -> judging -> passed | failed
 """
 
 from flask import Flask, request, jsonify, g, render_template, send_from_directory
-from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant
+from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant, utc_iso
 from config import Config
 from sqlalchemy.exc import IntegrityError
 from services.auth_service import generate_api_key, require_auth, require_operator, require_buyer, verify_api_key
@@ -70,7 +70,9 @@ def _set_sqlite_pragma(dbapi_conn, connection_record):
     if isinstance(dbapi_conn, sqlite3.Connection):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
+        mode = cursor.fetchone()
         cursor.close()
+        logger.info("SQLite PRAGMA journal_mode=WAL → %s", mode)
 
 # ---------------------------------------------------------------------------
 # Database bootstrap
@@ -128,6 +130,16 @@ def _add_request_id_header(response):
     rid = getattr(g, 'request_id', None)
     if rid:
         response.headers['X-Request-ID'] = rid
+    return response
+
+@app.after_request
+def _invalidate_dashboard_cache(response):
+    """Invalidate dashboard caches after successful mutating requests."""
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code < 400:
+        from services.dashboard_service import DashboardService
+        DashboardService.invalidate_caches()
+        logger.info("dashboard cache invalidated: %s %s → %d",
+                     request.method, request.path, response.status_code)
     return response
 
 # Thread pool for oracle evaluations with timeout support (G07)
@@ -234,8 +246,7 @@ def _expiry_checker_loop():
             consecutive_errors += 1
             logger.error("Expiry checker error (consecutive=%d): %s", consecutive_errors, e)
 
-_expiry_thread = threading.Thread(target=_expiry_checker_loop, daemon=True, name='expiry-checker')
-_expiry_thread.start()
+_expiry_thread = None  # started by _start_background_threads()
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +297,28 @@ def _timeout_monitor_loop():
                 _pending_oracles.pop(sid)
 
 
-_timeout_monitor = threading.Thread(target=_timeout_monitor_loop, daemon=True, name='oracle-timeout-monitor')
-_timeout_monitor.start()
+_timeout_monitor = None  # started by _start_background_threads()
+
+
+def _start_background_threads():
+    """Start (or restart) daemon threads. Safe to call multiple times.
+
+    Called once at module load and again by test fixtures after teardown.
+    """
+    global _timeout_monitor, _expiry_thread
+    # Timeout monitor
+    if _timeout_monitor is None or not _timeout_monitor.is_alive():
+        _timeout_monitor = threading.Thread(
+            target=_timeout_monitor_loop, daemon=True, name='oracle-timeout-monitor')
+        _timeout_monitor.start()
+    # Expiry checker
+    if _expiry_thread is None or not _expiry_thread.is_alive():
+        _expiry_thread = threading.Thread(
+            target=_expiry_checker_loop, daemon=True, name='expiry-checker')
+        _expiry_thread.start()
+
+
+_start_background_threads()
 
 
 def _atexit_shutdown():
@@ -652,7 +683,7 @@ def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
         "oracle_reason": sub.oracle_reason,
         "oracle_steps": _sanitize_oracle_steps(sub.oracle_steps),
         "attempt": sub.attempt,
-        "created_at": sub.created_at.isoformat() if sub.created_at else None,
+        "created_at": utc_iso(sub.created_at),
     }
     if show_content:
         result["content"] = sub.content
@@ -748,6 +779,9 @@ def register_agent():
         db.session.commit()
 
     response = {"status": "registered", "api_key": raw_key, **result}
+    logger.info("Agent registered: %s (name=%s) — total agents now: %d",
+                agent_id, name,
+                db.session.query(Agent).count())
 
     # G20: Wallet warning
     if not wallet_address:
@@ -932,12 +966,17 @@ def _create_job():
     )
 
     db.session.add(job)
+    db.session.flush()  # materialise task_id before commit expires attrs
+    task_id = job.task_id
+    price = float(job.price)
     db.session.commit()
+    logger.info("Job created: task_id=%s buyer=%s price=%.2f",
+                task_id, buyer_id, price)
 
     return jsonify({
         "status": "open",
-        "task_id": job.task_id,
-        "price": float(job.price),
+        "task_id": task_id,
+        "price": price,
     }), 201
 
 
@@ -1864,6 +1903,8 @@ def skill_md():
 def dashboard_stats():
     from services.dashboard_service import DashboardService, etag_response
     stats = DashboardService.get_stats()
+    logger.info("GET /dashboard/stats → agents=%d volume=%.2f",
+                stats.get('total_agents', 0), stats.get('total_volume', 0))
     return etag_response(stats, cache_max_age=30)
 
 

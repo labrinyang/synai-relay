@@ -56,29 +56,36 @@ def client():
         yield app.test_client()
 
         # Step 1: Signal all background threads to stop
-        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        from server import (
+            _shutdown_event, _oracle_executor, _pending_oracles,
+            _pending_lock, _timeout_monitor, _expiry_thread,
+            _start_background_threads,
+        )
         _shutdown_event.set()
 
-        # Step 2: Shut down oracle pool (don't block on stuck threads)
-        _oracle_executor.shutdown(wait=False)
+        # Step 2: Wait for Oracle threads to finish (max 5s)
+        _oracle_executor.shutdown(wait=True)
 
         # Step 3: Shut down webhook pool
         from services.webhook_service import shutdown_webhook_pool
-        shutdown_webhook_pool(wait=False)
+        shutdown_webhook_pool(wait=True)
 
-        # Step 4: Brief grace period for in-flight DB writes to complete
-        import time
-        time.sleep(0.05)
+        # Step 4: Wait for daemon threads to notice shutdown and exit
+        if _timeout_monitor and _timeout_monitor.is_alive():
+            _timeout_monitor.join(timeout=6)
+        if _expiry_thread and _expiry_thread.is_alive():
+            _expiry_thread.join(timeout=2)
 
-        # Step 5: Clean up DB
+        # Step 5: Clean up DB — safe now that all threads have stopped
         db.session.remove()
         db.drop_all()
 
-        # Step 6: Reinit pools and clear shutdown for next test
+        # Step 6: Reinit pools, clear state, restart daemon threads
         _oracle_executor.ensure_pool()
         with _pending_lock:
             _pending_oracles.clear()
         _shutdown_event.clear()
+        _start_background_threads()
 
 
 def _register_agent(client, agent_id='agent-1', name='Test Agent', wallet=None):
