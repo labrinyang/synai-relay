@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SYNAI.SHOP - DASHBOARD</title>
-    <link rel="icon" type="image/png" href="/static/logo.png">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 
@@ -34,6 +34,8 @@
             color: var(--text-main);
             font-family: 'Inter', sans-serif;
             min-height: 100vh;
+            display: flex;
+            flex-direction: column;
             overflow-x: hidden;
             background-image:
                 radial-gradient(ellipse at 20% 0%, rgba(0, 243, 255, 0.03) 0%, transparent 50%),
@@ -148,6 +150,7 @@
         /* ── Main Content ── */
         .main {
             padding: 28px 30px 60px;
+            flex: 1;
         }
 
         .content-grid {
