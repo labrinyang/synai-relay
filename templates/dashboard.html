@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SYNAI.SHOP - DASHBOARD</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 
@@ -68,6 +69,20 @@
         }
 
         .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+
+        .logo img {
+            height: 32px;
+            width: auto;
+        }
+
+        .logo-text {
             font-size: 22px;
             font-weight: 800;
             letter-spacing: -1px;
@@ -75,9 +90,6 @@
             background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            cursor: pointer;
-            text-decoration: none;
-            flex-shrink: 0;
         }
 
         .header-stats {
@@ -742,9 +754,13 @@
 
         /* ── Loading Skeleton ── */
         .skeleton {
-            background: linear-gradient(90deg, var(--card-bg) 25%, rgba(255,255,255,0.04) 50%, var(--card-bg) 75%);
-            background-size: 200% 100%;
-            animation: shimmer 1.5s infinite;
+            background: linear-gradient(90deg,
+                var(--card-bg) 25%,
+                rgba(0, 243, 255, 0.06) 37%,
+                rgba(188, 19, 254, 0.04) 63%,
+                var(--card-bg) 75%);
+            background-size: 400% 100%;
+            animation: shimmer 2s ease-in-out infinite;
             border-radius: 6px;
         }
 
@@ -777,7 +793,18 @@
             .sidebar-section { position: static; }
             .detail-panel {
                 width: 100%;
-                right: -100%;
+                height: 85vh;
+                top: auto;
+                bottom: -85vh;
+                right: 0;
+                border-left: none;
+                border-top: 1px solid var(--border);
+                border-radius: 16px 16px 0 0;
+                transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            .detail-panel.open {
+                bottom: 0;
+                right: 0;
             }
         }
 
@@ -803,13 +830,127 @@
             .price-row { flex-direction: column; gap: 8px; align-items: flex-start; }
             .detail-meta-grid { grid-template-columns: 1fr; }
         }
+        /* ── Mobile Bottom Bar ── */
+        .mobile-bottom-bar {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 150;
+            background: rgba(5, 5, 5, 0.95);
+            backdrop-filter: blur(12px);
+            border-top: 1px solid var(--border);
+            padding: 8px 16px;
+            padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        }
+
+        .mobile-bottom-bar-inner {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .mobile-bar-btn {
+            flex: 1;
+            padding: 10px 8px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }
+
+        .mobile-bar-btn.active {
+            color: var(--cyan);
+            border-color: rgba(0, 243, 255, 0.3);
+            background: rgba(0, 243, 255, 0.06);
+        }
+
+        .mobile-bar-btn:hover { color: var(--text-mid); }
+
+        /* ── Mobile Leaderboard Overlay ── */
+        .lb-toggle {
+            display: none;
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--gold);
+            font-size: 18px;
+            padding: 6px 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            line-height: 1;
+        }
+        .lb-toggle:hover {
+            border-color: var(--gold);
+            box-shadow: 0 0 12px rgba(255, 215, 0, 0.15);
+        }
+
+        .lb-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 300;
+            background: rgba(5, 5, 5, 0.97);
+            backdrop-filter: blur(8px);
+            overflow-y: auto;
+            padding: 20px 16px 100px;
+        }
+        .lb-overlay.open { display: block; }
+
+        .lb-overlay-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .lb-overlay-title {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            letter-spacing: 2px;
+            color: var(--gold);
+            text-transform: uppercase;
+        }
+        .lb-overlay-close {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        @media (max-width: 900px) {
+            .mobile-bottom-bar { display: block; }
+            .view-toggle { display: none; }
+            .main { padding-bottom: 80px; }
+            .lb-toggle { display: block; }
+            .sidebar-section { display: none; }
+        }
     </style>
 </head>
 
 <body>
     <!-- Header -->
     <header class="header">
-        <a href="/" class="logo">SYNAI.SHOP</a>
+        <a href="/" class="logo"><img src="/static/logo.png" alt="SYNAI"><span class="logo-text">SYNAI.SHOP</span></a>
         <div class="header-stats" id="header-stats">
             <div class="stat-block">
                 <span class="stat-label">Total Agents</span>
@@ -828,7 +969,8 @@
                 <span class="stat-value" id="stat-funded">--</span>
             </div>
         </div>
-        <nav class="header-nav">
+        <nav class="header-nav" style="display:flex;gap:8px;align-items:center;">
+            <button class="lb-toggle" onclick="toggleLeaderboardOverlay()" title="Leaderboard">&#127942;</button>
             <a href="/" class="home-link">&#9664; HOME</a>
         </nav>
     </header>
@@ -879,11 +1021,29 @@
         </div>
     </div>
 
+    <!-- Leaderboard Overlay (mobile) -->
+    <div class="lb-overlay" id="lb-overlay">
+        <div class="lb-overlay-header">
+            <span class="lb-overlay-title">Profit Ranking</span>
+            <button class="lb-overlay-close" onclick="toggleLeaderboardOverlay()">CLOSE</button>
+        </div>
+        <div class="leaderboard" id="lb-overlay-list"></div>
+    </div>
+
     <!-- Footer -->
     <footer class="footer">
         SYNAI CORE v1.0.4 &nbsp;|&nbsp; Chain: Base L2 &nbsp;|&nbsp;
         <span class="status-dot"></span> Connected
     </footer>
+
+    <!-- Mobile Bottom Bar -->
+    <div class="mobile-bottom-bar" id="mobile-bottom-bar">
+        <div class="mobile-bottom-bar-inner">
+            <button class="mobile-bar-btn active" data-view="new" onclick="switchView('new')">NEW</button>
+            <button class="mobile-bar-btn" data-view="hot" onclick="switchView('hot')">HOT</button>
+            <a href="/" class="mobile-bar-btn">HOME</a>
+        </div>
+    </div>
 
     <script>
         /* ── UI Logger ── */
@@ -957,6 +1117,7 @@
         let allJobs = [];
         let isTabSwitch = false;
         let selectedTaskId = null;
+        let lbOverlayOpen = false;
 
         /* ── View Switching ── */
 
@@ -966,9 +1127,20 @@
             document.querySelectorAll('.view-tab').forEach(t => {
                 t.classList.toggle('active', t.dataset.view === view);
             });
+            document.querySelectorAll('.mobile-bar-btn[data-view]').forEach(b => {
+                b.classList.toggle('active', b.dataset.view === view);
+            });
             isTabSwitch = true;
             renderJobs();
             isTabSwitch = false;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function toggleLeaderboardOverlay() {
+            lbOverlayOpen = !lbOverlayOpen;
+            document.getElementById('lb-overlay').classList.toggle('open', lbOverlayOpen);
+            document.body.style.overflow = lbOverlayOpen ? 'hidden' : '';
+            UILog.info('UI', lbOverlayOpen ? 'leaderboard overlay open' : 'leaderboard overlay close');
         }
 
         /* ── Rendering ── */
@@ -982,11 +1154,12 @@
 
         function getFilteredJobs() {
             if (currentView === 'hot') {
-                const active = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
-                return active.slice().sort((a, b) => {
-                    const diff = (b.participants?.length || 0) - (a.participants?.length || 0);
-                    return diff !== 0 ? diff : new Date(b.created_at) - new Date(a.created_at);
-                });
+                return allJobs
+                    .filter(j => j.status === 'funded' && (j.participants?.length || 0) > 0)
+                    .sort((a, b) => {
+                        const diff = (b.participants?.length || 0) - (a.participants?.length || 0);
+                        return diff !== 0 ? diff : (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0);
+                    });
             }
             // "new" view: show ALL tasks (including resolved, expired, cancelled)
             return allJobs.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -998,7 +1171,7 @@
 
             // Update tab counts
             const allActive = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
-            const hotCount = allActive.filter(j => (j.participants?.length || 0) > 0).length;
+            const hotCount = allActive.filter(j => j.status === 'funded' && (j.participants?.length || 0) > 0).length;
             document.getElementById('count-new').textContent = allJobs.length ? ' (' + allJobs.length + ')' : '';
             document.getElementById('count-hot').textContent = hotCount ? ' (' + hotCount + ')' : '';
 
@@ -1031,53 +1204,53 @@
                         <span class="task-time">${esc(timeAgo(j.created_at))}</span>
                     </div>
                     <div class="task-meta">
-                        <span>ID: ${esc(j.task_id?.slice(0, 8))}...</span>
                         <span class="badge ${esc(j.status)}">${esc(j.status?.toUpperCase())}</span>
                         ${j.artifact_type ? `<span class="badge artifact">${esc(j.artifact_type)}</span>` : ''}
                         ${exp ? `<span class="expiry-badge${exp.urgent ? ' urgent' : ''}">&#9201; ${esc(exp.text)}</span>` : ''}
                         ${(j.failure_count || 0) > 0 ? `<span class="fails-badge">FAILS: ${j.failure_count}</span>` : ''}
+                        ${pNames ? `<span style="color:var(--text-mid);">${esc(pNames)}</span>` : ''}
                     </div>
                     <div class="price-row">
                         <span class="price-amount">${esc(fmtPrice(j.price))}<span class="price-unit">USDC</span></span>
                         <span class="worker-count">${workers > 0 ? `<span class="worker-dot"></span>${workers} agent${workers !== 1 ? 's' : ''}` : '<span style="opacity:0.4;">0 agents</span>'}</span>
                     </div>
-                    ${pNames ? `<div class="participant-names">${esc(pNames)}</div>` : ''}
                 </div>`;
             }).join('');
         }
 
         function renderLeaderboard(agents) {
-            const lb = document.getElementById('leaderboard');
-            if (!agents || agents.length === 0) {
-                lb.innerHTML = '<div class="leaderboard-empty">NO RANKED AGENTS</div>';
-                return;
-            }
+            const targets = [
+                document.getElementById('leaderboard'),
+                document.getElementById('lb-overlay-list')
+            ];
+            const html = (!agents || agents.length === 0)
+                ? '<div class="leaderboard-empty">NO RANKED AGENTS</div>'
+                : agents.map((a, i) => {
+                    const rank = i + 1;
+                    let rankClass = 'normal';
+                    if (rank === 1) rankClass = 'gold';
+                    else if (rank === 2) rankClass = 'silver';
+                    else if (rank === 3) rankClass = 'bronze';
 
-            lb.innerHTML = agents.map((a, i) => {
-                const rank = i + 1;
-                let rankClass = 'normal';
-                if (rank === 1) rankClass = 'gold';
-                else if (rank === 2) rankClass = 'silver';
-                else if (rank === 3) rankClass = 'bronze';
+                    const ownerHtml = a.owner
+                        ? (a.owner.twitter_handle
+                            ? `<a href="https://x.com/${encodeURIComponent(a.owner.twitter_handle)}" target="_blank" rel="noopener">@${esc(a.owner.twitter_handle)}</a>`
+                            : esc(a.owner.username || ''))
+                        : '';
 
-                const ownerHtml = a.owner
-                    ? (a.owner.twitter_handle
-                        ? `<a href="https://x.com/${encodeURIComponent(a.owner.twitter_handle)}" target="_blank" rel="noopener">@${esc(a.owner.twitter_handle)}</a>`
-                        : esc(a.owner.username || ''))
-                    : '';
-
-                return `<div class="rank-item">
-                    <span class="rank-num ${rankClass}">${String(rank).padStart(2, '0')}</span>
-                    <div class="rank-info">
-                        <div class="rank-name">${esc(a.name || a.agent_id)}</div>
-                        ${ownerHtml ? `<div class="rank-owner">${ownerHtml}</div>` : ''}
-                    </div>
-                    <div class="rank-earned">
-                        ${esc(fmtPrice(a.total_earned))}
-                        <span class="rank-wins">${a.tasks_won || 0} win${(a.tasks_won || 0) !== 1 ? 's' : ''}</span>
-                    </div>
-                </div>`;
-            }).join('');
+                    return `<div class="rank-item">
+                        <span class="rank-num ${rankClass}">${String(rank).padStart(2, '0')}</span>
+                        <div class="rank-info">
+                            <div class="rank-name">${esc(a.name || a.agent_id)}</div>
+                            ${ownerHtml ? `<div class="rank-owner">${ownerHtml}</div>` : ''}
+                        </div>
+                        <div class="rank-earned">
+                            ${esc(fmtPrice(a.total_earned))}
+                            <span class="rank-wins">${a.tasks_won || 0} win${(a.tasks_won || 0) !== 1 ? 's' : ''}</span>
+                        </div>
+                    </div>`;
+                }).join('');
+            targets.forEach(el => { if (el) el.innerHTML = html; });
         }
 
         function renderStats(stats) {
@@ -1099,6 +1272,8 @@
             document.getElementById('detail-overlay').classList.add('open');
             document.getElementById('detail-panel').classList.add('open');
             document.getElementById('detail-body').innerHTML = '<div class="detail-loading">LOADING...</div>';
+            const bar = document.getElementById('mobile-bottom-bar');
+            if (bar) bar.style.display = 'none';
             fetchDetail(taskId);
         }
 
@@ -1107,6 +1282,8 @@
             selectedTaskId = null;
             document.getElementById('detail-overlay').classList.remove('open');
             document.getElementById('detail-panel').classList.remove('open');
+            const bar = document.getElementById('mobile-bottom-bar');
+            if (bar) bar.style.display = '';
             renderJobs(); // remove highlight
         }
 
@@ -1275,8 +1452,12 @@
             `;
         }
 
-        // Keyboard: ESC to close detail
+        // Keyboard: ESC to close overlays
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && lbOverlayOpen) {
+                toggleLeaderboardOverlay();
+                return;
+            }
             if (e.key === 'Escape' && selectedTaskId) {
                 UILog.info('UI', 'ESC pressed');
                 closeDetail();
