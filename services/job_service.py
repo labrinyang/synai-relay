@@ -1,4 +1,4 @@
-from models import db, Job, Submission, JobParticipant
+from models import db, Agent, Job, Submission, JobParticipant
 from datetime import datetime, timezone
 
 
@@ -105,6 +105,13 @@ class JobService:
     @staticmethod
     def to_dict(job: Job) -> dict:
         submission_count = Submission.query.filter_by(task_id=job.task_id).count()
+        participants_query = JobParticipant.query.filter_by(task_id=job.task_id, unclaimed_at=None).all()
+        if participants_query:
+            agent_names = {a.agent_id: a.name for a in Agent.query.filter(
+                Agent.agent_id.in_([jp.worker_id for jp in participants_query])
+            ).all()}
+        else:
+            agent_names = {}
         return {
             "task_id": job.task_id,
             "title": job.title,
@@ -114,7 +121,7 @@ class JobService:
             "buyer_id": job.buyer_id,
             "status": job.status,
             "artifact_type": job.artifact_type,
-            "participants": [jp.worker_id for jp in JobParticipant.query.filter_by(task_id=job.task_id, unclaimed_at=None).all()],
+            "participants": [{"agent_id": jp.worker_id, "name": agent_names.get(jp.worker_id, jp.worker_id)} for jp in participants_query],
             "winner_id": job.winner_id,
             "submission_count": submission_count,
             "max_submissions": job.max_submissions,
@@ -127,6 +134,8 @@ class JobService:
             "fee_tx_hash": job.fee_tx_hash,
             "fee_bps": job.fee_bps,
             "depositor_address": job.depositor_address,
+            "failure_count": job.failure_count or 0,
+            "deposit_amount": float(job.deposit_amount) if job.deposit_amount else None,
             "refund_tx_hash": job.refund_tx_hash,
             "solution_price": float(job.solution_price or 0),
             "created_at": job.created_at.isoformat() if job.created_at else None,
