@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify, g
 from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant
 from config import Config
 from sqlalchemy.exc import IntegrityError
-from services.auth_service import generate_api_key, require_auth, require_buyer, verify_api_key
+from services.auth_service import generate_api_key, require_auth, require_admin, require_buyer, verify_api_key
 from services.rate_limiter import rate_limit, get_submit_limiter
 import re
 
@@ -71,6 +71,19 @@ if 'sqlite' in Config.SQLALCHEMY_DATABASE_URI:
     logger.warning("SQLite detected — row-level locking (with_for_update) is NOT supported. "
                     "Use PostgreSQL for production deployments.")
 
+# P0-2: Startup guard — reject SQLite in production
+Config.validate_production()
+
+# P1-8: Startup check — Guard Layer B configuration
+if not Config.DEV_MODE:
+    guard_url = os.environ.get('ORACLE_LLM_BASE_URL', '')
+    guard_key = os.environ.get('ORACLE_LLM_API_KEY', '')
+    if not guard_url or not guard_key:
+        logger.critical("FATAL: Guard Layer B not configured in production. "
+                       "Set ORACLE_LLM_BASE_URL and ORACLE_LLM_API_KEY.")
+        import sys
+        sys.exit(1)
+
 with app.app_context():
     try:
         db.create_all()
@@ -90,6 +103,10 @@ with app.app_context():
             logger.info("Recovered %d stuck judging submissions", stuck)
     except Exception as e:
         logger.error("Crash recovery check failed: %s", e)
+
+    # P2-2: Provide app reference for webhook failure tracking in background threads
+    from services.webhook_service import set_app_ref
+    set_app_ref(app)
 
 # G23: Dev mode response header
 if Config.DEV_MODE:
@@ -202,13 +219,35 @@ def _run_oracle(app, submission_id):
             return
 
         try:
-            job = Job.query.get(sub.task_id)
+            job = db.session.get(Job, sub.task_id)
             if not job:
                 return
 
             # Step 1: Guard
             from services.oracle_guard import OracleGuard
             guard = OracleGuard()
+
+            # P1-2 fix (M-O03): Guard scans rubric and description for injection
+            if job.rubric:
+                rubric_guard = guard.check_rubric(job.rubric)
+                if rubric_guard['blocked']:
+                    sub.status = 'failed'
+                    sub.oracle_score = 0
+                    sub.oracle_reason = f"Blocked by guard (rubric injection): {rubric_guard['reason']}"
+                    sub.oracle_steps = [{"step": 1, "name": "guard_rubric", "output": rubric_guard}]
+                    db.session.commit()
+                    return
+
+            if job.description:
+                desc_guard = guard.check_rubric(job.description)
+                if desc_guard['blocked']:
+                    sub.status = 'failed'
+                    sub.oracle_score = 0
+                    sub.oracle_reason = f"Blocked by guard (description injection): {desc_guard['reason']}"
+                    sub.oracle_steps = [{"step": 1, "name": "guard_description", "output": desc_guard}]
+                    db.session.commit()
+                    return
+
             text_for_guard = (
                 json.dumps(sub.content, ensure_ascii=False)
                 if isinstance(sub.content, dict)
@@ -261,8 +300,19 @@ def _run_oracle(app, submission_id):
                     ).update({'status': 'failed'}, synchronize_session='fetch')
 
                     # This submission won — attempt payout (G06: track status)
-                    job_obj = Job.query.get(sub.task_id)
-                    worker = Agent.query.get(sub.worker_id)
+                    # P0-3 fix (C-06): Lock Job row before payout to prevent race with cancel
+                    job_obj = db.session.query(Job).filter_by(
+                        task_id=sub.task_id
+                    ).with_for_update().first()
+
+                    if not job_obj or job_obj.status != 'resolved':
+                        # State changed concurrently (e.g., cancelled), abort payout
+                        sub.status = 'failed'
+                        sub.oracle_reason = "Job state changed during payout preparation"
+                        db.session.commit()
+                        return
+
+                    worker = db.session.get(Agent, sub.worker_id)
                     if worker and worker.wallet_address:
                         from services.wallet_service import get_wallet_service
                         wallet = get_wallet_service()
@@ -275,11 +325,30 @@ def _run_oracle(app, submission_id):
                                 txs = wallet.payout(worker.wallet_address, job_obj.price, fee_bps=fee_bps)
                                 job_obj.payout_tx_hash = txs['payout_tx']
                                 job_obj.fee_tx_hash = txs.get('fee_tx')
-                                job_obj.payout_status = 'success'
-                                worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
-                                worker.total_earned = (
-                                    (worker.total_earned or 0) + job_obj.price * worker_share
-                                )
+
+                                # P0-1 fix (C-03): Check pending status
+                                if txs.get('pending'):
+                                    job_obj.payout_status = 'pending_confirmation'
+                                    logger.warning(
+                                        "Payout pending confirmation for job %s: %s",
+                                        sub.task_id, txs.get('error', 'receipt timeout')
+                                    )
+                                # P0-1 fix (C-02): Check fee_error
+                                elif txs.get('fee_error'):
+                                    job_obj.payout_status = 'partial'
+                                    logger.error(
+                                        "Partial settlement for job %s: worker paid, fee failed: %s",
+                                        sub.task_id, txs['fee_error']
+                                    )
+                                else:
+                                    job_obj.payout_status = 'success'
+
+                                # Only count worker earnings when not pending
+                                if not txs.get('pending'):
+                                    worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
+                                    worker.total_earned = (
+                                        (worker.total_earned or 0) + job_obj.price * worker_share
+                                    )
                             except Exception as e:
                                 job_obj.payout_status = 'failed'
                                 logger.error("Payout failed for submission %s: %s", sub.id, e)
@@ -307,7 +376,7 @@ def _run_oracle(app, submission_id):
             else:
                 sub.status = 'failed'
                 # Increment failure count
-                job_obj = Job.query.get(sub.task_id)
+                job_obj = db.session.get(Job, sub.task_id)
                 if job_obj:
                     job_obj.failure_count = (job_obj.failure_count or 0) + 1
 
@@ -353,10 +422,20 @@ def _launch_oracle_with_timeout(submission_id):
     timeout = Config.ORACLE_TIMEOUT_SECONDS
 
     def _oracle_with_timeout():
+        future = None  # P2-1 fix (M-O06): init before try so it's accessible in except
         try:
             future = _oracle_executor.submit(_run_oracle, app, submission_id)
             future.result(timeout=timeout)
         except FuturesTimeoutError:
+            # P2-1 fix (M-O06): Try to cancel the still-running future
+            if future:
+                cancelled = future.cancel()
+                if not cancelled:
+                    logger.warning(
+                        "Oracle future for submission %s could not be cancelled "
+                        "(already running). It will complete in background.",
+                        submission_id,
+                    )
             # Oracle timed out — mark submission as failed (C1 fix: lock row)
             with app.app_context():
                 sub = db.session.query(Submission).filter_by(
@@ -392,7 +471,7 @@ def check_idempotency():
     if not agent_id:
         return None  # M10: Skip idempotency for unauthenticated requests
     full_key = f"{agent_id}:{idem_key}"
-    cached = IdempotencyKey.query.get(full_key)
+    cached = db.session.get(IdempotencyKey, full_key)
     if cached:
         if cached.is_expired:
             # M5: Expired — remove and allow re-use
@@ -484,7 +563,7 @@ def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
         if viewer_id == sub.worker_id:
             show_content = True
         else:
-            job = Job.query.get(sub.task_id)
+            job = db.session.get(Job, sub.task_id)
             if job and viewer_id == job.buyer_id:
                 show_content = True
 
@@ -655,6 +734,25 @@ def update_agent(agent_id):
 
 
 # ===================================================================
+# 4c. POST /agents/<agent_id>/rotate-key — rotate API key (P2-3)
+# ===================================================================
+
+
+@app.route('/agents/<agent_id>/rotate-key', methods=['POST'])
+@require_auth
+def rotate_api_key(agent_id):
+    """P2-3: Rotate API key for an agent."""
+    if g.current_agent_id != agent_id:
+        return jsonify({"error": "Cannot rotate another agent's API key"}), 403
+
+    from services.agent_service import AgentService
+    result = AgentService.rotate_api_key(agent_id)
+    if "error" in result:
+        return jsonify(result), 404
+    return jsonify(result), 200
+
+
+# ===================================================================
 # 5 & 6. /jobs — POST create | GET list
 # ===================================================================
 
@@ -705,6 +803,9 @@ def _create_job():
 
     # Optional fields
     rubric = data.get('rubric')
+    # P2-5 fix (m-S07): Rubric length limit
+    if rubric and len(rubric) > 10000:
+        return jsonify({"error": "rubric must be <= 10000 characters"}), 400
     artifact_type = data.get('artifact_type', 'GENERAL')
 
     expiry = None
@@ -863,6 +964,17 @@ def fund_job(task_id):
         verify = wallet.verify_deposit(tx_hash, job.price)
         if not verify.get('valid'):
             return jsonify({"error": "Deposit verification failed"}), 400
+        # P1-4 fix (M-F01): Verify depositor matches buyer's registered wallet
+        buyer = Agent.query.filter_by(agent_id=g.current_agent_id).first()
+        depositor = verify.get('depositor', '').lower()
+        if buyer and buyer.wallet_address:
+            if depositor and depositor != buyer.wallet_address.lower():
+                return jsonify({
+                    "error": "Deposit must come from your registered wallet address",
+                    "expected": buyer.wallet_address,
+                    "actual": verify.get('depositor'),
+                }), 400
+
         job.depositor_address = verify.get('depositor')
         job.deposit_amount = verify.get('amount')
         overpayment = verify.get('overpayment')  # G22
@@ -885,7 +997,11 @@ def fund_job(task_id):
     }
     # G22: Report overpayment in response
     if overpayment:
-        resp_data["warnings"] = [f"Overpayment of {overpayment} USDC detected. Excess will be credited."]
+        resp_data["warnings"] = [
+            f"Overpayment of {overpayment} USDC detected. "
+            f"The full deposited amount will be refunded if the job is cancelled or expires. "
+            f"Only the job price ({float(job.price)} USDC) will be used for settlement."
+        ]
     result = jsonify(resp_data), 200
     save_idempotency(result)
     return result
@@ -1134,7 +1250,7 @@ def list_submissions(task_id):
 
 @app.route('/submissions/<submission_id>', methods=['GET'])
 def get_submission(submission_id):
-    sub = Submission.query.get(submission_id)
+    sub = db.session.get(Submission, submission_id)
     if not sub:
         return jsonify({"error": "Submission not found"}), 404
     viewer_id = _get_viewer_id()
@@ -1223,21 +1339,66 @@ def cancel_job(task_id):
         ).update({'status': 'failed'}, synchronize_session='fetch')
 
     job.status = 'cancelled'
+
+    # P2-7 fix (m-S01): Auto-refund for cancelled funded jobs
+    auto_refund_tx = None
+    cooldown_blocked, _ = _check_refund_cooldown(job.depositor_address)
+    if job.deposit_tx_hash and job.depositor_address and not job.refund_tx_hash and not cooldown_blocked:
+        from services.wallet_service import get_wallet_service
+        wallet = get_wallet_service()
+        if wallet.is_connected():
+            try:
+                refund_amount = job.deposit_amount if job.deposit_amount is not None else job.price
+                auto_refund_tx = wallet.refund(job.depositor_address, refund_amount)
+                job.refund_tx_hash = auto_refund_tx
+                logger.info("Auto-refund for cancelled job %s: tx=%s", task_id, auto_refund_tx)
+            except Exception as e:
+                logger.error("Auto-refund failed for job %s: %s (manual refund required)", task_id, e)
+    elif cooldown_blocked:
+        logger.warning("Auto-refund skipped for job %s: depositor cooldown active", task_id)
+
     db.session.commit()
 
     # G04: Fire webhook
     from services.webhook_service import fire_event
     fire_event('job.cancelled', task_id, {"status": "cancelled"})
 
-    return jsonify({
-        "status": "cancelled",
-        "task_id": task_id,
-    }), 200
+    result = {"status": "cancelled", "task_id": task_id}
+    if auto_refund_tx:
+        result["refund_tx_hash"] = auto_refund_tx
+        result["refund_status"] = "success"
+    elif job.deposit_tx_hash and not job.refund_tx_hash:
+        result["refund_status"] = "pending_manual"
+        result["message"] = "Automatic refund failed. Use POST /jobs/{task_id}/refund to retry."
+    return jsonify(result), 200
 
 
 # ===================================================================
 # 14. POST /jobs/<task_id>/refund — refund funded expired/cancelled task
 # ===================================================================
+
+
+def _check_refund_cooldown(depositor_address):
+    """Check if a refund was issued to this address within the last hour.
+    Returns (is_blocked, seconds_remaining).
+    """
+    if not depositor_address:
+        return False, 0
+    one_hour_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+    recent_refund = Job.query.filter(
+        Job.depositor_address == depositor_address,
+        Job.refund_tx_hash.isnot(None),
+        Job.refund_tx_hash != 'pending',
+        Job.updated_at >= one_hour_ago,
+    ).first()
+    if recent_refund:
+        updated = recent_refund.updated_at
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=datetime.timezone.utc)
+        elapsed = (datetime.datetime.now(datetime.timezone.utc) - updated).total_seconds()
+        remaining = max(0, 3600 - elapsed)
+        return True, int(remaining)
+    return False, 0
 
 
 @app.route('/jobs/<task_id>/refund', methods=['POST'])
@@ -1267,16 +1428,27 @@ def refund_job(task_id):
     if job.refund_tx_hash:
         return jsonify({"error": "Job already refunded"}), 409
 
+    # Refund cooldown: 1 hour per depositor address
+    if job.depositor_address:
+        blocked, remaining = _check_refund_cooldown(job.depositor_address)
+        if blocked:
+            return jsonify({
+                "error": "Refund cooldown active for this depositor address",
+                "retry_after_seconds": remaining,
+            }), 429
+
     # Mark refund as in-progress before sending (prevents concurrent attempts)
     job.refund_tx_hash = 'pending'
     db.session.flush()
 
     # Attempt on-chain refund if wallet is connected and deposit info exists
     wallet = get_wallet_service()
+    # P1-5 fix (M-F02): Refund actual deposit amount (may include overpayment)
+    refund_amount = job.deposit_amount if job.deposit_amount is not None else job.price
     refund_tx = None
     if wallet.is_connected() and job.depositor_address and job.deposit_tx_hash:
         try:
-            refund_tx = wallet.refund(job.depositor_address, job.price)
+            refund_tx = wallet.refund(job.depositor_address, refund_amount)
             job.refund_tx_hash = refund_tx
         except Exception as e:
             # Rollback the 'pending' marker on failure
@@ -1293,7 +1465,7 @@ def refund_job(task_id):
     result = {
         "status": "refunded",
         "task_id": task_id,
-        "amount": float(job.price),
+        "amount": float(refund_amount),
     }
     if refund_tx:
         result["refund_tx_hash"] = refund_tx
@@ -1390,6 +1562,9 @@ def update_job(task_id):
     data = request.get_json(silent=True) or {}
 
     if job.status == 'open':
+        # P2-5 fix (m-S07): Rubric length limit on update
+        if 'rubric' in data and data['rubric'] and len(data['rubric']) > 10000:
+            return jsonify({"error": "rubric must be <= 10000 characters"}), 400
         # Mutable when open: title, description, rubric, expiry, max_submissions, max_retries, min_reputation
         for field in ('title', 'description', 'rubric'):
             if field in data:
@@ -1441,6 +1616,7 @@ def update_job(task_id):
 
 @app.route('/platform/solvency', methods=['GET'])
 @require_auth  # C6: Require auth for financial data
+@require_admin
 def platform_solvency():
     """G21: Solvency overview — outstanding liabilities vs wallet balance."""
     from sqlalchemy import func
@@ -1483,6 +1659,7 @@ def platform_solvency():
 
 @app.route('/admin/jobs/<task_id>/retry-payout', methods=['POST'])
 @require_auth
+@require_admin
 def retry_payout(task_id):
     """G06: Retry failed payout for a resolved job."""
     job = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
@@ -1502,7 +1679,7 @@ def retry_payout(task_id):
     if g.current_agent_id not in (job.buyer_id, job.winner_id):
         return jsonify({"error": "Only buyer or winner can retry payout"}), 403
 
-    worker = Agent.query.get(job.winner_id)
+    worker = db.session.get(Agent, job.winner_id)
     if not worker or not worker.wallet_address:
         return jsonify({"error": "Winner has no wallet address"}), 400
 
@@ -1516,17 +1693,27 @@ def retry_payout(task_id):
         txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
         job.payout_tx_hash = txs['payout_tx']
         job.fee_tx_hash = txs.get('fee_tx')
-        job.payout_status = 'success'
 
-        worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
-        worker.total_earned = (worker.total_earned or 0) + job.price * worker_share
+        # P0-1 fix (C-03): Check pending status
+        if txs.get('pending'):
+            job.payout_status = 'pending_confirmation'
+        # P0-1 fix (C-02): Check fee_error
+        elif txs.get('fee_error'):
+            job.payout_status = 'partial'
+        else:
+            job.payout_status = 'success'
+
+        # Only count worker earnings when not pending
+        if not txs.get('pending'):
+            worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
+            worker.total_earned = (worker.total_earned or 0) + job.price * worker_share
 
         db.session.commit()
         return jsonify({
             "status": "payout_retried",
             "task_id": task_id,
             "payout_tx_hash": job.payout_tx_hash,
-            "payout_status": "success",
+            "payout_status": job.payout_status,
         }), 200
     except Exception as e:
         db.session.rollback()
