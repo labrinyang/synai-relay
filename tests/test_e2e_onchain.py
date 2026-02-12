@@ -10,6 +10,7 @@ Requires: .env with RPC_URL, all wallet keys, ORACLE_LLM_API_KEY
 WARNING: This test interacts with REAL Base L2 mainnet and calls
 REAL OpenRouter API. Costs ~0.10 USDC + OpenRouter API credits.
 """
+import datetime
 import os
 import time
 import json
@@ -229,14 +230,13 @@ def w3():
 
 @pytest.fixture(scope="module")
 def app_client():
-    """Flask test client with real chain config (DEV_MODE=true for SQLite test DB)."""
+    """Flask test client with real chain config."""
     load_dotenv()
-    os.environ['DEV_MODE'] = 'true'
 
     from server import app, db
     app.config['TESTING'] = True
-    app.config['DEV_MODE'] = True
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+    # Use the same file-based DB as the running server so Dashboard can see test data
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///atp_dev.db'
 
     with app.app_context():
         db.create_all()
@@ -244,7 +244,7 @@ def app_client():
         from server import _oracle_executor
         _oracle_executor.shutdown(wait=True)
         db.session.remove()
-        db.drop_all()
+        # Don't drop tables — keep data for Dashboard demo
 
 
 @pytest.fixture(scope="module")
@@ -255,6 +255,16 @@ def buyer(app_client):
         "name": "E2E Buyer",
         "wallet_address": os.environ["TEST_AGENT_WALLET_ADDRESS_1"],
     })
+    if rv.status_code == 409:
+        # Agent exists from previous run — login to get api_key
+        from models import Agent
+        from services.auth_service import generate_api_key
+        agent = Agent.query.filter_by(agent_id="e2e-buyer-001").first()
+        raw_key, key_hash = generate_api_key()
+        agent.api_key_hash = key_hash
+        from models import db
+        db.session.commit()
+        return {"agent_id": "e2e-buyer-001", "api_key": raw_key}
     assert rv.status_code == 201
     data = rv.get_json()
     return {"agent_id": "e2e-buyer-001", "api_key": data["api_key"]}
@@ -268,6 +278,16 @@ def worker(app_client):
         "name": "E2E Worker",
         "wallet_address": os.environ["TEST_AGENT_WALLET_ADDRESS_2"],
     })
+    if rv.status_code == 409:
+        # Agent exists from previous run — login to get api_key
+        from models import Agent
+        from services.auth_service import generate_api_key
+        agent = Agent.query.filter_by(agent_id="e2e-worker-001").first()
+        raw_key, key_hash = generate_api_key()
+        agent.api_key_hash = key_hash
+        from models import db
+        db.session.commit()
+        return {"agent_id": "e2e-worker-001", "api_key": raw_key}
     assert rv.status_code == 201
     data = rv.get_json()
     return {"agent_id": "e2e-worker-001", "api_key": data["api_key"]}
@@ -275,6 +295,147 @@ def worker(app_client):
 
 def auth_header(agent):
     return {"Authorization": f"Bearer {agent['api_key']}"}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Dashboard Integration Verifier
+# ──────────────────────────────────────────────────────────────────
+
+class DashboardVerifier:
+    """Verify Dashboard APIs reflect real-time test state via HTTP to running server."""
+
+    BASE = os.environ.get("DASHBOARD_URL", "http://localhost:5005")
+
+    def __init__(self):
+        self._available = False
+
+    def ensure_server(self):
+        """Check if server is reachable. Returns True if available."""
+        try:
+            import requests as req
+            r = req.get(f"{self.BASE}/health", timeout=5)
+            self._available = r.status_code == 200
+            if self._available:
+                print(f"\n  [DASHBOARD] Server detected at {self.BASE} — verification ENABLED")
+            return self._available
+        except Exception:
+            self._available = False
+            print(f"\n  {'═' * 60}")
+            print(f"  [DASHBOARD] Server not detected at {self.BASE}.")
+            print(f"  Dashboard verification will be SKIPPED.")
+            print(f"  To enable: run `python server.py` in another terminal.")
+            print(f"  {'═' * 60}")
+            return False
+
+    def _get(self, path, timeout=10):
+        """GET against the real running server."""
+        import requests as req
+        return req.get(f"{self.BASE}{path}", timeout=timeout)
+
+    def _poll(self, check_fn, label, timeout=45, interval=3):
+        """Poll check_fn() until it passes or timeout."""
+        deadline = time.time() + timeout
+        last_err = None
+        while time.time() < deadline:
+            try:
+                check_fn()
+                print(f"  [DASHBOARD] {label}: PASS")
+                return
+            except AssertionError as e:
+                last_err = e
+                time.sleep(interval)
+        print(f"  [DASHBOARD] {label}: FAIL — {last_err}")
+        raise AssertionError(f"Dashboard '{label}' timed out: {last_err}")
+
+    def verify_stats(self, label, expect_min_agents=0, expect_min_volume=0.0,
+                     expect_status_counts=None):
+        """C1/C3/C6: Verify /dashboard/stats."""
+        if not self._available:
+            return
+
+        def check():
+            r = self._get("/dashboard/stats")
+            assert r.status_code == 200, f"/dashboard/stats returned {r.status_code}"
+            s = r.json()
+            assert s["total_agents"] >= expect_min_agents, \
+                f"total_agents: expected >= {expect_min_agents}, got {s['total_agents']}"
+            if expect_min_volume > 0:
+                assert s["total_volume"] >= expect_min_volume, \
+                    f"total_volume: expected >= {expect_min_volume}, got {s['total_volume']}"
+            if expect_status_counts:
+                for status, min_count in expect_status_counts.items():
+                    actual = s.get("tasks_by_status", {}).get(status, 0)
+                    assert actual >= min_count, \
+                        f"tasks_by_status.{status}: expected >= {min_count}, got {actual}"
+
+        self._poll(check, label)
+
+    def verify_job(self, task_id, label, expect_status=None, expect_deposit_tx=False,
+                   expect_participants=None, expect_min_submissions=None,
+                   expect_winner=None, expect_payout_status=None,
+                   expect_payout_tx=False, expect_fee_tx=False):
+        """C2-C6: Verify /jobs/<task_id>."""
+        if not self._available:
+            return
+        r = self._get(f"/jobs/{task_id}")
+        assert r.status_code == 200, f"/jobs/{task_id} returned {r.status_code}"
+        job = r.json()
+        if expect_status:
+            assert job["status"] == expect_status, \
+                f"status: expected {expect_status}, got {job['status']}"
+        if expect_deposit_tx:
+            assert job.get("deposit_tx_hash"), "deposit_tx_hash missing"
+        if expect_participants:
+            actual_ids = {p["agent_id"] for p in job.get("participants", [])}
+            for pid in expect_participants:
+                assert pid in actual_ids, f"Participant {pid} not found"
+        if expect_min_submissions is not None:
+            assert job.get("submission_count", 0) >= expect_min_submissions, \
+                f"submission_count: expected >= {expect_min_submissions}, got {job.get('submission_count', 0)}"
+        if expect_winner:
+            assert job.get("winner_id") == expect_winner, \
+                f"winner_id: expected {expect_winner}, got {job.get('winner_id')}"
+        if expect_payout_status:
+            assert job.get("payout_status") == expect_payout_status, \
+                f"payout_status: expected {expect_payout_status}, got {job.get('payout_status')}"
+        if expect_payout_tx:
+            assert job.get("payout_tx_hash"), "payout_tx_hash missing"
+        if expect_fee_tx:
+            assert job.get("fee_tx_hash"), "fee_tx_hash missing"
+        print(f"  [DASHBOARD] {label}: PASS")
+
+    def verify_job_in_list(self, task_id, label):
+        """C2: Verify job appears in /jobs list."""
+        if not self._available:
+            return
+        r = self._get("/jobs?limit=100")
+        assert r.status_code == 200
+        jobs = r.json().get("jobs", [])
+        task_ids = [j["task_id"] for j in jobs]
+        assert task_id in task_ids, f"Job {task_id} not in /jobs list"
+        print(f"  [DASHBOARD] {label}: PASS")
+
+    def verify_leaderboard(self, label, expect_agent_id=None,
+                           expect_min_earned=0.0, expect_min_wins=0):
+        """C6/C7: Verify /dashboard/leaderboard."""
+        if not self._available:
+            return
+
+        def check():
+            r = self._get("/dashboard/leaderboard?sort_by=total_earned&limit=20")
+            assert r.status_code == 200
+            agents = {a["agent_id"]: a for a in r.json().get("agents", [])}
+            if expect_agent_id:
+                assert expect_agent_id in agents, \
+                    f"Agent {expect_agent_id} not in leaderboard (got: {list(agents.keys())})"
+                a = agents[expect_agent_id]
+                assert a["total_earned"] >= expect_min_earned, \
+                    f"total_earned: expected >= {expect_min_earned}, got {a['total_earned']}"
+                if expect_min_wins:
+                    assert a.get("tasks_won", 0) >= expect_min_wins, \
+                        f"tasks_won: expected >= {expect_min_wins}, got {a.get('tasks_won', 0)}"
+
+        self._poll(check, label, timeout=75)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -319,7 +480,7 @@ class TestE2EHappyPath:
         print(f"  Block number:    {w3.eth.block_number}")
         print(f"  Gas price:       {w3.eth.gas_price} wei ({float(w3.from_wei(w3.eth.gas_price, 'gwei')):.6f} Gwei)")
         print(f"  USDC contract:   {os.environ.get('USDC_CONTRACT', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913')}")
-        print(f"  DEV_MODE:        {os.environ.get('DEV_MODE', 'not set')}")
+        print(f"  Test mode:       in-process Flask test client")
         print(f"  Oracle model:    {os.environ.get('ORACLE_LLM_MODEL', 'not set')}")
         print(f"  Oracle base URL: {os.environ.get('ORACLE_LLM_BASE_URL', 'not set')}")
         print(f"  Oracle API key:  {_mask(os.environ.get('ORACLE_LLM_API_KEY', ''))}")
@@ -357,6 +518,10 @@ class TestE2EHappyPath:
         print(f"  Fee rate:        {FEE_BPS} bps ({FEE_BPS/100}%)")
         print(f"  Worker share:    {WORKER_SHARE} USDC")
         print(f"  Fee share:       {FEE_SHARE} USDC")
+
+        # Dashboard verification
+        dv = DashboardVerifier()
+        dv.ensure_server()
 
         # ── Deposit-info ──
         print(f"\n{'─' * 70}")
@@ -396,6 +561,7 @@ class TestE2EHappyPath:
             "price": float(JOB_PRICE),
             "fee_bps": FEE_BPS,
             "max_retries": 3,
+            "expiry": int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).timestamp()),
         }
         _api("Buyer", "POST", "/jobs")
         print(f"  Call chain: Buyer → POST /jobs → require_auth() → _create_job()")
@@ -408,6 +574,11 @@ class TestE2EHappyPath:
         _pp("Response", job_data)
         assert rv.status_code == 201, f"Job creation failed: {job_data}"
         task_id = job_data["task_id"]
+
+        # Dashboard C1: agents registered + job visible
+        dv.verify_stats("C1: stats after registration", expect_min_agents=2)
+        dv.verify_job_in_list(task_id, "C2: job in list")
+        dv.verify_job(task_id, "C2: job detail", expect_status="open")
 
         _api("Buyer", "GET", f"/jobs/{task_id}")
         rv = app_client.get(f'/jobs/{task_id}', headers=auth_header(buyer))
@@ -506,7 +677,7 @@ class TestE2EHappyPath:
         print(f"                → parse USDC Transfer events")
         print(f"                → verify recipient == ops_address && amount >= price")
         print(f"              → job.status = 'funded' → db.session.commit()")
-        print(f"  DEV_MODE=false → real chain verification")
+        print(f"  Real chain verification active")
 
         rv = app_client.post(f'/jobs/{task_id}/fund', json={
             "tx_hash": tx_hash,
@@ -516,6 +687,10 @@ class TestE2EHappyPath:
         _pp("Response", fund_data)
         assert rv.status_code == 200, f"Fund failed: {fund_data}"
         assert fund_data["status"] == "funded"
+
+        # Dashboard C3: funded
+        dv.verify_job(task_id, "C3: job funded", expect_status="funded", expect_deposit_tx=True)
+        dv.verify_stats("C3: stats after fund", expect_min_volume=float(JOB_PRICE))
 
         _api("Buyer", "GET", f"/jobs/{task_id}")
         rv = app_client.get(f'/jobs/{task_id}', headers=auth_header(buyer))
@@ -542,6 +717,9 @@ class TestE2EHappyPath:
         claim_data = rv.get_json()
         _pp("Response", claim_data)
         assert rv.status_code == 200, f"Claim failed: {claim_data}"
+
+        # Dashboard C4: claimed
+        dv.verify_job(task_id, "C4: participant joined", expect_participants=[worker["agent_id"]])
 
         # ══════════════════════════════════════════════════════════════
         # Step 5: Worker submits content
@@ -577,6 +755,10 @@ class TestE2EHappyPath:
         submit_data = rv.get_json()
         _pp("Response", submit_data)
         assert rv.status_code == 202, f"Submit failed: {submit_data}"
+
+        # Dashboard C5: submitted
+        dv.verify_job(task_id, "C5: submission visible", expect_min_submissions=1)
+
         submission_id = submit_data["submission_id"]
 
         print(f"\n  NOTE: HTTP 202 returned immediately. Oracle runs in background thread.")
@@ -697,6 +879,13 @@ class TestE2EHappyPath:
         assert job["payout_tx_hash"] is not None
         assert job["fee_tx_hash"] is not None
 
+        # Dashboard C6: resolved + payout
+        dv.verify_job(task_id, "C6: resolved", expect_status="resolved",
+                      expect_winner=worker["agent_id"], expect_payout_status="success",
+                      expect_payout_tx=True, expect_fee_tx=True)
+        dv.verify_leaderboard("C6: leaderboard", expect_agent_id=worker["agent_id"],
+                              expect_min_earned=float(WORKER_SHARE))
+
         payout_tx = job["payout_tx_hash"]
         fee_tx = job["fee_tx_hash"]
 
@@ -791,6 +980,15 @@ class TestE2EHappyPath:
             print(f"    [{s['submission_id'][:8]}...] worker={s['worker_id']} "
                   f"status={s['status']} score={s.get('oracle_score')} "
                   f"attempt={s.get('attempt')}")
+
+        # Dashboard C7: final verification
+        dv.verify_stats("C7: final stats", expect_min_agents=2,
+                        expect_status_counts={"resolved": 1})
+        dv.verify_leaderboard("C7: final leaderboard", expect_agent_id=worker["agent_id"],
+                              expect_min_earned=float(WORKER_SHARE), expect_min_wins=1)
+        print(f"\n  {'═' * 60}")
+        print(f"  [DASHBOARD] All verification checkpoints PASSED")
+        print(f"  {'═' * 60}")
 
         # ══════════════════════════════════════════════════════════════
         # Summary
