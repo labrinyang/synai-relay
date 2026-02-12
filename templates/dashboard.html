@@ -2036,13 +2036,15 @@
             let submissionsHtml = '';
             if (subs.length > 0) {
                 const sorted = [...subs].sort((a, b) => {
-                    if (a.worker_id === job.winner_id) return -1;
-                    if (b.worker_id === job.winner_id) return 1;
+                    // Winning submission (passed + winner) first, then by score
+                    const aWin = a.worker_id === job.winner_id && a.status === 'passed' ? 1 : 0;
+                    const bWin = b.worker_id === job.winner_id && b.status === 'passed' ? 1 : 0;
+                    if (aWin !== bWin) return bWin - aWin;
                     return (b.oracle_score || 0) - (a.oracle_score || 0);
                 });
 
                 submissionsHtml = sorted.map((s, idx) => {
-                    const isWinner = job.winner_id && s.worker_id === job.winner_id;
+                    const isWinner = job.winner_id && s.worker_id === job.winner_id && s.status === 'passed';
                     const st = s.status || 'judging';
                     const scoreClass = st === 'passed' ? 'pass' : st === 'failed' ? 'fail' : 'judging';
                     const cardClass = isWinner ? 'winner' : st === 'failed' ? 'failed' : '';
@@ -2195,11 +2197,12 @@
             // Auto-expand winner submission
             if (job.winner_id && subs.length > 0) {
                 const sorted = [...subs].sort((a, b) => {
-                    if (a.worker_id === job.winner_id) return -1;
-                    if (b.worker_id === job.winner_id) return 1;
+                    const aWin = a.worker_id === job.winner_id && a.status === 'passed' ? 1 : 0;
+                    const bWin = b.worker_id === job.winner_id && b.status === 'passed' ? 1 : 0;
+                    if (aWin !== bWin) return bWin - aWin;
                     return (b.oracle_score || 0) - (a.oracle_score || 0);
                 });
-                const winnerIdx = sorted.findIndex(s => s.worker_id === job.winner_id);
+                const winnerIdx = sorted.findIndex(s => s.worker_id === job.winner_id && s.status === 'passed');
                 if (winnerIdx >= 0) {
                     const el = document.getElementById(`sub-body-${winnerIdx}`);
                     const arrow = document.getElementById(`sub-toggle-${winnerIdx}`);
