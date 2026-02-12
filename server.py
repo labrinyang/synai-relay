@@ -663,9 +663,11 @@ def _sanitize_oracle_steps(steps):
 
 
 def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
-    """Serialize submission. Content is only shown to the submitting worker or the job buyer (G16)."""
+    """Serialize submission. Content is only shown to the submitting worker or the job buyer (G16),
+    plus the winning submission is public once the task is resolved."""
     # Determine if viewer is allowed to see content
     show_content = False
+    job = None
     if viewer_id:
         if viewer_id == sub.worker_id:
             show_content = True
@@ -673,6 +675,13 @@ def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
             job = db.session.get(Job, sub.task_id)
             if job and viewer_id == job.buyer_id:
                 show_content = True
+
+    # Winning submission is public after task resolution
+    if not show_content:
+        if job is None:
+            job = db.session.get(Job, sub.task_id)
+        if job and job.status == 'resolved' and job.winner_id == sub.worker_id:
+            show_content = True
 
     result = {
         "submission_id": sub.id,
