@@ -48,6 +48,9 @@ class TestScenarioA_HappyPath(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -58,8 +61,19 @@ class TestScenarioA_HappyPath(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -162,6 +176,9 @@ class TestScenarioB_TaskTimeout(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -171,8 +188,19 @@ class TestScenarioB_TaskTimeout(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     def test_task_timeout_and_refund(self):
@@ -235,6 +263,9 @@ class TestScenarioC_RejectionRetryPass(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -244,8 +275,19 @@ class TestScenarioC_RejectionRetryPass(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -363,6 +405,9 @@ class TestScenarioD_DisputeFlow(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -372,8 +417,19 @@ class TestScenarioD_DisputeFlow(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -483,6 +539,9 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -492,8 +551,19 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -688,6 +758,9 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -697,8 +770,19 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -859,6 +943,9 @@ class TestScenarioG_PayoutPartialFailure(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -868,8 +955,19 @@ class TestScenarioG_PayoutPartialFailure(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -939,6 +1037,9 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -948,8 +1049,19 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     def test_refund_cooldown_blocks_second_refund(self):
@@ -1134,6 +1246,9 @@ class TestScenarioI_DepositWrongTarget(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1143,8 +1258,19 @@ class TestScenarioI_DepositWrongTarget(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('services.wallet_service.get_wallet_service')
@@ -1196,6 +1322,9 @@ class TestScenarioJ_ReplayAttack(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1205,8 +1334,19 @@ class TestScenarioJ_ReplayAttack(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     def test_replay_attack_same_tx_hash(self):
@@ -1263,6 +1403,9 @@ class TestScenarioK_ConcurrentPayout(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1272,8 +1415,19 @@ class TestScenarioK_ConcurrentPayout(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')
@@ -1362,6 +1516,9 @@ class TestScenarioL_OracleTimeout(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # Reset WalletService singleton to prevent env pollution from onchain tests
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = None
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1371,8 +1528,19 @@ class TestScenarioL_OracleTimeout(unittest.TestCase):
         _submit_limiter._requests.clear()
 
     def tearDown(self):
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+        _oracle_executor.shutdown(wait=False)
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+        import time
+        time.sleep(0.05)
         db.session.remove()
         db.drop_all()
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
         self.ctx.pop()
 
     @patch('server._launch_oracle_with_timeout')

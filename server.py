@@ -14,12 +14,13 @@ from services.auth_service import generate_api_key, require_auth, require_operat
 from services.rate_limiter import rate_limit, get_submit_limiter
 import re
 
+import atexit
 import json
 import logging
 import os
 import threading
 import datetime
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
 
 # ---------------------------------------------------------------------------
@@ -138,7 +139,16 @@ class _ScheduledExecutor:
         self._dead_letters = []  # Recent failures for monitoring
         self._lock = threading.Lock()
 
+    def ensure_pool(self):
+        """Recreate pool if needed (for test re-use after teardown)."""
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(
+                max_workers=self._max_workers,
+                thread_name_prefix='oracle',
+            )
+
     def submit(self, fn, *args, **kwargs):
+        self.ensure_pool()
         return self._pool.submit(fn, *args, **kwargs)
 
     def record_failure(self, submission_id: str, error: str):
@@ -153,13 +163,10 @@ class _ScheduledExecutor:
                 self._dead_letters = self._dead_letters[-100:]
 
     def shutdown(self, wait=True):
-        """Shutdown the executor, wait for pending tasks, then reinitialize the pool."""
+        """Shutdown the executor."""
         if self._pool:
             self._pool.shutdown(wait=wait)
-            self._pool = ThreadPoolExecutor(
-                max_workers=self._max_workers,
-                thread_name_prefix='oracle',
-            )
+            self._pool = None
 
     @property
     def dead_letters(self):
@@ -167,6 +174,17 @@ class _ScheduledExecutor:
             return list(self._dead_letters)
 
 _oracle_executor = _ScheduledExecutor(max_workers=4)
+
+# Graceful shutdown signal for background threads
+_shutdown_event = threading.Event()
+
+# Wire shutdown event to webhook service so delivery threads can check it
+from services.webhook_service import set_shutdown_event
+set_shutdown_event(_shutdown_event)
+
+import time as _time_mod  # needed for monotonic()
+_pending_oracles = {}  # submission_id -> (future, start_time, timeout_seconds)
+_pending_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -177,26 +195,30 @@ def _expiry_checker_loop():
     """Background thread: check for expired funded jobs every 60 seconds."""
     import time
     consecutive_errors = 0
-    while True:
+    while not _shutdown_event.is_set():
         try:
             # m6 fix: Exponential backoff on consecutive errors (60s, 120s, 240s, max 600s)
             sleep_time = min(60 * (2 ** consecutive_errors), 600)
-            time.sleep(sleep_time)
+            if _shutdown_event.wait(timeout=sleep_time):
+                break  # Shutdown requested during sleep
             with app.app_context():
-                from services.job_service import JobService
-                now = datetime.datetime.now(datetime.timezone.utc)
-                expired_jobs = Job.query.filter(
-                    Job.status == 'funded',
-                    Job.expiry.isnot(None),
-                    Job.expiry < now,
-                ).all()
-                for job in expired_jobs:
-                    if JobService.check_expiry(job):
-                        logger.info("Proactively expired job %s", job.task_id)
-                        from services.webhook_service import fire_event
-                        fire_event('job.expired', job.task_id, {"status": "expired"})
-                if expired_jobs:
-                    db.session.commit()
+                try:
+                    from services.job_service import JobService
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    expired_jobs = Job.query.filter(
+                        Job.status == 'funded',
+                        Job.expiry.isnot(None),
+                        Job.expiry < now,
+                    ).all()
+                    for job in expired_jobs:
+                        if JobService.check_expiry(job):
+                            logger.info("Proactively expired job %s", job.task_id)
+                            from services.webhook_service import fire_event
+                            fire_event('job.expired', job.task_id, {"status": "expired"})
+                    if expired_jobs:
+                        db.session.commit()
+                finally:
+                    db.session.remove()
             consecutive_errors = 0  # Reset on success
         except Exception as e:
             consecutive_errors += 1
@@ -205,6 +227,71 @@ def _expiry_checker_loop():
 _expiry_thread = threading.Thread(target=_expiry_checker_loop, daemon=True, name='expiry-checker')
 _expiry_thread.start()
 
+
+# ---------------------------------------------------------------------------
+# G07: Timeout monitor — single background thread replaces per-submission wrappers
+# ---------------------------------------------------------------------------
+
+def _mark_submission_timed_out(submission_id):
+    """Mark a submission as timed out. Called by timeout monitor."""
+    timeout = Config.ORACLE_TIMEOUT_SECONDS
+    with app.app_context():
+        try:
+            sub = db.session.query(Submission).filter_by(
+                id=submission_id
+            ).with_for_update().first()
+            if sub and sub.status == 'judging':
+                sub.status = 'failed'
+                sub.oracle_reason = f"Evaluation timed out after {timeout}s"
+                sub.oracle_steps = [{"step": 0, "name": "timeout", "output": {"error": "timeout"}}]
+                db.session.commit()
+                logger.warning("Oracle timeout for submission %s after %ds", submission_id, timeout)
+        except Exception as e:
+            logger.error("Error marking submission %s as timed out: %s", submission_id, e)
+        finally:
+            db.session.remove()
+    _oracle_executor.record_failure(submission_id, f"timeout after {timeout}s")
+
+
+def _timeout_monitor_loop():
+    """Background thread: check for timed-out oracle evaluations every 5 seconds."""
+    while not _shutdown_event.is_set():
+        if _shutdown_event.wait(timeout=5):
+            break
+        with _pending_lock:
+            now = _time_mod.monotonic()
+            expired = [
+                (sid, fut) for sid, (fut, start, tout) in _pending_oracles.items()
+                if now - start > tout
+            ]
+        for sid, fut in expired:
+            fut.cancel()  # best-effort cancel
+            _mark_submission_timed_out(sid)
+            with _pending_lock:
+                _pending_oracles.pop(sid, None)
+        # Clean up completed futures
+        with _pending_lock:
+            done = [sid for sid, (fut, _, _) in _pending_oracles.items() if fut.done()]
+            for sid in done:
+                _pending_oracles.pop(sid)
+
+
+_timeout_monitor = threading.Thread(target=_timeout_monitor_loop, daemon=True, name='oracle-timeout-monitor')
+_timeout_monitor.start()
+
+
+def _atexit_shutdown():
+    """Graceful cleanup: signal daemon threads to stop and drain pools."""
+    _shutdown_event.set()
+    _oracle_executor.shutdown(wait=False)
+    try:
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+    except Exception:
+        pass
+
+atexit.register(_atexit_shutdown)
+
 # ---------------------------------------------------------------------------
 # Oracle background thread
 # ---------------------------------------------------------------------------
@@ -212,13 +299,14 @@ _expiry_thread.start()
 
 def _run_oracle(app, submission_id):
     """Background thread: guard check + 6-step oracle evaluation."""
+    if _shutdown_event.is_set():
+        return
     with app.app_context():
-        # C1 fix: Re-read with lock to prevent race with timeout handler
-        sub = db.session.query(Submission).filter_by(id=submission_id).with_for_update().first()
-        if not sub or sub.status != 'judging':
-            return
-
         try:
+            # C1 fix: Re-read with lock to prevent race with timeout handler
+            sub = db.session.query(Submission).filter_by(id=submission_id).with_for_update().first()
+            if not sub or sub.status != 'judging':
+                return
             job = db.session.get(Job, sub.task_id)
             if not job:
                 return
@@ -267,6 +355,10 @@ def _run_oracle(app, submission_id):
             from services.oracle_service import OracleService
             oracle = OracleService()
             result = oracle.evaluate(job.title, job.description, job.rubric, sub.content)
+
+            # Don't write results during shutdown
+            if _shutdown_event.is_set():
+                return
 
             # C1 fix: Re-check status under lock before writing results
             # (timeout handler may have set status='failed' while we were evaluating)
@@ -402,58 +494,32 @@ def _run_oracle(app, submission_id):
             logger.exception("Oracle exception for submission %s", sub.id)
             _oracle_executor.record_failure(submission_id, str(e))
             db.session.commit()
+        finally:
+            db.session.remove()
 
 
 def _launch_oracle_with_timeout(submission_id):
-    """Submit oracle evaluation to thread pool with timeout (G07)."""
-    # F08: Prevent unbounded wrapper thread creation
-    pending = _oracle_executor._pool._work_queue.qsize()
+    """Submit oracle evaluation to thread pool with timeout tracking (G07)."""
+    # F08: Prevent unbounded queue
+    _oracle_executor.ensure_pool()
+    pending = _oracle_executor._pool._work_queue.qsize() if _oracle_executor._pool else 0
     if pending >= 20:
         logger.warning("Oracle queue saturated (%d pending), rejecting submission %s", pending, submission_id)
         with app.app_context():
-            sub = db.session.query(Submission).filter_by(id=submission_id).first()
-            if sub and sub.status == 'judging':
-                sub.status = 'failed'
-                sub.oracle_reason = "Oracle evaluation queue full — please retry later"
-                db.session.commit()
+            try:
+                sub = db.session.query(Submission).filter_by(id=submission_id).first()
+                if sub and sub.status == 'judging':
+                    sub.status = 'failed'
+                    sub.oracle_reason = "Oracle evaluation queue full — please retry later"
+                    db.session.commit()
+            finally:
+                db.session.remove()
         _oracle_executor.record_failure(submission_id, "queue saturated")
         return
 
-    timeout = Config.ORACLE_TIMEOUT_SECONDS
-
-    def _oracle_with_timeout():
-        future = None  # P2-1 fix (M-O06): init before try so it's accessible in except
-        try:
-            future = _oracle_executor.submit(_run_oracle, app, submission_id)
-            future.result(timeout=timeout)
-        except FuturesTimeoutError:
-            # P2-1 fix (M-O06): Try to cancel the still-running future
-            if future:
-                cancelled = future.cancel()
-                if not cancelled:
-                    logger.warning(
-                        "Oracle future for submission %s could not be cancelled "
-                        "(already running). It will complete in background.",
-                        submission_id,
-                    )
-            # Oracle timed out — mark submission as failed (C1 fix: lock row)
-            with app.app_context():
-                sub = db.session.query(Submission).filter_by(
-                    id=submission_id
-                ).with_for_update().first()
-                if sub and sub.status == 'judging':
-                    sub.status = 'failed'
-                    sub.oracle_reason = f"Evaluation timed out after {timeout}s"
-                    sub.oracle_steps = [{"step": 0, "name": "timeout", "output": {"error": "timeout"}}]
-                    db.session.commit()
-                    logger.warning("Oracle timeout for submission %s after %ds", submission_id, timeout)
-            _oracle_executor.record_failure(submission_id, f"timeout after {timeout}s")
-        except Exception as e:
-            logger.exception("Oracle launcher error for submission %s", submission_id)
-            _oracle_executor.record_failure(submission_id, str(e))
-
-    t = threading.Thread(target=_oracle_with_timeout, daemon=True)
-    t.start()
+    future = _oracle_executor.submit(_run_oracle, app, submission_id)
+    with _pending_lock:
+        _pending_oracles[submission_id] = (future, _time_mod.monotonic(), Config.ORACLE_TIMEOUT_SECONDS)
 
 
 # ---------------------------------------------------------------------------

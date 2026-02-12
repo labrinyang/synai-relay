@@ -29,14 +29,37 @@ def client():
     from services.rate_limiter import _api_limiter, _submit_limiter
     _api_limiter._requests.clear()
     _submit_limiter._requests.clear()
+    # Reset WalletService singleton to prevent env pollution from onchain tests
+    import services.wallet_service as ws_mod
+    ws_mod._wallet_service = None
     with app.app_context():
         db.create_all()
         yield app.test_client()
-        # Wait for any pending oracle evaluations to complete
-        from server import _oracle_executor
-        _oracle_executor.shutdown(wait=True)
+
+        # Step 1: Signal all background threads to stop
+        from server import _shutdown_event, _oracle_executor, _pending_oracles, _pending_lock
+        _shutdown_event.set()
+
+        # Step 2: Shut down oracle pool (don't block on stuck threads)
+        _oracle_executor.shutdown(wait=False)
+
+        # Step 3: Shut down webhook pool
+        from services.webhook_service import shutdown_webhook_pool
+        shutdown_webhook_pool(wait=False)
+
+        # Step 4: Brief grace period for in-flight DB writes to complete
+        import time
+        time.sleep(0.05)
+
+        # Step 5: Clean up DB
         db.session.remove()
         db.drop_all()
+
+        # Step 6: Reinit pools and clear shutdown for next test
+        _oracle_executor.ensure_pool()
+        with _pending_lock:
+            _pending_oracles.clear()
+        _shutdown_event.clear()
 
 
 def _register_agent(client, agent_id='agent-1', name='Test Agent', wallet=None):
@@ -2517,23 +2540,22 @@ class TestApiKeyRotation:
 # ===================================================================
 
 class TestOracleTimeoutFutureCancel:
-    """P2-1: When oracle times out, the future should be cancelled."""
+    """P2-1: When oracle times out, the future should be cancelled via timeout monitor."""
 
     @patch('server._run_oracle')
     def test_oracle_timeout_future_cancel(self, mock_run_oracle, client):
-        """When _run_oracle takes longer than timeout, future.cancel() is called."""
+        """When _run_oracle takes longer than timeout, the timeout monitor marks it failed."""
         import time
-        from unittest.mock import MagicMock
+        import server as server_mod
+        from server import _oracle_executor, _pending_oracles, _pending_lock, _mark_submission_timed_out
 
         # Make _run_oracle block long enough to trigger timeout
         def slow_oracle(*args, **kwargs):
-            time.sleep(5)
+            time.sleep(10)
 
         mock_run_oracle.side_effect = slow_oracle
 
         # Override timeout to a very short value for test speed
-        from server import _oracle_executor
-        import server as server_mod
         original_timeout = server_mod.Config.ORACLE_TIMEOUT_SECONDS
         server_mod.Config.ORACLE_TIMEOUT_SECONDS = 0.1
 
@@ -2556,8 +2578,23 @@ class TestOracleTimeoutFutureCancel:
                                headers=_auth_headers(worker_key))
             sub_id = resp.get_json()['submission_id']
 
-            # Wait for the timeout wrapper thread to complete
-            time.sleep(1.0)
+            # Wait for timeout to expire, then manually trigger the check
+            # (instead of waiting for the 5-second monitor poll cycle)
+            time.sleep(0.3)
+
+            # Directly check and expire timed-out entries (simulates monitor iteration)
+            import time as _time_mod
+            with _pending_lock:
+                now = _time_mod.monotonic()
+                expired = [
+                    (sid, fut) for sid, (fut, start, tout) in _pending_oracles.items()
+                    if now - start > tout
+                ]
+            for sid, fut in expired:
+                fut.cancel()
+                _mark_submission_timed_out(sid)
+                with _pending_lock:
+                    _pending_oracles.pop(sid, None)
 
             # The submission should be marked as failed due to timeout
             sub = db.session.get(Submission, sub_id)

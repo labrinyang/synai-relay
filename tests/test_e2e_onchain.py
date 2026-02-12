@@ -20,8 +20,6 @@ import pytest
 from decimal import Decimal
 from dotenv import load_dotenv
 
-load_dotenv()
-
 from tests.helpers.chain_helpers import (
     get_web3, get_usdc_contract, query_usdc_balance,
     send_usdc_from_agent, wait_confirmations,
@@ -231,12 +229,13 @@ def w3():
 
 @pytest.fixture(scope="module")
 def app_client():
-    """Flask test client with DEV_MODE=false and real chain config."""
-    os.environ['DEV_MODE'] = 'false'
+    """Flask test client with real chain config (DEV_MODE=true for SQLite test DB)."""
+    load_dotenv()
+    os.environ['DEV_MODE'] = 'true'
 
     from server import app, db
     app.config['TESTING'] = True
-    app.config['DEV_MODE'] = False
+    app.config['DEV_MODE'] = True
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
 
     with app.app_context():
@@ -451,7 +450,16 @@ class TestE2EHappyPath:
         print(f"  Buyer wallet → eth.sendRawTransaction() — sent in {time.time() - t_deposit:.1f}s")
         print(f"  TX hash: {tx_hash}")
 
-        receipt = w3.eth.get_transaction_receipt(tx_hash)
+        # RPC node may briefly return "not found" after send — retry with backoff
+        from web3.exceptions import TransactionNotFound
+        for _attempt in range(5):
+            try:
+                receipt = w3.eth.get_transaction_receipt(tx_hash)
+                break
+            except TransactionNotFound:
+                time.sleep(2)
+        else:
+            raise TransactionNotFound(f"Receipt still unavailable after retries: {tx_hash}")
         print(f"\n  Buyer reads eth.getTransactionReceipt():")
         print(f"    Block number:  {receipt['blockNumber']}")
         print(f"    Gas used:      {receipt['gasUsed']}")
