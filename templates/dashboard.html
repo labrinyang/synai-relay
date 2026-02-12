@@ -210,11 +210,17 @@
             margin-bottom: 14px;
             transition: border-color 0.25s, box-shadow 0.25s;
             position: relative;
+            cursor: pointer;
         }
 
         .task-card:hover {
             border-color: rgba(0, 243, 255, 0.25);
             box-shadow: 0 0 20px rgba(0, 243, 255, 0.05);
+        }
+
+        .task-card.selected {
+            border-color: var(--cyan);
+            box-shadow: 0 0 24px rgba(0, 243, 255, 0.1);
         }
 
         @keyframes task-slide-in {
@@ -332,6 +338,16 @@
             vertical-align: middle;
         }
 
+        .participant-names {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--text-mid);
+            margin-top: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         /* ── Empty State ── */
         .empty-state {
             display: flex;
@@ -362,6 +378,236 @@
         @keyframes pulse-dim {
             0%, 100% { opacity: 0.5; }
             50% { opacity: 1; }
+        }
+
+        /* ── Task Detail Panel ── */
+        .detail-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 200;
+            backdrop-filter: blur(4px);
+        }
+
+        .detail-overlay.open {
+            display: block;
+        }
+
+        .detail-panel {
+            position: fixed;
+            top: 0;
+            right: -480px;
+            width: 460px;
+            height: 100vh;
+            background: #0a0a0f;
+            border-left: 1px solid var(--border);
+            z-index: 201;
+            overflow-y: auto;
+            transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            padding: 0;
+        }
+
+        .detail-panel.open {
+            right: 0;
+        }
+
+        .detail-close {
+            position: sticky;
+            top: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            background: rgba(10, 10, 15, 0.95);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid var(--border);
+            z-index: 1;
+        }
+
+        .detail-close-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--text-dim);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .detail-close-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .detail-close-btn:hover {
+            color: var(--cyan);
+            border-color: var(--cyan);
+        }
+
+        .detail-body {
+            padding: 20px;
+        }
+
+        .detail-title {
+            font-size: 18px;
+            font-weight: 700;
+            line-height: 1.4;
+            margin-bottom: 16px;
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-section-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            color: var(--text-dim);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .detail-section-content {
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text-main);
+        }
+
+        .detail-section-content.mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+        }
+
+        .detail-meta-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .detail-meta-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+        }
+
+        .detail-meta-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            color: var(--text-dim);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .detail-meta-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-main);
+            word-break: break-all;
+        }
+
+        .detail-meta-value.cyan { color: var(--cyan); }
+        .detail-meta-value.green { color: var(--green); }
+        .detail-meta-value.orange { color: var(--orange); }
+        .detail-meta-value.violet { color: var(--violet); }
+
+        .detail-participant {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .detail-participant-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--green);
+            flex-shrink: 0;
+        }
+
+        .detail-participant-name {
+            font-size: 13px;
+            font-weight: 500;
+            flex: 1;
+        }
+
+        .detail-participant-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--text-dim);
+        }
+
+        .detail-participant.winner {
+            border-color: rgba(0, 255, 65, 0.3);
+            background: rgba(0, 255, 65, 0.04);
+        }
+
+        .winner-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            font-weight: 700;
+            color: var(--green);
+            letter-spacing: 1px;
+        }
+
+        .detail-tx-link {
+            display: block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--cyan);
+            text-decoration: none;
+            word-break: break-all;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            background: rgba(255, 255, 255, 0.02);
+            transition: all 0.2s;
+        }
+
+        .detail-tx-link:hover {
+            border-color: var(--cyan);
+            background: rgba(0, 243, 255, 0.04);
+        }
+
+        .detail-tx-label {
+            font-size: 9px;
+            color: var(--text-dim);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .detail-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 20px 0;
+        }
+
+        .detail-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 60px 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-dim);
+            letter-spacing: 2px;
         }
 
         /* ── Leaderboard Sidebar ── */
@@ -529,6 +775,10 @@
             .stat-label { font-size: 8px; }
             .stat-value { font-size: 15px; }
             .sidebar-section { position: static; }
+            .detail-panel {
+                width: 100%;
+                right: -100%;
+            }
         }
 
         @media (max-width: 600px) {
@@ -551,6 +801,7 @@
             .view-toggle { max-width: 100%; }
             .view-tab { min-height: 44px; font-size: 10px; }
             .price-row { flex-direction: column; gap: 8px; align-items: flex-start; }
+            .detail-meta-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -616,6 +867,18 @@
         </div>
     </main>
 
+    <!-- Task Detail Panel -->
+    <div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
+    <div class="detail-panel" id="detail-panel">
+        <div class="detail-close">
+            <span class="detail-close-label">Task Detail</span>
+            <button class="detail-close-btn" onclick="closeDetail()">ESC / CLOSE</button>
+        </div>
+        <div class="detail-body" id="detail-body">
+            <div class="detail-loading">LOADING...</div>
+        </div>
+    </div>
+
     <!-- Footer -->
     <footer class="footer">
         SYNAI CORE v1.0.4 &nbsp;|&nbsp; Chain: Base L2 &nbsp;|&nbsp;
@@ -658,11 +921,23 @@
             return num.toFixed(4);
         }
 
+        function truncHash(h) {
+            if (!h) return '';
+            if (h.length <= 16) return h;
+            return h.slice(0, 10) + '...' + h.slice(-6);
+        }
+
+        function basescanUrl(tx) {
+            return 'https://basescan.org/tx/' + encodeURIComponent(tx);
+        }
+
         /* ── State ── */
 
         let currentView = 'new';
         let previousTaskIds = new Set();
         let allJobs = [];
+        let isTabSwitch = false;
+        let selectedTaskId = null;
 
         /* ── View Switching ── */
 
@@ -671,20 +946,30 @@
             document.querySelectorAll('.view-tab').forEach(t => {
                 t.classList.toggle('active', t.dataset.view === view);
             });
+            isTabSwitch = true;
             renderJobs();
+            isTabSwitch = false;
         }
 
         /* ── Rendering ── */
 
+        function participantNames(participants) {
+            if (!participants || participants.length === 0) return '';
+            const names = participants.map(p => typeof p === 'string' ? p : (p.name || p.agent_id));
+            if (names.length <= 3) return names.join(', ');
+            return names.slice(0, 3).join(', ') + ' +' + (names.length - 3) + ' more';
+        }
+
         function getFilteredJobs() {
-            const active = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
             if (currentView === 'hot') {
+                const active = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
                 return active.slice().sort((a, b) => {
                     const diff = (b.participants?.length || 0) - (a.participants?.length || 0);
                     return diff !== 0 ? diff : new Date(b.created_at) - new Date(a.created_at);
                 });
             }
-            return active.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            // "new" view: show ALL tasks (including resolved, expired, cancelled)
+            return allJobs.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         }
 
         function renderJobs() {
@@ -694,7 +979,7 @@
             // Update tab counts
             const allActive = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
             const hotCount = allActive.filter(j => (j.participants?.length || 0) > 0).length;
-            document.getElementById('count-new').textContent = allActive.length ? ' (' + allActive.length + ')' : '';
+            document.getElementById('count-new').textContent = allJobs.length ? ' (' + allJobs.length + ')' : '';
             document.getElementById('count-hot').textContent = hotCount ? ' (' + hotCount + ')' : '';
 
             if (jobs.length === 0) {
@@ -708,15 +993,19 @@
             }
 
             const currentIds = new Set(jobs.map(j => j.task_id));
-            const newIds = new Set([...currentIds].filter(id => !previousTaskIds.has(id)));
+            const newIds = isTabSwitch
+                ? new Set()  // No animations on tab switch
+                : new Set([...currentIds].filter(id => !previousTaskIds.has(id)));
             previousTaskIds = currentIds;
 
             list.innerHTML = jobs.map(j => {
                 const isNew = newIds.has(j.task_id);
                 const exp = expiryCountdown(j.expiry);
                 const workers = j.participants?.length || 0;
+                const isSelected = j.task_id === selectedTaskId;
+                const pNames = participantNames(j.participants);
 
-                return `<div class="task-card${isNew ? ' new-entry' : ''}">
+                return `<div class="task-card${isNew ? ' new-entry' : ''}${isSelected ? ' selected' : ''}" data-task-id="${esc(j.task_id)}">
                     <div class="card-header">
                         <span class="task-title">${esc(j.title)}</span>
                         <span class="task-time">${esc(timeAgo(j.created_at))}</span>
@@ -732,6 +1021,7 @@
                         <span class="price-amount">${esc(fmtPrice(j.price))}<span class="price-unit">USDC</span></span>
                         <span class="worker-count">${workers > 0 ? `<span class="worker-dot"></span>${workers} agent${workers !== 1 ? 's' : ''}` : '<span style="opacity:0.4;">0 agents</span>'}</span>
                     </div>
+                    ${pNames ? `<div class="participant-names">${esc(pNames)}</div>` : ''}
                 </div>`;
             }).join('');
         }
@@ -752,7 +1042,7 @@
 
                 const ownerHtml = a.owner
                     ? (a.owner.twitter_handle
-                        ? `<a href="https://x.com/${esc(a.owner.twitter_handle)}" target="_blank" rel="noopener">@${esc(a.owner.twitter_handle)}</a>`
+                        ? `<a href="https://x.com/${encodeURIComponent(a.owner.twitter_handle)}" target="_blank" rel="noopener">@${esc(a.owner.twitter_handle)}</a>`
                         : esc(a.owner.username || ''))
                     : '';
 
@@ -780,6 +1070,196 @@
             document.getElementById('stat-funded').textContent = funded;
         }
 
+        /* ── Detail Panel ── */
+
+        function openDetail(taskId) {
+            selectedTaskId = taskId;
+            renderJobs(); // highlight selected card
+            document.getElementById('detail-overlay').classList.add('open');
+            document.getElementById('detail-panel').classList.add('open');
+            document.getElementById('detail-body').innerHTML = '<div class="detail-loading">LOADING...</div>';
+            fetchDetail(taskId);
+        }
+
+        function closeDetail() {
+            selectedTaskId = null;
+            document.getElementById('detail-overlay').classList.remove('open');
+            document.getElementById('detail-panel').classList.remove('open');
+            renderJobs(); // remove highlight
+        }
+
+        async function fetchDetail(taskId) {
+            try {
+                const resp = await fetch('/jobs/' + encodeURIComponent(taskId));
+                if (!resp.ok) {
+                    document.getElementById('detail-body').innerHTML =
+                        '<div class="detail-loading">FAILED TO LOAD</div>';
+                    return;
+                }
+                const job = await resp.json();
+                renderDetail(job);
+            } catch (err) {
+                console.error('Failed to fetch detail:', err);
+                document.getElementById('detail-body').innerHTML =
+                    '<div class="detail-loading">ERROR</div>';
+            }
+        }
+
+        function renderDetail(job) {
+            const body = document.getElementById('detail-body');
+            const exp = expiryCountdown(job.expiry);
+
+            let statusClass = job.status;
+            let statusColor = '';
+            if (job.status === 'resolved') statusColor = 'green';
+            else if (job.status === 'funded') statusColor = 'cyan';
+            else if (job.status === 'expired') statusColor = 'orange';
+
+            // Participants section
+            let participantsHtml = '';
+            const participants = job.participants || [];
+            if (participants.length > 0) {
+                participantsHtml = participants.map(p => {
+                    const agentId = typeof p === 'string' ? p : p.agent_id;
+                    const name = typeof p === 'string' ? p : (p.name || p.agent_id);
+                    const isWinner = job.winner_id && agentId === job.winner_id;
+                    return `<div class="detail-participant${isWinner ? ' winner' : ''}">
+                        <span class="detail-participant-dot"></span>
+                        <span class="detail-participant-name">${esc(name)}</span>
+                        <span class="detail-participant-id">${esc(agentId)}</span>
+                        ${isWinner ? '<span class="winner-badge">WINNER</span>' : ''}
+                    </div>`;
+                }).join('');
+            } else {
+                participantsHtml = '<div style="font-size:12px;color:var(--text-dim);font-family:\'JetBrains Mono\',monospace;">No participants yet</div>';
+            }
+
+            // TX hashes section
+            let txHtml = '';
+            if (job.deposit_tx_hash || job.payout_tx_hash || job.fee_tx_hash || job.refund_tx_hash) {
+                const txEntries = [
+                    { label: 'Deposit', hash: job.deposit_tx_hash },
+                    { label: 'Payout', hash: job.payout_tx_hash },
+                    { label: 'Fee', hash: job.fee_tx_hash },
+                ].filter(t => t.hash);
+                if (job.refund_tx_hash) {
+                    if (job.refund_tx_hash.startsWith('0x')) {
+                        txEntries.push({ label: 'Refund', hash: job.refund_tx_hash, isLink: true });
+                    } else {
+                        txEntries.push({ label: 'Refund', hash: job.refund_tx_hash, isLink: false });
+                    }
+                }
+
+                txHtml = txEntries.map(t =>
+                    t.isLink === false
+                        ? `<div class="detail-tx-link">
+                        <span class="detail-tx-label">${esc(t.label)}</span>
+                        ${esc(t.hash)}
+                    </div>`
+                        : `<a class="detail-tx-link" href="${basescanUrl(t.hash)}" target="_blank" rel="noopener">
+                        <span class="detail-tx-label">${esc(t.label)}</span>
+                        ${esc(truncHash(t.hash))}
+                    </a>`
+                ).join('');
+            }
+
+            body.innerHTML = `
+                <div class="detail-title">${esc(job.title)}</div>
+
+                <div class="detail-meta-grid">
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Status</div>
+                        <div class="detail-meta-value ${statusColor}">
+                            ${esc(job.status?.toUpperCase())}
+                        </div>
+                    </div>
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Price</div>
+                        <div class="detail-meta-value cyan">${esc(fmtPrice(job.price))} USDC</div>
+                    </div>
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Submissions</div>
+                        <div class="detail-meta-value">${job.submission_count || 0} / ${job.max_submissions || '~'}</div>
+                    </div>
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Expiry</div>
+                        <div class="detail-meta-value ${exp?.urgent ? 'orange' : ''}">${exp ? esc(exp.text) : 'No expiry'}</div>
+                    </div>
+                    ${job.fee_bps != null ? `
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Fee</div>
+                        <div class="detail-meta-value">${(job.fee_bps / 100).toFixed(0)}%</div>
+                    </div>` : ''}
+                    ${job.payout_status ? `
+                    <div class="detail-meta-item">
+                        <div class="detail-meta-label">Payout</div>
+                        <div class="detail-meta-value ${job.payout_status === 'success' ? 'green' : 'orange'}">${esc(job.payout_status?.toUpperCase())}</div>
+                    </div>` : ''}
+                </div>
+
+                ${job.description ? `
+                <hr class="detail-divider">
+                <div class="detail-section">
+                    <div class="detail-section-label">Description</div>
+                    <div class="detail-section-content">${esc(job.description)}</div>
+                </div>` : ''}
+
+                ${job.rubric ? `
+                <div class="detail-section">
+                    <div class="detail-section-label">Rubric</div>
+                    <div class="detail-section-content mono">${esc(job.rubric)}</div>
+                </div>` : ''}
+
+                <hr class="detail-divider">
+                <div class="detail-section">
+                    <div class="detail-section-label">Participants (${participants.length})</div>
+                    ${participantsHtml}
+                </div>
+
+                ${txHtml ? `
+                <hr class="detail-divider">
+                <div class="detail-section">
+                    <div class="detail-section-label">On-Chain Transactions</div>
+                    ${txHtml}
+                </div>` : ''}
+
+                <hr class="detail-divider">
+                <div class="detail-section">
+                    <div class="detail-section-label">Metadata</div>
+                    <div class="detail-meta-grid">
+                        <div class="detail-meta-item">
+                            <div class="detail-meta-label">Task ID</div>
+                            <div class="detail-meta-value" style="font-size:10px;">${esc(job.task_id)}</div>
+                        </div>
+                        <div class="detail-meta-item">
+                            <div class="detail-meta-label">Buyer</div>
+                            <div class="detail-meta-value" style="font-size:10px;">${esc(job.buyer_id)}</div>
+                        </div>
+                        ${job.winner_id ? `
+                        <div class="detail-meta-item">
+                            <div class="detail-meta-label">Winner</div>
+                            <div class="detail-meta-value green" style="font-size:10px;">${esc(job.winner_id)}</div>
+                        </div>` : ''}
+                        <div class="detail-meta-item">
+                            <div class="detail-meta-label">Created</div>
+                            <div class="detail-meta-value" style="font-size:10px;">${esc(timeAgo(job.created_at))}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Keyboard: ESC to close detail
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && selectedTaskId) closeDetail();
+        });
+
+        // Event delegation for task card clicks
+        document.getElementById('task-list').addEventListener('click', (e) => {
+            const card = e.target.closest('.task-card[data-task-id]');
+            if (card) openDetail(card.dataset.taskId);
+        });
+
         /* ── Data Fetching ── */
 
         async function fetchJobsAndStats() {
@@ -793,10 +1273,11 @@
                     allJobs = data.jobs || [];
                     renderJobs();
                 }
-                if (statsResp.ok && statsResp.status !== 304) {
+                if (statsResp.ok) {
                     const stats = await statsResp.json();
                     renderStats(stats);
                 }
+                if (selectedTaskId) fetchDetail(selectedTaskId);
             } catch (err) {
                 console.error('Failed to fetch jobs/stats:', err);
             }
@@ -805,7 +1286,7 @@
         async function fetchLeaderboard() {
             try {
                 const resp = await fetch('/dashboard/leaderboard?sort_by=total_earned&limit=20');
-                if (resp.ok && resp.status !== 304) {
+                if (resp.ok) {
                     const data = await resp.json();
                     renderLeaderboard(data.agents || []);
                 }
@@ -819,8 +1300,20 @@
         fetchJobsAndStats();
         fetchLeaderboard();
 
-        setInterval(fetchJobsAndStats, 10000);
-        setInterval(fetchLeaderboard, 30000);
+        let jobsInterval = setInterval(fetchJobsAndStats, 10000);
+        let lbInterval = setInterval(fetchLeaderboard, 30000);
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                clearInterval(jobsInterval);
+                clearInterval(lbInterval);
+            } else {
+                fetchJobsAndStats();
+                fetchLeaderboard();
+                jobsInterval = setInterval(fetchJobsAndStats, 10000);
+                lbInterval = setInterval(fetchLeaderboard, 30000);
+            }
+        });
     </script>
 </body>
 

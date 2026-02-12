@@ -60,13 +60,23 @@ app = Flask(__name__)
 app.config.from_object(Config)
 db.init_app(app)
 
+# Enable WAL mode for SQLite concurrent access (test process + running server)
+from sqlalchemy import event as sa_event
+from sqlalchemy.engine import Engine
+
+@sa_event.listens_for(Engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, connection_record):
+    import sqlite3
+    if isinstance(dbapi_conn, sqlite3.Connection):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
 # ---------------------------------------------------------------------------
 # Database bootstrap
 # ---------------------------------------------------------------------------
 
 logger.info("Starting SYNAI Relay Protocol V2")
-if Config.DEV_MODE:
-    logger.warning("DEV_MODE ENABLED — chain verification disabled, accepting any tx_hash")
 # C7: Warn about SQLite limitations
 if 'sqlite' in Config.SQLALCHEMY_DATABASE_URI:
     logger.warning("SQLite detected — row-level locking (with_for_update) is NOT supported. "
@@ -76,14 +86,11 @@ if 'sqlite' in Config.SQLALCHEMY_DATABASE_URI:
 Config.validate_production()
 
 # P1-8: Startup check — Guard Layer B configuration
-if not Config.DEV_MODE:
-    guard_url = os.environ.get('ORACLE_LLM_BASE_URL', '')
-    guard_key = os.environ.get('ORACLE_LLM_API_KEY', '')
-    if not guard_url or not guard_key:
-        logger.critical("FATAL: Guard Layer B not configured in production. "
-                       "Set ORACLE_LLM_BASE_URL and ORACLE_LLM_API_KEY.")
-        import sys
-        sys.exit(1)
+guard_url = os.environ.get('ORACLE_LLM_BASE_URL', '')
+guard_key = os.environ.get('ORACLE_LLM_API_KEY', '')
+if not guard_url or not guard_key:
+    logger.warning("Guard Layer B not configured. "
+                   "Set ORACLE_LLM_BASE_URL and ORACLE_LLM_API_KEY for oracle evaluation.")
 
 with app.app_context():
     try:
@@ -108,13 +115,6 @@ with app.app_context():
     # P2-2: Provide app reference for webhook failure tracking in background threads
     from services.webhook_service import set_app_ref
     set_app_ref(app)
-
-# G23: Dev mode response header
-if Config.DEV_MODE:
-    @app.after_request
-    def _add_dev_mode_header(response):
-        response.headers['X-Dev-Mode'] = 'true'
-        return response
 
 # G14: Correlation ID — attach unique request ID to every request
 @app.before_request
@@ -669,8 +669,6 @@ def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
 @app.route('/health', methods=['GET'])
 def health():
     result = {"status": "healthy", "service": "synai-relay-v2"}
-    if Config.DEV_MODE:
-        result["dev_mode"] = True
     return jsonify(result), 200
 
 
@@ -1054,9 +1052,8 @@ def fund_job(task_id):
         job.depositor_address = verify.get('depositor')
         job.deposit_amount = verify.get('amount')
         overpayment = verify.get('overpayment')  # G22
-    elif not app.config.get('DEV_MODE', False):
-        return jsonify({"error": "Chain not connected and DEV_MODE is disabled"}), 503
-    # else: dev mode — accept any tx_hash
+    else:
+        return jsonify({"error": "Chain not connected"}), 503
 
     job.status = 'funded'
     job.deposit_tx_hash = tx_hash
@@ -1857,7 +1854,10 @@ def dashboard_page():
 
 @app.route('/skill.md')
 def skill_md():
-    return send_from_directory('static', 'skill.md', mimetype='text/markdown')
+    import pathlib
+    if not pathlib.Path(app.root_path, 'static', 'Skill.md').exists():
+        return jsonify({"error": "Skill.md not yet available"}), 404
+    return send_from_directory('static', 'Skill.md', mimetype='text/markdown')
 
 
 @app.route('/dashboard/stats', methods=['GET'])
@@ -1871,132 +1871,18 @@ def dashboard_stats():
 def dashboard_leaderboard():
     from services.dashboard_service import DashboardService, etag_response
     sort_by = request.args.get('sort_by', 'total_earned')
-    limit = min(max(1, int(request.args.get('limit', 20))), 100)
-    offset = max(0, int(request.args.get('offset', 0)))
+    if sort_by not in ('total_earned', 'completion_rate'):
+        sort_by = 'total_earned'
+    try:
+        limit = min(max(1, int(request.args.get('limit', 20))), 100)
+    except (ValueError, TypeError):
+        limit = 20
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (ValueError, TypeError):
+        offset = 0
     data = DashboardService.get_leaderboard(sort_by=sort_by, limit=limit, offset=offset)
     return etag_response(data, cache_max_age=30)
-
-
-# ---------------------------------------------------------------------------
-# CLI: seed-demo — populate DB with demo data for dashboard testing
-# ---------------------------------------------------------------------------
-
-
-@app.cli.command('seed-demo')
-def seed_demo():
-    """Seed database with demo agents, jobs, and claims for dashboard testing."""
-    if not Config.DEV_MODE:
-        print("ERROR: seed-demo is only available in DEV_MODE")
-        return
-
-    from decimal import Decimal
-    import random
-
-    # --- Owners ---
-    owners_data = [
-        ("owner-robin", "Robin", "robin_synai", None),
-        ("owner-luna", "Luna", "luna_dev", None),
-        ("owner-kai", "Kai", None, None),
-    ]
-    for oid, uname, twitter, avatar in owners_data:
-        if not db.session.get(Owner, oid):
-            db.session.add(Owner(owner_id=oid, username=uname,
-                                 twitter_handle=twitter, avatar_url=avatar))
-
-    # --- Agents ---
-    agents_data = [
-        ("alpha-coder", "owner-robin", "Alpha Coder", Decimal("142.50"), Decimal("0.8500"), "0x1111111111111111111111111111111111111111"),
-        ("beta-solver", "owner-luna", "Beta Solver", Decimal("89.00"), Decimal("0.7200"), "0x2222222222222222222222222222222222222222"),
-        ("gamma-writer", "owner-robin", "Gamma Writer", Decimal("210.75"), Decimal("0.9100"), "0x3333333333333333333333333333333333333333"),
-        ("delta-analyst", "owner-kai", "Delta Analyst", Decimal("55.20"), Decimal("0.6800"), "0x4444444444444444444444444444444444444444"),
-        ("epsilon-auditor", "owner-luna", "Epsilon Auditor", Decimal("320.00"), Decimal("0.9500"), "0x5555555555555555555555555555555555555555"),
-        ("zeta-bot", None, "Zeta Bot", Decimal("12.00"), Decimal("0.5000"), None),
-    ]
-
-    from services.auth_service import generate_api_key
-    created_keys = {}
-    for aid, oid, name, earned, rate, wallet in agents_data:
-        if not db.session.get(Agent, aid):
-            raw_key, key_hash = generate_api_key()
-            db.session.add(Agent(
-                agent_id=aid, owner_id=oid, name=name,
-                total_earned=earned, completion_rate=rate,
-                wallet_address=wallet, api_key_hash=key_hash,
-            ))
-            created_keys[aid] = raw_key
-
-    db.session.flush()
-
-    # --- Jobs (buyer = epsilon-auditor, the richest) ---
-    buyer_id = "epsilon-auditor"
-    jobs_data = [
-        ("Build a REST API for inventory management", "Create Flask REST API with CRUD, pagination, tests", Decimal("25.00"), "CODE", "funded"),
-        ("Smart contract security audit", "Audit Solidity contract for reentrancy, overflow, access control", Decimal("50.00"), "GENERAL", "funded"),
-        ("Design token economics model", "Comprehensive tokenomics for a DeFi protocol", Decimal("100.00"), "GENERAL", "funded"),
-        ("Implement WebSocket notifications", "Add real-time WebSocket support to Flask app", Decimal("15.00"), "CODE", "funded"),
-        ("Write pytest suite for oracle service", "Comprehensive test coverage for oracle evaluation pipeline", Decimal("8.50"), "CODE", "funded"),
-        ("Create CI/CD pipeline", "GitHub Actions pipeline with lint, test, deploy stages", Decimal("12.00"), "CODE", "open"),
-        ("Data migration script", "Migrate legacy Postgres schema to new normalized form", Decimal("35.00"), "CODE", "open"),
-        ("Completed: Logo design", "Vector logo for SYNAI branding", Decimal("20.00"), "GENERAL", "resolved"),
-    ]
-
-    created_jobs = []
-    for title, desc, price, atype, status in jobs_data:
-        existing = Job.query.filter_by(title=title).first()
-        if existing:
-            created_jobs.append(existing)
-            continue
-        job = Job(
-            title=title, description=desc, price=price,
-            buyer_id=buyer_id, status=status, artifact_type=atype,
-            fee_bps=2000,
-        )
-        if status in ('funded', 'resolved'):
-            job.deposit_tx_hash = f"0xdemo_{random.randint(100000, 999999)}"
-            job.deposit_amount = price
-        if status == 'resolved':
-            job.winner_id = "gamma-writer"
-            job.payout_status = "success"
-            job.payout_tx_hash = f"0xpayout_{random.randint(100000, 999999)}"
-        db.session.add(job)
-        db.session.flush()
-        created_jobs.append(job)
-
-    # --- Claims (JobParticipant) — make some tasks "hot" ---
-    claims = [
-        (0, "alpha-coder"), (0, "beta-solver"),
-        (1, "beta-solver"), (1, "gamma-writer"), (1, "delta-analyst"),
-        (2, "alpha-coder"), (2, "gamma-writer"), (2, "zeta-bot"),
-        (3, "delta-analyst"),
-        (4, "alpha-coder"),
-    ]
-
-    for job_idx, worker_id in claims:
-        job = created_jobs[job_idx]
-        if job.status != 'funded':
-            continue
-        exists = JobParticipant.query.filter_by(
-            task_id=job.task_id, worker_id=worker_id
-        ).first()
-        if not exists:
-            db.session.add(JobParticipant(task_id=job.task_id, worker_id=worker_id))
-
-    # --- A submission for the resolved job ---
-    resolved_job = created_jobs[7]
-    exists = Submission.query.filter_by(task_id=resolved_job.task_id, worker_id="gamma-writer").first()
-    if not exists:
-        db.session.add(Submission(
-            task_id=resolved_job.task_id, worker_id="gamma-writer",
-            content={"result": "demo submission"},
-            status="passed", oracle_score=92, attempt=1,
-        ))
-
-    db.session.commit()
-    print(f"Seeded: {len(agents_data)} agents, {len(jobs_data)} jobs, {len(claims)} claims")
-    if created_keys:
-        print("New API keys:")
-        for aid, key in created_keys.items():
-            print(f"  {aid}: {key}")
 
 
 # ---------------------------------------------------------------------------

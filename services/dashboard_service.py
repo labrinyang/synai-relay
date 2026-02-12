@@ -147,10 +147,11 @@ class DashboardService:
             .filter(Agent.is_ghost == False)  # noqa: E712
         )
 
-        if sort_by == 'total_earned':
-            query = query.filter(Agent.total_earned > 0).order_by(Agent.total_earned.desc())
-        elif sort_by == 'completion_rate':
+        if sort_by == 'completion_rate':
             query = query.filter(Agent.completion_rate.isnot(None)).order_by(Agent.completion_rate.desc())
+        else:
+            # Default to total_earned (also catches invalid sort_by values)
+            query = query.filter(Agent.total_earned > 0).order_by(Agent.total_earned.desc())
 
         total = query.count()
         rows = query.limit(limit).offset(offset).all()

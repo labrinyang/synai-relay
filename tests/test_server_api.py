@@ -9,12 +9,31 @@ import unittest
 import pytest
 from unittest.mock import patch
 
-# Force DEV_MODE and test DB before importing app
-os.environ['DEV_MODE'] = 'true'
+# Force test DB before importing app
 os.environ['DATABASE_URL'] = 'sqlite://'  # in-memory
 
 from server import app
 from models import db, Agent, Job, Submission, JobParticipant, Webhook
+
+
+def _make_mock_wallet():
+    """Create a mock wallet service that simulates a connected chain for tests."""
+    from unittest.mock import MagicMock
+    mock_wallet = MagicMock()
+    mock_wallet.is_connected.return_value = True
+    mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+    mock_wallet.verify_deposit.return_value = {
+        'valid': True,
+        'depositor': '',
+        'amount': None,
+    }
+    mock_wallet.payout.return_value = {
+        'payout_tx': '0xpayout_mock',
+        'fee_tx': '0xfee_mock',
+    }
+    mock_wallet.refund.return_value = '0xrefund_mock'
+    mock_wallet.estimate_gas.return_value = {"error": "mock"}
+    return mock_wallet
 
 
 @pytest.fixture
@@ -29,9 +48,9 @@ def client():
     from services.rate_limiter import _api_limiter, _submit_limiter
     _api_limiter._requests.clear()
     _submit_limiter._requests.clear()
-    # Reset WalletService singleton to prevent env pollution from onchain tests
+    # Provide a mock wallet service so fund/payout work without a real chain
     import services.wallet_service as ws_mod
-    ws_mod._wallet_service = None
+    ws_mod._wallet_service = _make_mock_wallet()
     with app.app_context():
         db.create_all()
         yield app.test_client()
@@ -107,10 +126,6 @@ class TestHealth:
         data = resp.get_json()
         assert data['status'] == 'healthy'
 
-    def test_health_dev_mode_flag(self, client):
-        resp = client.get('/health')
-        data = resp.get_json()
-        assert data.get('dev_mode') is True
 
 
 # ===================================================================
@@ -976,7 +991,8 @@ class TestClaimValidation:
                     headers=_auth_headers(worker_key))
         # Verify worker removed from participants
         resp = client.get(f'/jobs/{task_id}')
-        assert 'reclaim-worker' not in resp.get_json()['participants']
+        participant_ids = [p['agent_id'] for p in resp.get_json()['participants']]
+        assert 'reclaim-worker' not in participant_ids
 
 
 # ===================================================================
@@ -1689,6 +1705,8 @@ class TestReclaimAfterUnclaim(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -1736,7 +1754,8 @@ class TestReclaimAfterUnclaim(unittest.TestCase):
 
         resp = self.client.get(f'/jobs/{task_id}')
         job = resp.get_json()
-        assert 'worker-1' in job['participants']
+        participant_ids = [p['agent_id'] for p in job['participants']]
+        assert 'worker-1' in participant_ids
 
 
 # ===================================================================
@@ -1748,6 +1767,8 @@ class TestRetryPayoutAuth(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -1807,6 +1828,8 @@ class TestWebhookParticipants(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -1858,6 +1881,8 @@ class TestExpiryDoesNotFailJudging(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -2058,6 +2083,8 @@ class TestPayoutRaceCancel(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -2207,6 +2234,8 @@ class TestGuardRubricInjection(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -2311,6 +2340,8 @@ class TestFundDepositorMismatch(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -2387,6 +2418,8 @@ class TestRefundActualDeposit(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -2407,10 +2440,14 @@ class TestRefundActualDeposit(unittest.TestCase):
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
 
-        # Fund the job in dev mode (no wallet mock needed)
+        # Fund the job (mock wallet service accepts any tx_hash)
         self.client.post(f'/jobs/{task_id}/fund',
                          json={'tx_hash': '0xdep-fund'},
                          headers=_auth_headers(buyer_key))
+
+        # Make auto-refund fail during cancel so we can test manual refund
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service.refund.side_effect = Exception("auto-refund disabled for test")
 
         # Manually set deposit info to simulate on-chain deposit with overpayment
         job = db.session.query(Job).filter_by(task_id=task_id).first()
@@ -2418,11 +2455,15 @@ class TestRefundActualDeposit(unittest.TestCase):
         job.depositor_address = '0x' + 'bb' * 20
         db.session.commit()
 
-        # Cancel the job
+        # Cancel the job (auto-refund will fail, leaving refund_tx_hash unset)
         self.client.post(f'/jobs/{task_id}/cancel',
                          headers=_auth_headers(buyer_key))
 
-        # Mock wallet only for the refund call
+        # Restore mock and test manual refund
+        ws_mod._wallet_service.refund.side_effect = None
+        ws_mod._wallet_service.refund.return_value = '0xrefund-tx'
+
+        # Mock wallet for the refund call
         with patch('services.wallet_service.get_wallet_service') as mock_get_wallet:
             mock_wallet = mock_get_wallet.return_value
             mock_wallet.is_connected.return_value = True
@@ -2450,6 +2491,8 @@ class TestOverpaymentWarningNoCredit(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        import services.wallet_service as ws_mod
+        ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
 
     def tearDown(self):
@@ -2666,7 +2709,7 @@ class TestCancelAutoRefund:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
 
-        # Fund the job (dev mode accepts any tx_hash, no wallet mock needed)
+        # Fund the job (mock wallet service accepts any tx_hash)
         client.post(f'/jobs/{task_id}/fund',
                     json={'tx_hash': '0xcar-fund'},
                     headers=_auth_headers(buyer_key))
