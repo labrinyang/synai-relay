@@ -1,0 +1,693 @@
+"""
+End-to-end test scenarios from Section 3 of docs/test-plan.md.
+
+Scenarios:
+  A: Happy Path — Full Resolution
+  B: Task Timeout / No Takers
+  C: Rejection -> Retry -> Pass
+  D: Dispute Flow
+  E: Concurrent Claims
+"""
+import os
+import unittest
+from unittest.mock import patch
+
+# Force DEV_MODE and test DB before importing app
+os.environ['DEV_MODE'] = 'true'
+os.environ['DATABASE_URL'] = 'sqlite://'  # in-memory
+
+from server import app
+from models import db, Agent, Job, Submission, JobParticipant, Dispute
+
+
+def _register_agent(client, agent_id, name='Test Agent', wallet=None):
+    """Helper: register an agent and return (agent_id, api_key)."""
+    payload = {'agent_id': agent_id, 'name': name}
+    if wallet:
+        payload['wallet_address'] = wallet
+    resp = client.post('/agents', json=payload)
+    data = resp.get_json()
+    return agent_id, data.get('api_key')
+
+
+def _auth_headers(api_key):
+    return {'Authorization': f'Bearer {api_key}'}
+
+
+# ===================================================================
+# Scenario A: Happy Path -- Full Resolution
+# ===================================================================
+
+class TestScenarioA_HappyPath(unittest.TestCase):
+    """
+    Scenario A: Buyer registers -> creates job -> funds -> Worker registers ->
+    claims -> submits -> Oracle passes (simulated) -> Job resolved ->
+    verify winner_id, payout fields, solvency.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        # Reset rate limiters
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_happy_path_full_resolution(self, mock_oracle):
+        c = self.client
+
+        # 1. Buyer registers
+        buyer_id, buyer_key = _register_agent(c, 'a-buyer', 'Buyer A',
+                                               wallet='0x' + 'aa' * 20)
+
+        # 2. Worker registers (with wallet for payout)
+        worker_id, worker_key = _register_agent(c, 'a-worker', 'Worker A',
+                                                 wallet='0x' + 'bb' * 20)
+
+        # 3. Buyer creates job
+        resp = c.post('/jobs', json={
+            'title': 'E2E Happy Path Task',
+            'description': 'Build a widget',
+            'price': 1.0,
+            'rubric': 'Must be functional',
+        }, headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 201)
+        task_id = resp.get_json()['task_id']
+
+        # 4. Buyer funds job
+        resp = c.post(f'/jobs/{task_id}/fund',
+                       json={'tx_hash': '0xhappy-fund'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['status'], 'funded')
+
+        # 5. Worker sees funded job in list
+        resp = c.get('/jobs?status=funded')
+        self.assertEqual(resp.status_code, 200)
+        job_ids = [j['task_id'] for j in resp.get_json()['jobs']]
+        self.assertIn(task_id, job_ids)
+
+        # 6. Worker claims
+        resp = c.post(f'/jobs/{task_id}/claim', json={},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['status'], 'claimed')
+
+        # 7. Worker submits (oracle is mocked)
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': {'solution': 'high quality widget'}},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub_id = resp.get_json()['submission_id']
+        self.assertEqual(resp.get_json()['status'], 'judging')
+        self.assertEqual(resp.get_json()['attempt'], 1)
+
+        # 8. Simulate oracle passing the submission
+        sub = db.session.get(Submission, sub_id)
+        sub.status = 'passed'
+        sub.oracle_score = 85
+        sub.oracle_reason = 'Good solution'
+
+        # Set job to resolved with winner
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_id
+        job.result_data = {'solution': 'high quality widget'}
+        job.payout_status = 'skipped'  # DEV_MODE: no chain
+        db.session.commit()
+
+        # 9. Verify job is resolved
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.status_code, 200)
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'resolved')
+        self.assertEqual(job_data['winner_id'], worker_id)
+
+        # 10. Verify participants list
+        self.assertIn(worker_id, job_data['participants'])
+
+        # 11. Verify submission status
+        resp = c.get(f'/submissions/{sub_id}',
+                      headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 200)
+        sub_data = resp.get_json()
+        self.assertEqual(sub_data['status'], 'passed')
+        self.assertEqual(sub_data['oracle_score'], 85)
+
+        # 12. Verify worker profile
+        resp = c.get(f'/agents/{worker_id}')
+        self.assertEqual(resp.status_code, 200)
+
+        # 13. Verify solvency: resolved job no longer in outstanding liabilities
+        resp = c.get('/platform/solvency', headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+        solvency = resp.get_json()
+        # The job is resolved so it should NOT be in funded_jobs_count
+        self.assertEqual(solvency['funded_jobs_count'], 0)
+        self.assertEqual(solvency['outstanding_liabilities'], 0.0)
+
+
+# ===================================================================
+# Scenario B: Task Timeout / No Takers
+# ===================================================================
+
+class TestScenarioB_TaskTimeout(unittest.TestCase):
+    """
+    Scenario B: Buyer creates job with short expiry -> funds ->
+    trigger expiry -> job becomes expired -> buyer refunds -> verify refund.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    def test_task_timeout_and_refund(self):
+        import datetime
+        c = self.client
+
+        # 1. Buyer registers
+        buyer_id, buyer_key = _register_agent(c, 'b-buyer', 'Buyer B',
+                                               wallet='0x' + 'aa' * 20)
+
+        # 2. Create job with past expiry
+        past = int((datetime.datetime.now(datetime.timezone.utc)
+                     - datetime.timedelta(hours=1)).timestamp())
+        resp = c.post('/jobs', json={
+            'title': 'Timeout Task',
+            'description': 'This will expire',
+            'price': 2.0,
+            'expiry': past,
+        }, headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 201)
+        task_id = resp.get_json()['task_id']
+
+        # 3. Fund the job
+        resp = c.post(f'/jobs/{task_id}/fund',
+                       json={'tx_hash': '0xtimeout-fund'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # 4. Trigger expiry via JobService.check_expiry
+        from services.job_service import JobService
+        job = db.session.get(Job, task_id)
+        expired = JobService.check_expiry(job)
+        db.session.commit()
+        self.assertTrue(expired)
+
+        # 5. Verify status is expired
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['status'], 'expired')
+
+        # 6. Buyer refunds
+        resp = c.post(f'/jobs/{task_id}/refund',
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+        refund_data = resp.get_json()
+        self.assertEqual(refund_data['status'], 'refunded')
+        self.assertEqual(refund_data['amount'], 2.0)
+
+        # 7. Verify solvency: no outstanding liabilities after refund
+        resp = c.get('/platform/solvency', headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 200)
+        solvency = resp.get_json()
+        self.assertEqual(solvency['outstanding_liabilities'], 0.0)
+        self.assertEqual(solvency['funded_jobs_count'], 0)
+
+
+# ===================================================================
+# Scenario C: Rejection -> Retry -> Pass
+# ===================================================================
+
+class TestScenarioC_RejectionRetryPass(unittest.TestCase):
+    """
+    Scenario C: Buyer creates strict job -> Worker claims -> submits low quality ->
+    Oracle fails (simulated) -> Worker resubmits -> Oracle passes (simulated) -> resolved.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_rejection_retry_pass(self, mock_oracle):
+        c = self.client
+
+        # 1. Register agents
+        buyer_id, buyer_key = _register_agent(c, 'c-buyer', 'Buyer C',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'c-worker', 'Worker C',
+                                                 wallet='0x' + 'bb' * 20)
+
+        # 2. Create strict job with max_retries=3
+        resp = c.post('/jobs', json={
+            'title': 'Strict Task',
+            'description': 'Must be perfect',
+            'price': 5.0,
+            'rubric': 'Extremely strict criteria',
+            'max_retries': 3,
+        }, headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 201)
+        task_id = resp.get_json()['task_id']
+
+        # 3. Fund job
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xstrict-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # 4. Worker claims
+        resp = c.post(f'/jobs/{task_id}/claim', json={},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # 5. First submission: low quality
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'low quality effort'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub1_id = resp.get_json()['submission_id']
+        self.assertEqual(resp.get_json()['attempt'], 1)
+
+        # 6. Simulate oracle failure for first submission
+        sub1 = db.session.get(Submission, sub1_id)
+        sub1.status = 'failed'
+        sub1.oracle_score = 40
+        sub1.oracle_reason = 'Low quality - does not meet rubric criteria'
+        # Increment failure count on job
+        job = db.session.get(Job, task_id)
+        job.failure_count = (job.failure_count or 0) + 1
+        db.session.commit()
+
+        # 7. Verify job is still funded (not resolved) after failure
+        resp = c.get(f'/jobs/{task_id}')
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'funded')
+
+        # 8. Verify failure count
+        job = db.session.get(Job, task_id)
+        self.assertEqual(job.failure_count, 1)
+
+        # 9. Verify first submission is failed
+        resp = c.get(f'/submissions/{sub1_id}',
+                      headers=_auth_headers(worker_key))
+        sub1_data = resp.get_json()
+        self.assertEqual(sub1_data['status'], 'failed')
+        self.assertEqual(sub1_data['oracle_score'], 40)
+        self.assertIn('Low quality', sub1_data['oracle_reason'])
+
+        # 10. Second submission: improved quality
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'much improved high quality solution'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub2_id = resp.get_json()['submission_id']
+        self.assertEqual(resp.get_json()['attempt'], 2)
+
+        # 11. Simulate oracle passing second submission
+        sub2 = db.session.get(Submission, sub2_id)
+        sub2.status = 'passed'
+        sub2.oracle_score = 85
+        sub2.oracle_reason = 'Meets all criteria'
+
+        # Set job to resolved
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_id
+        job.payout_status = 'skipped'
+        db.session.commit()
+
+        # 12. Verify second submission is passed with attempt=2
+        resp = c.get(f'/submissions/{sub2_id}',
+                      headers=_auth_headers(worker_key))
+        sub2_data = resp.get_json()
+        self.assertEqual(sub2_data['status'], 'passed')
+        self.assertEqual(sub2_data['oracle_score'], 85)
+        self.assertEqual(sub2_data['attempt'], 2)
+
+        # 13. Verify job resolved with winner
+        resp = c.get(f'/jobs/{task_id}')
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'resolved')
+        self.assertEqual(job_data['winner_id'], worker_id)
+
+
+# ===================================================================
+# Scenario D: Dispute Flow
+# ===================================================================
+
+class TestScenarioD_DisputeFlow(unittest.TestCase):
+    """
+    Scenario D: Complete Scenario A -> Buyer disputes -> verify dispute created ->
+    Worker also disputes -> Third party blocked.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_dispute_flow(self, mock_oracle):
+        c = self.client
+
+        # --- Setup: Complete a job (Scenario A mini) ---
+        buyer_id, buyer_key = _register_agent(c, 'd-buyer', 'Buyer D',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'd-worker', 'Worker D',
+                                                 wallet='0x' + 'bb' * 20)
+
+        resp = c.post('/jobs', json={
+            'title': 'Dispute Test Task',
+            'description': 'Will be disputed',
+            'price': 3.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        # Fund
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xdispute-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # Claim
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_key))
+
+        # Submit
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'dispute test solution'},
+                       headers=_auth_headers(worker_key))
+        sub_id = resp.get_json()['submission_id']
+
+        # Simulate oracle pass and resolve
+        sub = db.session.get(Submission, sub_id)
+        sub.status = 'passed'
+        sub.oracle_score = 90
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_id
+        job.payout_status = 'skipped'
+        db.session.commit()
+
+        # --- Dispute tests ---
+
+        # 1. Buyer disputes
+        resp = c.post(f'/jobs/{task_id}/dispute',
+                       json={'reason': 'Result does not match requirements'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 202)
+        dispute_data = resp.get_json()
+        self.assertEqual(dispute_data['status'], 'dispute_filed')
+        self.assertEqual(dispute_data['filed_by'], buyer_id)
+        self.assertIn('dispute_id', dispute_data)
+
+        # 2. Worker also disputes (both parties can dispute)
+        resp = c.post(f'/jobs/{task_id}/dispute',
+                       json={'reason': 'Buyer feedback was unfair'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        worker_dispute = resp.get_json()
+        self.assertEqual(worker_dispute['filed_by'], worker_id)
+
+        # 3. Register third-party agent
+        _, third_key = _register_agent(c, 'd-third', 'Third Party')
+
+        # Third party cannot dispute (not buyer or winner)
+        resp = c.post(f'/jobs/{task_id}/dispute',
+                       json={'reason': 'I want in on this'},
+                       headers=_auth_headers(third_key))
+        self.assertEqual(resp.status_code, 403)
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_dispute_requires_resolved_state(self, mock_oracle):
+        """Cannot dispute a job that is not resolved."""
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'd2-buyer', 'Buyer D2',
+                                               wallet='0x' + 'aa' * 20)
+
+        resp = c.post('/jobs', json={
+            'title': 'Open Job',
+            'description': 'Not resolved',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        # Try to dispute an open job
+        resp = c.post(f'/jobs/{task_id}/dispute',
+                       json={'reason': 'Too early'},
+                       headers=_auth_headers(buyer_key))
+        self.assertEqual(resp.status_code, 400)
+
+
+# ===================================================================
+# Scenario E: Concurrent Claims
+# ===================================================================
+
+class TestScenarioE_ConcurrentClaims(unittest.TestCase):
+    """
+    Scenario E: Create funded job -> 3 workers all claim -> verify all in
+    participants -> Workers A and B submit -> simulate B passes first ->
+    Job resolved with winner=B -> Worker C cannot submit (job resolved).
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        self.ctx = app.app_context()
+        self.ctx.push()
+        db.create_all()
+        self.client = app.test_client()
+        from services.rate_limiter import _api_limiter, _submit_limiter
+        _api_limiter._requests.clear()
+        _submit_limiter._requests.clear()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_concurrent_claims_and_resolution(self, mock_oracle):
+        c = self.client
+
+        # 1. Register buyer and 3 workers
+        buyer_id, buyer_key = _register_agent(c, 'e-buyer', 'Buyer E',
+                                               wallet='0x' + 'aa' * 20)
+        worker_a_id, worker_a_key = _register_agent(c, 'e-worker-a', 'Worker A',
+                                                      wallet='0x' + 'bb' * 20)
+        worker_b_id, worker_b_key = _register_agent(c, 'e-worker-b', 'Worker B',
+                                                      wallet='0x' + 'cc' * 20)
+        worker_c_id, worker_c_key = _register_agent(c, 'e-worker-c', 'Worker C',
+                                                      wallet='0x' + 'dd' * 20)
+
+        # 2. Create and fund job
+        resp = c.post('/jobs', json={
+            'title': 'Concurrent Claims Task',
+            'description': 'Multi-worker test',
+            'price': 10.0,
+            'max_retries': 3,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xconcurrent-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # 3. All three workers claim
+        for key in [worker_a_key, worker_b_key, worker_c_key]:
+            resp = c.post(f'/jobs/{task_id}/claim', json={},
+                           headers=_auth_headers(key))
+            self.assertEqual(resp.status_code, 200)
+
+        # 4. Verify all 3 workers are in participants
+        resp = c.get(f'/jobs/{task_id}')
+        self.assertEqual(resp.status_code, 200)
+        participants = resp.get_json()['participants']
+        self.assertIn(worker_a_id, participants)
+        self.assertIn(worker_b_id, participants)
+        self.assertIn(worker_c_id, participants)
+        self.assertEqual(len(participants), 3)
+
+        # 5. Worker A submits
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'Worker A mediocre solution'},
+                       headers=_auth_headers(worker_a_key))
+        self.assertEqual(resp.status_code, 202)
+        sub_a_id = resp.get_json()['submission_id']
+
+        # 6. Worker B submits
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'Worker B excellent solution'},
+                       headers=_auth_headers(worker_b_key))
+        self.assertEqual(resp.status_code, 202)
+        sub_b_id = resp.get_json()['submission_id']
+
+        # 7. Simulate B passes first: B's submission passes, job resolved
+        sub_b = db.session.get(Submission, sub_b_id)
+        sub_b.status = 'passed'
+        sub_b.oracle_score = 92
+
+        # Mark A's submission as failed (discarded since B won)
+        sub_a = db.session.get(Submission, sub_a_id)
+        sub_a.status = 'failed'
+        sub_a.oracle_reason = 'Another submission was accepted first'
+
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_b_id
+        job.payout_status = 'skipped'
+        db.session.commit()
+
+        # 8. Worker C tries to submit -> should fail (job already resolved)
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'Worker C too late'},
+                       headers=_auth_headers(worker_c_key))
+        self.assertEqual(resp.status_code, 400)
+
+        # 9. Verify only one winner
+        resp = c.get(f'/jobs/{task_id}')
+        job_data = resp.get_json()
+        self.assertEqual(job_data['status'], 'resolved')
+        self.assertEqual(job_data['winner_id'], worker_b_id)
+
+        # 10. Verify submission statuses
+        resp = c.get(f'/submissions/{sub_b_id}',
+                      headers=_auth_headers(worker_b_key))
+        self.assertEqual(resp.get_json()['status'], 'passed')
+
+        resp = c.get(f'/submissions/{sub_a_id}',
+                      headers=_auth_headers(worker_a_key))
+        self.assertEqual(resp.get_json()['status'], 'failed')
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_duplicate_claim_rejected(self, mock_oracle):
+        """A worker who already claimed cannot claim again."""
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'e2-buyer', 'Buyer E2',
+                                               wallet='0x' + 'aa' * 20)
+        worker_id, worker_key = _register_agent(c, 'e2-worker', 'Worker E2',
+                                                  wallet='0x' + 'bb' * 20)
+
+        resp = c.post('/jobs', json={
+            'title': 'Dup Claim Task',
+            'description': 'Desc',
+            'price': 1.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xdup-claim-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # First claim succeeds
+        resp = c.post(f'/jobs/{task_id}/claim', json={},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 200)
+
+        # Second claim should be rejected
+        resp = c.post(f'/jobs/{task_id}/claim', json={},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 409)
+
+    @patch('server._launch_oracle_with_timeout')
+    def test_resolved_job_blocks_all_new_submissions(self, mock_oracle):
+        """After a job is resolved, no further submissions are accepted."""
+        c = self.client
+
+        buyer_id, buyer_key = _register_agent(c, 'e3-buyer', 'Buyer E3',
+                                               wallet='0x' + 'aa' * 20)
+        worker_a_id, worker_a_key = _register_agent(c, 'e3-worker-a', 'Worker A3',
+                                                      wallet='0x' + 'bb' * 20)
+        worker_b_id, worker_b_key = _register_agent(c, 'e3-worker-b', 'Worker B3',
+                                                      wallet='0x' + 'cc' * 20)
+
+        resp = c.post('/jobs', json={
+            'title': 'Resolved Block Task',
+            'description': 'Desc',
+            'price': 2.0,
+        }, headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+
+        c.post(f'/jobs/{task_id}/fund',
+               json={'tx_hash': '0xresolved-block-fund'},
+               headers=_auth_headers(buyer_key))
+
+        # Both workers claim
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_a_key))
+        c.post(f'/jobs/{task_id}/claim', json={},
+               headers=_auth_headers(worker_b_key))
+
+        # Worker A submits
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'solution a'},
+                       headers=_auth_headers(worker_a_key))
+        sub_a_id = resp.get_json()['submission_id']
+
+        # Simulate A passes -> job resolved
+        sub_a = db.session.get(Submission, sub_a_id)
+        sub_a.status = 'passed'
+        sub_a.oracle_score = 88
+
+        job = db.session.get(Job, task_id)
+        job.status = 'resolved'
+        job.winner_id = worker_a_id
+        job.payout_status = 'skipped'
+        db.session.commit()
+
+        # Worker B tries to submit -> 400
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'solution b'},
+                       headers=_auth_headers(worker_b_key))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('not accepting submissions', resp.get_json()['error'].lower())
+
+
+if __name__ == '__main__':
+    unittest.main()

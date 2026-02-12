@@ -93,6 +93,14 @@ class WalletService:
     def get_ops_address(self) -> str:
         return self.ops_address or ''
 
+    def __repr__(self):
+        rpc_display = self.rpc_url[:30] + ('...' if len(self.rpc_url) > 30 else '')
+        return (
+            f"WalletService(rpc={rpc_display}, "
+            f"ops={self.ops_address}, "
+            f"connected={self.is_connected()})"
+        )
+
     def verify_deposit(self, tx_hash: str, expected_amount: Decimal) -> dict:
         """Verify a USDC deposit tx. Returns {valid, depositor, amount, error}."""
         if not self.is_connected():
@@ -163,7 +171,7 @@ class WalletService:
             })
             signed = self.w3.eth.account.sign_transaction(tx, self.ops_key)
             try:
-                tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
                 self._local_nonce += 1
             except Exception:
                 # F03: Do NOT change nonce on failure — let the caller retry
@@ -189,9 +197,9 @@ class WalletService:
 
         return tx_hash.hex()
 
-    def payout(self, worker_address: str, task_price: Decimal, fee_bps: int = 500) -> dict:
+    def payout(self, worker_address: str, task_price: Decimal, fee_bps: int = 2000) -> dict:
         """Send worker share to worker, fee share to fee wallet. Returns tx hashes.
-        fee_bps: fee in basis points (default 500 = 5%)."""
+        fee_bps: fee in basis points (default 2000 = 20%)."""
         # C5: Bounds validation
         if fee_bps < 0 or fee_bps > 10000:
             raise ValueError(f"fee_bps must be 0-10000, got {fee_bps}")
