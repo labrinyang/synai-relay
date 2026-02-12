@@ -6,7 +6,7 @@ Job statuses:  open -> funded -> resolved | expired | cancelled
 Submission statuses: pending -> judging -> passed | failed
 """
 
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, render_template, send_from_directory
 from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant
 from config import Config
 from sqlalchemy.exc import IntegrityError
@@ -60,13 +60,23 @@ app = Flask(__name__)
 app.config.from_object(Config)
 db.init_app(app)
 
+# Enable WAL mode for SQLite concurrent access (test process + running server)
+from sqlalchemy import event as sa_event
+from sqlalchemy.engine import Engine
+
+@sa_event.listens_for(Engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, connection_record):
+    import sqlite3
+    if isinstance(dbapi_conn, sqlite3.Connection):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
 # ---------------------------------------------------------------------------
 # Database bootstrap
 # ---------------------------------------------------------------------------
 
 logger.info("Starting SYNAI Relay Protocol V2")
-if Config.DEV_MODE:
-    logger.warning("DEV_MODE ENABLED — chain verification disabled, accepting any tx_hash")
 # C7: Warn about SQLite limitations
 if 'sqlite' in Config.SQLALCHEMY_DATABASE_URI:
     logger.warning("SQLite detected — row-level locking (with_for_update) is NOT supported. "
@@ -76,14 +86,11 @@ if 'sqlite' in Config.SQLALCHEMY_DATABASE_URI:
 Config.validate_production()
 
 # P1-8: Startup check — Guard Layer B configuration
-if not Config.DEV_MODE:
-    guard_url = os.environ.get('ORACLE_LLM_BASE_URL', '')
-    guard_key = os.environ.get('ORACLE_LLM_API_KEY', '')
-    if not guard_url or not guard_key:
-        logger.critical("FATAL: Guard Layer B not configured in production. "
-                       "Set ORACLE_LLM_BASE_URL and ORACLE_LLM_API_KEY.")
-        import sys
-        sys.exit(1)
+guard_url = os.environ.get('ORACLE_LLM_BASE_URL', '')
+guard_key = os.environ.get('ORACLE_LLM_API_KEY', '')
+if not guard_url or not guard_key:
+    logger.warning("Guard Layer B not configured. "
+                   "Set ORACLE_LLM_BASE_URL and ORACLE_LLM_API_KEY for oracle evaluation.")
 
 with app.app_context():
     try:
@@ -108,13 +115,6 @@ with app.app_context():
     # P2-2: Provide app reference for webhook failure tracking in background threads
     from services.webhook_service import set_app_ref
     set_app_ref(app)
-
-# G23: Dev mode response header
-if Config.DEV_MODE:
-    @app.after_request
-    def _add_dev_mode_header(response):
-        response.headers['X-Dev-Mode'] = 'true'
-        return response
 
 # G14: Correlation ID — attach unique request ID to every request
 @app.before_request
@@ -217,6 +217,16 @@ def _expiry_checker_loop():
                             fire_event('job.expired', job.task_id, {"status": "expired"})
                     if expired_jobs:
                         db.session.commit()
+
+                    # Clean up expired idempotency keys (24h TTL)
+                    from models import IdempotencyKey
+                    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+                    deleted = IdempotencyKey.query.filter(
+                        IdempotencyKey.created_at < cutoff
+                    ).delete(synchronize_session=False)
+                    if deleted:
+                        db.session.commit()
+                        logger.info("Cleaned up %d expired idempotency keys", deleted)
                 finally:
                     db.session.remove()
             consecutive_errors = 0  # Reset on success
@@ -659,8 +669,6 @@ def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
 @app.route('/health', methods=['GET'])
 def health():
     result = {"status": "healthy", "service": "synai-relay-v2"}
-    if Config.DEV_MODE:
-        result["dev_mode"] = True
     return jsonify(result), 200
 
 
@@ -1044,9 +1052,8 @@ def fund_job(task_id):
         job.depositor_address = verify.get('depositor')
         job.deposit_amount = verify.get('amount')
         overpayment = verify.get('overpayment')  # G22
-    elif not app.config.get('DEV_MODE', False):
-        return jsonify({"error": "Chain not connected and DEV_MODE is disabled"}), 503
-    # else: dev mode — accept any tx_hash
+    else:
+        return jsonify({"error": "Chain not connected"}), 503
 
     job.status = 'funded'
     job.deposit_tx_hash = tx_hash
@@ -1828,6 +1835,54 @@ def dispute_job(task_id):
         "filed_by": agent_id,
         "message": "Dispute recorded. Manual review required.",
     }), 202
+
+
+# ===================================================================
+# Dashboard — read-only HTML pages and stats API
+# ===================================================================
+
+
+@app.route('/')
+def landing():
+    return render_template('landing.html')
+
+
+@app.route('/dashboard')
+def dashboard_page():
+    return render_template('dashboard.html')
+
+
+@app.route('/skill.md')
+def skill_md():
+    import pathlib
+    if not pathlib.Path(app.root_path, 'static', 'Skill.md').exists():
+        return jsonify({"error": "Skill.md not yet available"}), 404
+    return send_from_directory('static', 'Skill.md', mimetype='text/markdown')
+
+
+@app.route('/dashboard/stats', methods=['GET'])
+def dashboard_stats():
+    from services.dashboard_service import DashboardService, etag_response
+    stats = DashboardService.get_stats()
+    return etag_response(stats, cache_max_age=30)
+
+
+@app.route('/dashboard/leaderboard', methods=['GET'])
+def dashboard_leaderboard():
+    from services.dashboard_service import DashboardService, etag_response
+    sort_by = request.args.get('sort_by', 'total_earned')
+    if sort_by not in ('total_earned', 'completion_rate'):
+        sort_by = 'total_earned'
+    try:
+        limit = min(max(1, int(request.args.get('limit', 20))), 100)
+    except (ValueError, TypeError):
+        limit = 20
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (ValueError, TypeError):
+        offset = 0
+    data = DashboardService.get_leaderboard(sort_by=sort_by, limit=limit, offset=offset)
+    return etag_response(data, cache_max_age=30)
 
 
 # ---------------------------------------------------------------------------

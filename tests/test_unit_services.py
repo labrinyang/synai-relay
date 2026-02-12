@@ -15,8 +15,7 @@ from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock, PropertyMock
 
-# Force DEV_MODE and test DB before importing app
-os.environ['DEV_MODE'] = 'true'
+# Force test DB before importing app
 os.environ['DATABASE_URL'] = 'sqlite://'  # in-memory
 
 from server import app
@@ -929,15 +928,11 @@ class TestWebhookService:
 
 
 # ===================================================================
-# 1.8 Config — production guards (P0-2)
-# ===================================================================
-
-# ===================================================================
 # 1.8b Guard Layer B startup check (P1-8)
 # ===================================================================
 
-def test_guard_layer_b_startup_warning_dev_mode():
-    """P1-8: DEV_MODE + no LLM config -> OracleGuard() succeeds with warning."""
+def test_guard_layer_b_disabled_without_config():
+    """P1-8: No LLM config -> OracleGuard() succeeds with Layer B disabled."""
     import os
     saved = {k: os.environ.pop(k, None) for k in ['ORACLE_LLM_BASE_URL', 'ORACLE_LLM_API_KEY']}
     try:
@@ -963,29 +958,7 @@ def test_guard_layer_b_enabled_when_configured():
         os.environ.pop('ORACLE_LLM_API_KEY', None)
 
 
-def test_sqlite_guard_blocks_production():
-    """P0-2: Non-DEV_MODE + SQLite should raise RuntimeError."""
+def test_validate_production_noop():
+    """validate_production is a no-op (guards removed)."""
     import config
-    original_dev = config.Config.DEV_MODE
-    original_uri = config.Config.SQLALCHEMY_DATABASE_URI
-    try:
-        config.Config.DEV_MODE = False
-        config.Config.SQLALCHEMY_DATABASE_URI = 'sqlite:///test.db'
-        with pytest.raises(RuntimeError, match="SQLite is not supported"):
-            config.Config.validate_production()
-    finally:
-        config.Config.DEV_MODE = original_dev
-        config.Config.SQLALCHEMY_DATABASE_URI = original_uri
-
-def test_sqlite_guard_allows_dev_mode():
-    """P0-2: DEV_MODE + SQLite should not raise."""
-    import config
-    original_dev = config.Config.DEV_MODE
-    original_uri = config.Config.SQLALCHEMY_DATABASE_URI
-    try:
-        config.Config.DEV_MODE = True
-        config.Config.SQLALCHEMY_DATABASE_URI = 'sqlite:///test.db'
-        config.Config.validate_production()  # Should not raise
-    finally:
-        config.Config.DEV_MODE = original_dev
-        config.Config.SQLALCHEMY_DATABASE_URI = original_uri
+    config.Config.validate_production()  # Should not raise

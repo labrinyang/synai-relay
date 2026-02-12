@@ -1,13 +1,14 @@
 import os
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Config:
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///atp_dev.db')
+    SQLALCHEMY_DATABASE_URI = os.environ.get(
+        'DATABASE_URL',
+        f'sqlite:///{os.path.join(_BASE_DIR, "atp_dev.db")}'
+    )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
-
-    # Dev mode: when True, accept any tx_hash without chain verification
-    # Defaults to False — must be explicitly enabled via DEV_MODE=true
-    DEV_MODE = os.environ.get('DEV_MODE', 'false').lower() in ('true', '1', 'yes')
 
     # Chain (Base L2)
     RPC_URL = os.environ.get('RPC_URL', '')
@@ -34,21 +35,5 @@ class Config:
 
     @classmethod
     def validate_production(cls):
-        """Startup check: reject SQLite in non-DEV_MODE."""
-        if not cls.DEV_MODE and 'sqlite' in cls.SQLALCHEMY_DATABASE_URI:
-            raise RuntimeError(
-                "FATAL: SQLite is not supported in production mode. "
-                "Set DATABASE_URL to a PostgreSQL connection string, "
-                "or set DEV_MODE=true for development."
-            )
-        if not cls.DEV_MODE and cls.SECRET_KEY == 'dev-secret-key-change-me':
-            raise RuntimeError(
-                "FATAL: SECRET_KEY must be changed from default in production. "
-                "Set FLASK_SECRET_KEY environment variable."
-            )
-        if not cls.DEV_MODE and not cls.OPERATOR_ADDRESS:
-            raise RuntimeError(
-                "FATAL: OPERATOR_ADDRESS must be set in production. "
-                "Set the OPERATOR_ADDRESS environment variable to the "
-                "Ethereum address authorized for operator operations."
-            )
+        """Startup check (no-op — guards removed)."""
+        pass

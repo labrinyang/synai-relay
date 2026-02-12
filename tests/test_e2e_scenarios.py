@@ -12,8 +12,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-# Force DEV_MODE and test DB before importing app
-os.environ['DEV_MODE'] = 'true'
+# Force test DB before importing app
 os.environ['DATABASE_URL'] = 'sqlite://'  # in-memory
 
 from server import app
@@ -48,9 +47,19 @@ class TestScenarioA_HappyPath(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -137,7 +146,7 @@ class TestScenarioA_HappyPath(unittest.TestCase):
         job.status = 'resolved'
         job.winner_id = worker_id
         job.result_data = {'solution': 'high quality widget'}
-        job.payout_status = 'skipped'  # DEV_MODE: no chain
+        job.payout_status = 'skipped'  # no chain connected in test
         db.session.commit()
 
         # 9. Verify job is resolved
@@ -148,7 +157,8 @@ class TestScenarioA_HappyPath(unittest.TestCase):
         self.assertEqual(job_data['winner_id'], worker_id)
 
         # 10. Verify participants list
-        self.assertIn(worker_id, job_data['participants'])
+        participant_ids = [p['agent_id'] for p in job_data['participants']]
+        self.assertIn(worker_id, participant_ids)
 
         # 11. Verify submission status
         resp = c.get(f'/submissions/{sub_id}',
@@ -176,9 +186,19 @@ class TestScenarioB_TaskTimeout(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -263,9 +283,19 @@ class TestScenarioC_RejectionRetryPass(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -405,9 +435,19 @@ class TestScenarioD_DisputeFlow(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -539,9 +579,19 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -603,9 +653,10 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
         resp = c.get(f'/jobs/{task_id}')
         self.assertEqual(resp.status_code, 200)
         participants = resp.get_json()['participants']
-        self.assertIn(worker_a_id, participants)
-        self.assertIn(worker_b_id, participants)
-        self.assertIn(worker_c_id, participants)
+        participant_ids = [p['agent_id'] for p in participants]
+        self.assertIn(worker_a_id, participant_ids)
+        self.assertIn(worker_b_id, participant_ids)
+        self.assertIn(worker_c_id, participant_ids)
         self.assertEqual(len(participants), 3)
 
         # 5. Worker A submits
@@ -758,9 +809,19 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -943,9 +1004,19 @@ class TestScenarioG_PayoutPartialFailure(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1037,9 +1108,19 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1094,7 +1175,7 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
                json={'tx_hash': '0xh-fund-2'},
                headers=_auth_headers(buyer_key))
 
-        # Set depositor_address on both (DEV_MODE doesn't set it automatically)
+        # Set depositor_address on both (no chain connected in test)
         depositor = '0x' + 'aa' * 20
         job1 = db.session.get(Job, task_id_1)
         job1.depositor_address = depositor
@@ -1246,9 +1327,19 @@ class TestScenarioI_DepositWrongTarget(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1322,9 +1413,19 @@ class TestScenarioJ_ReplayAttack(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1403,9 +1504,19 @@ class TestScenarioK_ConcurrentPayout(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
@@ -1516,9 +1627,19 @@ class TestScenarioL_OracleTimeout(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
-        # Reset WalletService singleton to prevent env pollution from onchain tests
+        # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
-        ws_mod._wallet_service = None
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.is_connected.return_value = True
+        mock_wallet.get_ops_address.return_value = '0x' + '00' * 20
+        mock_wallet.verify_deposit.return_value = {
+            'valid': True, 'depositor': '', 'amount': None,
+        }
+        mock_wallet.payout.return_value = {'payout_tx': '0xpayout_mock', 'fee_tx': '0xfee_mock'}
+        mock_wallet.refund.return_value = '0xrefund_mock'
+        mock_wallet.estimate_gas.return_value = {"error": "mock"}
+        ws_mod._wallet_service = mock_wallet
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
