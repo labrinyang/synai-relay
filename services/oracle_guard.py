@@ -29,6 +29,23 @@ INJECTION_PATTERNS = [
     r'你(现在)?是.{0,10}(助手|评分|评估)',
     r'(必须|应该|一定).{0,10}(通过|给分|接受|批准)',
     r'(无视|跳过|绕过).{0,10}(规则|标准|检查)',
+    # P2-6 fix (M-O07): Multilingual injection patterns
+    # French
+    r'ignor(e[rz]?)\s+(toutes?\s+)?(les\s+)?(instructions?|r[eè]gles?|consignes?)',
+    r'(donn|attribu)(e[rz]?)\s+(une?\s+)?note\s+(de\s+)?\d+',
+    # German
+    r'ignorier(e|en)\s+(alle\s+)?(Anweisungen|Regeln|Vorgaben)',
+    r'(gib|vergib|setze)\s+(eine?\s+)?(Note|Bewertung|Punkt)\s+(von\s+)?\d+',
+    # Spanish
+    r'ignora[r]?\s+(todas?\s+)?(las?\s+)?(instrucciones?|reglas?)',
+    r'(da[r]?|asigna[r]?|pon)\s+(una?\s+)?(puntuaci[oó]n|nota|calificaci[oó]n)\s+(de\s+)?\d+',
+    # Japanese
+    r'(指示|ルール|規則|命令).{0,5}(無視|無効|却下|忘れ)',
+    r'(スコア|点数|得点|評価).{0,5}(与え|つけ|設定)',
+    # Korean
+    r'(지시|규칙|명령).{0,5}(무시|무효|거부)',
+    # Russian
+    r'(игнорир|проигнорир).{0,10}(инструкц|правил|указан)',
 ]
 
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS]
@@ -39,6 +56,18 @@ class OracleGuard:
         self.base_url = os.environ.get('ORACLE_LLM_BASE_URL', '')
         self.api_key = os.environ.get('ORACLE_LLM_API_KEY', '')
         self.model = os.environ.get('ORACLE_LLM_MODEL', 'openai/gpt-4o')
+
+        # P1-8 fix (M-O02): Check Layer B configuration
+        import logging
+        self._logger = logging.getLogger('relay.guard')
+        if not self.base_url or not self.api_key:
+            self._layer_b_enabled = False
+            self._logger.warning(
+                "GUARD WARNING: LLM guard (Layer B) not configured. "
+                "Only programmatic regex scanning (Layer A) is active."
+            )
+        else:
+            self._layer_b_enabled = True
 
     def programmatic_scan(self, text: str) -> dict:
         """Layer A: Deterministic regex scan. Cannot be fooled by prompt injection."""
@@ -107,6 +136,13 @@ Respond with exactly one JSON object:
             import logging
             logging.getLogger('relay.guard').error("LLM guard scan failed: %s", e)
             return {"blocked": True, "reason": "Guard check failed (fail-closed)", "layer": "llm"}
+
+    def check_rubric(self, rubric: str) -> dict:
+        """P1-2 fix (M-O03): Scan rubric text for injection patterns.
+        Uses Layer A (regex) only — rubrics are set by Buyers, not LLM-analyzed."""
+        if not rubric:
+            return {"blocked": False, "reason": "No rubric provided", "layer": "programmatic"}
+        return self.programmatic_scan(rubric)
 
     def check(self, text: str) -> dict:
         """Run both layers. Returns {blocked, reason, layer, details}."""

@@ -69,6 +69,10 @@ class WalletService:
         self._tx_lock = threading.Lock()
         # F03: Local nonce counter to prevent nonce collisions on concurrent payouts
         self._local_nonce = None
+        # P2-8: TTL cache for is_connected() to avoid RPC round-trips on every call
+        self._connected_cache = None
+        self._connected_cache_time = 0
+        self._connected_cache_ttl = 30  # 30 seconds
 
         if self.rpc_url and self.usdc_address:
             try:
@@ -88,7 +92,18 @@ class WalletService:
                 self.w3 = None
 
     def is_connected(self) -> bool:
-        return self.w3 is not None and self.ops_key and self.w3.is_connected()
+        """Check if connected to chain. Caches result for 30 seconds."""
+        import time
+        now = time.time()
+        cache = getattr(self, '_connected_cache', None)
+        cache_time = getattr(self, '_connected_cache_time', 0)
+        cache_ttl = getattr(self, '_connected_cache_ttl', 30)
+        if cache is not None and (now - cache_time) < cache_ttl:
+            return cache
+        result = self.w3 is not None and bool(self.ops_key) and self.w3.is_connected()
+        self._connected_cache = result
+        self._connected_cache_time = now
+        return result
 
     def get_ops_address(self) -> str:
         return self.ops_address or ''

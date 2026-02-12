@@ -58,6 +58,18 @@ class AgentService:
         db.session.flush()
 
     @staticmethod
+    def rotate_api_key(agent_id: str) -> dict:
+        """Generate a new API key, invalidating the old one."""
+        from services.auth_service import generate_api_key
+        agent = Agent.query.filter_by(agent_id=agent_id).first()
+        if not agent:
+            return {"error": "Agent not found"}
+        raw_key, key_hash = generate_api_key()
+        agent.api_key_hash = key_hash
+        db.session.commit()
+        return {"agent_id": agent_id, "api_key": raw_key}
+
+    @staticmethod
     def _to_dict(agent: Agent) -> dict:
         return {
             "agent_id": agent.agent_id,
