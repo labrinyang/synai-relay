@@ -25,5 +25,5 @@ class Config:
     ORACLE_MAX_ROUNDS = int(os.environ.get('ORACLE_MAX_ROUNDS', '6'))
     ORACLE_TIMEOUT_SECONDS = int(os.environ.get('ORACLE_TIMEOUT_SECONDS', '120'))
 
-    # Platform fee (basis points: 2000 = 20%)
-    PLATFORM_FEE_BPS = int(os.environ.get('PLATFORM_FEE_BPS', '2000'))
+    # Platform fee (basis points: 500 = 5% per architecture decision)
+    PLATFORM_FEE_BPS = int(os.environ.get('PLATFORM_FEE_BPS', '500'))

@@ -32,7 +32,7 @@ class Agent(db.Model):
     wallet_address = db.Column(db.String(42))
     encrypted_privkey = db.Column(db.Text)
     # Auth (G01)
-    api_key_hash = db.Column(db.String(128), nullable=True)
+    api_key_hash = db.Column(db.String(128), nullable=True, index=True, unique=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -49,6 +49,7 @@ class Job(db.Model):
     artifact_type = db.Column(db.String(20), default='GENERAL')
     # On-chain deposit
     deposit_tx_hash = db.Column(db.String(100), unique=True, nullable=True)
+    deposit_amount = db.Column(db.Numeric(20, 6), nullable=True)
     depositor_address = db.Column(db.String(42), nullable=True)
     # Payout/refund
     payout_tx_hash = db.Column(db.String(100), nullable=True)
@@ -64,7 +65,7 @@ class Job(db.Model):
     max_submissions = db.Column(db.Integer, default=20)
     max_retries = db.Column(db.Integer, default=3)
     # Fee (G19)
-    fee_bps = db.Column(db.Integer, default=2000)  # basis points: 2000 = 20%
+    fee_bps = db.Column(db.Integer, default=500)  # basis points: 500 = 5%
     # Lifecycle
     failure_count = db.Column(db.Integer, default=0)
     expiry = db.Column(db.DateTime, nullable=True)
@@ -79,11 +80,27 @@ class Job(db.Model):
     # Relationships
     submissions = db.relationship('Submission', backref='job', lazy=True,
                                   foreign_keys='Submission.task_id')
+    job_participants = db.relationship('JobParticipant', backref='job', lazy=True,
+                                       foreign_keys='JobParticipant.task_id')
 
     # G09: indexes
     __table_args__ = (
         db.Index('ix_jobs_buyer_id', 'buyer_id'),
         db.Index('ix_jobs_status_created', 'status', 'created_at'),
+    )
+
+
+class JobParticipant(db.Model):
+    """G10: Proper relational model for job participants (replaces JSON array)."""
+    __tablename__ = 'job_participants'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)
+    worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)
+    claimed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    unclaimed_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint('task_id', 'worker_id', name='uq_job_participant'),
     )
 
 
@@ -110,13 +127,24 @@ class Submission(db.Model):
 
 
 class IdempotencyKey(db.Model):
-    """G17: Idempotency keys for safe request retries."""
+    """G17: Idempotency keys for safe request retries (24h TTL)."""
     __tablename__ = 'idempotency_keys'
+    EXPIRY_HOURS = 24
+
     key = db.Column(db.String(128), primary_key=True)
     agent_id = db.Column(db.String(100), nullable=False)
     response_code = db.Column(db.Integer, nullable=False)
     response_body = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @property
+    def is_expired(self):
+        from datetime import timezone, timedelta
+        if not self.created_at:
+            return True
+        now = datetime.now(timezone.utc)
+        created = self.created_at if self.created_at.tzinfo else self.created_at.replace(tzinfo=timezone.utc)
+        return now - created > timedelta(hours=self.EXPIRY_HOURS)
 
 
 class Webhook(db.Model):
@@ -126,6 +154,18 @@ class Webhook(db.Model):
     agent_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)
     url = db.Column(db.Text, nullable=False)
     events = db.Column(db.JSON, default=lambda: [])  # e.g., ["job.resolved", "submission.completed"]
-    secret = db.Column(db.String(64), nullable=True)  # HMAC secret for signature
+    secret = db.Column(db.String(128), nullable=True)  # HMAC secret for signature
     active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class Dispute(db.Model):
+    """G24: Dispute records for resolved jobs."""
+    __tablename__ = 'disputes'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)
+    filed_by = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), default='open')  # open, resolved
+    resolution = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)

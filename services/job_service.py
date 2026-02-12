@@ -1,4 +1,4 @@
-from models import db, Job, Submission
+from models import db, Job, Submission, JobParticipant
 from datetime import datetime, timezone
 
 
@@ -18,10 +18,11 @@ class JobService:
         exp = job.expiry if job.expiry.tzinfo else job.expiry.replace(tzinfo=timezone.utc)
         if now >= exp:
             job.status = 'expired'
-            # Cancel any pending/judging submissions
+            # F09: Only cancel pending submissions; let judging submissions
+            # be handled by the oracle timeout mechanism (G07)
             Submission.query.filter(
                 Submission.task_id == job.task_id,
-                Submission.status.in_(['pending', 'judging']),
+                Submission.status == 'pending',
             ).update({'status': 'failed'}, synchronize_session='fetch')
             db.session.flush()
             return True
@@ -53,9 +54,9 @@ class JobService:
             except (InvalidOperation, ValueError):
                 pass
 
-        # Total count before pagination (but after filters)
-        # We need to handle expiry and worker filtering in-memory, so get total after
-        all_jobs = query.order_by(Job.created_at.desc()).all()
+        # M2 fix: SQL-level safety cap to prevent unbounded memory usage.
+        # Expiry + worker filtering still done in-memory, but capped at 5000 rows.
+        all_jobs = query.order_by(Job.created_at.desc()).limit(5000).all()
 
         # Lazy expiry check on listed jobs
         any_expired = False
@@ -67,17 +68,24 @@ class JobService:
         # Re-filter if status was specified (some may have just expired)
         if status:
             all_jobs = [j for j in all_jobs if j.status == status]
-        # Python-level worker filter (portable across DB engines)
+        # Python-level worker filter using JobParticipant (portable across DB engines)
         if worker_id:
-            all_jobs = [j for j in all_jobs if worker_id in (j.participants or [])]
+            participant_task_ids = {jp.task_id for jp in JobParticipant.query.filter_by(worker_id=worker_id, unclaimed_at=None).all()}
+            all_jobs = [j for j in all_jobs if j.task_id in participant_task_ids]
 
         total = len(all_jobs)
 
-        # Sort
+        # Sort (m7 fix: type-appropriate defaults to avoid Decimal/datetime mix)
+        from decimal import Decimal as _Dec
         sort_col_map = {'created_at': 'created_at', 'price': 'price', 'expiry': 'expiry'}
+        _sort_defaults = {'created_at': datetime.min, 'expiry': datetime.min, 'price': _Dec(0)}
         sort_key = sort_col_map.get(sort_by, 'created_at')
+        sort_default = _sort_defaults.get(sort_key, datetime.min)
         reverse = sort_order != 'asc'
-        all_jobs.sort(key=lambda j: getattr(j, sort_key) or datetime.min, reverse=reverse)
+        all_jobs.sort(
+            key=lambda j: getattr(j, sort_key) if getattr(j, sort_key) is not None else sort_default,
+            reverse=reverse,
+        )
 
         # Clamp limit
         limit = min(max(1, limit), 200)
@@ -106,7 +114,7 @@ class JobService:
             "buyer_id": job.buyer_id,
             "status": job.status,
             "artifact_type": job.artifact_type,
-            "participants": job.participants or [],
+            "participants": [jp.worker_id for jp in JobParticipant.query.filter_by(task_id=job.task_id, unclaimed_at=None).all()],
             "winner_id": job.winner_id,
             "submission_count": submission_count,
             "max_submissions": job.max_submissions,

@@ -18,9 +18,11 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def _cleanup(self, key: str, now: float):
-        """Remove expired timestamps."""
+        """Remove expired timestamps. M6 fix: also remove empty keys."""
         cutoff = now - self.window
         self._requests[key] = [t for t in self._requests[key] if t > cutoff]
+        if not self._requests[key]:
+            del self._requests[key]
 
     def is_allowed(self, key: str) -> tuple:
         """Check if request is allowed. Returns (allowed, remaining, reset_at)."""
