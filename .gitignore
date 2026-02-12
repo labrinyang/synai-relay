@@ -49,3 +49,7 @@ docs/
 
 # Plugin artifacts
 superpowers
+
+# Local scripts / config
+.ralphrc
+run-agent-lifecycle.sh
