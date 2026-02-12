@@ -1,8 +1,12 @@
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 db = SQLAlchemy()
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class Owner(db.Model):
@@ -11,7 +15,7 @@ class Owner(db.Model):
     username = db.Column(db.String(100), nullable=False)
     twitter_handle = db.Column(db.String(100))
     avatar_url = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
     agents = db.relationship('Agent', backref='owner', lazy=True)
 
 
@@ -31,7 +35,9 @@ class Agent(db.Model):
     # Wallet
     wallet_address = db.Column(db.String(42))
     encrypted_privkey = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Auth (G01)
+    api_key_hash = db.Column(db.String(128), nullable=True, index=True, unique=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
 
 
 class Job(db.Model):
@@ -41,15 +47,17 @@ class Job(db.Model):
     description = db.Column(db.Text)
     rubric = db.Column(db.Text, nullable=True)
     price = db.Column(db.Numeric(20, 6), nullable=False)
-    buyer_id = db.Column(db.String(100))
-    status = db.Column(db.String(20), default='open')
+    buyer_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'))  # G08: FK
+    status = db.Column(db.String(20), default='open', index=True)  # G09: index
     # Statuses: 'open', 'funded', 'resolved', 'expired', 'cancelled'
     artifact_type = db.Column(db.String(20), default='GENERAL')
     # On-chain deposit
     deposit_tx_hash = db.Column(db.String(100), unique=True, nullable=True)
+    deposit_amount = db.Column(db.Numeric(20, 6), nullable=True)
     depositor_address = db.Column(db.String(42), nullable=True)
     # Payout/refund
     payout_tx_hash = db.Column(db.String(100), nullable=True)
+    payout_status = db.Column(db.String(20), nullable=True)  # G06: pending|success|failed|skipped
     fee_tx_hash = db.Column(db.String(100), nullable=True)
     refund_tx_hash = db.Column(db.String(100), nullable=True)
     winner_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=True)
@@ -60,6 +68,8 @@ class Job(db.Model):
     min_reputation = db.Column(db.Numeric(5, 4), nullable=True)
     max_submissions = db.Column(db.Integer, default=20)
     max_retries = db.Column(db.Integer, default=3)
+    # Fee (G19)
+    fee_bps = db.Column(db.Integer, default=2000)  # basis points: 2000 = 20%
     # Lifecycle
     failure_count = db.Column(db.Integer, default=0)
     expiry = db.Column(db.DateTime, nullable=True)
@@ -69,17 +79,40 @@ class Job(db.Model):
     # Data
     envelope_json = db.Column(db.JSON, nullable=True)
     result_data = db.Column(db.JSON)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
     # Relationships
-    submissions = db.relationship('Submission', backref='job', lazy=True)
+    submissions = db.relationship('Submission', backref='job', lazy=True,
+                                  foreign_keys='Submission.task_id')
+    job_participants = db.relationship('JobParticipant', backref='job', lazy=True,
+                                       foreign_keys='JobParticipant.task_id')
+
+    # G09: indexes
+    __table_args__ = (
+        db.Index('ix_jobs_buyer_id', 'buyer_id'),
+        db.Index('ix_jobs_status_created', 'status', 'created_at'),
+    )
+
+
+class JobParticipant(db.Model):
+    """G10: Proper relational model for job participants (replaces JSON array)."""
+    __tablename__ = 'job_participants'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)
+    worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)
+    claimed_at = db.Column(db.DateTime, default=_utcnow)
+    unclaimed_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint('task_id', 'worker_id', name='uq_job_participant'),
+    )
 
 
 class Submission(db.Model):
     __tablename__ = 'submissions'
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False)
-    worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False)
+    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)  # G09
+    worker_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)  # G09
     content = db.Column(db.JSON)
     status = db.Column(db.String(20), default='pending')
     # Statuses: 'pending', 'judging', 'passed', 'failed'
@@ -87,6 +120,59 @@ class Submission(db.Model):
     oracle_reason = db.Column(db.Text, nullable=True)
     oracle_steps = db.Column(db.JSON, nullable=True)
     attempt = db.Column(db.Integer, default=1)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
     # Relationships
     worker = db.relationship('Agent', foreign_keys=[worker_id])
+
+    # G09: composite index for retry count queries
+    __table_args__ = (
+        db.Index('ix_submissions_task_worker', 'task_id', 'worker_id'),
+    )
+
+
+class IdempotencyKey(db.Model):
+    """G17: Idempotency keys for safe request retries (24h TTL)."""
+    __tablename__ = 'idempotency_keys'
+    EXPIRY_HOURS = 24
+
+    key = db.Column(db.String(128), primary_key=True)
+    agent_id = db.Column(db.String(100), nullable=False)
+    response_code = db.Column(db.Integer, nullable=False)
+    response_body = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    @property
+    def is_expired(self):
+        from datetime import timedelta
+        if not self.created_at:
+            return True
+        now = datetime.now(timezone.utc)
+        created = self.created_at if self.created_at.tzinfo else self.created_at.replace(tzinfo=timezone.utc)
+        return now - created > timedelta(hours=self.EXPIRY_HOURS)
+
+
+class Webhook(db.Model):
+    """G04: Webhook registration for event push notifications."""
+    __tablename__ = 'webhooks'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False, index=True)
+    url = db.Column(db.Text, nullable=False)
+    events = db.Column(db.JSON, default=lambda: [])  # e.g., ["job.resolved", "submission.completed"]
+    secret = db.Column(db.String(128), nullable=True)  # HMAC secret for signature
+    active = db.Column(db.Boolean, default=True)
+    failure_count = db.Column(db.Integer, default=0)
+    last_failure_at = db.Column(db.DateTime, nullable=True)
+    disabled_reason = db.Column(db.String(200), nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+
+class Dispute(db.Model):
+    """G24: Dispute records for resolved jobs."""
+    __tablename__ = 'disputes'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = db.Column(db.String(36), db.ForeignKey('jobs.task_id'), nullable=False, index=True)
+    filed_by = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), default='open')  # open, resolved
+    resolution = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)

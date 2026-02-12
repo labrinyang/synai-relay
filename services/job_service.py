@@ -1,4 +1,4 @@
-from models import db, Job, Submission
+from models import db, Job, Submission, JobParticipant
 from datetime import datetime, timezone
 
 
@@ -18,38 +18,81 @@ class JobService:
         exp = job.expiry if job.expiry.tzinfo else job.expiry.replace(tzinfo=timezone.utc)
         if now >= exp:
             job.status = 'expired'
-            # Cancel any pending/judging submissions
+            # F09: Only cancel pending submissions; let judging submissions
+            # be handled by the oracle timeout mechanism (G07)
             Submission.query.filter(
                 Submission.task_id == job.task_id,
-                Submission.status.in_(['pending', 'judging']),
+                Submission.status == 'pending',
             ).update({'status': 'failed'}, synchronize_session='fetch')
             db.session.flush()
             return True
         return False
 
     @staticmethod
-    def list_jobs(status=None, buyer_id=None, worker_id=None):
+    def list_jobs(status=None, buyer_id=None, worker_id=None,
+                  artifact_type=None, min_price=None, max_price=None,
+                  sort_by='created_at', sort_order='desc',
+                  limit=50, offset=0):
+        """G03: Enhanced job listing with filtering, sorting, pagination."""
+        from decimal import Decimal, InvalidOperation
+
         query = Job.query
         if status:
             query = query.filter(Job.status == status)
         if buyer_id:
             query = query.filter(Job.buyer_id == buyer_id)
-        jobs = query.order_by(Job.created_at.desc()).all()
+        if artifact_type:
+            query = query.filter(Job.artifact_type == artifact_type)
+        if min_price is not None:
+            try:
+                query = query.filter(Job.price >= Decimal(str(min_price)))
+            except (InvalidOperation, ValueError):
+                pass
+        if max_price is not None:
+            try:
+                query = query.filter(Job.price <= Decimal(str(max_price)))
+            except (InvalidOperation, ValueError):
+                pass
+
+        # M2 fix: SQL-level safety cap to prevent unbounded memory usage.
+        # Expiry + worker filtering still done in-memory, but capped at 5000 rows.
+        all_jobs = query.order_by(Job.created_at.desc()).limit(5000).all()
+
         # Lazy expiry check on listed jobs
         any_expired = False
-        for job in jobs:
+        for job in all_jobs:
             if JobService.check_expiry(job):
                 any_expired = True
-        # L10: Persist expiry changes from read path
         if any_expired:
             db.session.commit()
         # Re-filter if status was specified (some may have just expired)
         if status:
-            jobs = [j for j in jobs if j.status == status]
-        # Python-level worker filter (portable across DB engines)
+            all_jobs = [j for j in all_jobs if j.status == status]
+        # Python-level worker filter using JobParticipant (portable across DB engines)
         if worker_id:
-            jobs = [j for j in jobs if worker_id in (j.participants or [])]
-        return jobs
+            participant_task_ids = {jp.task_id for jp in JobParticipant.query.filter_by(worker_id=worker_id, unclaimed_at=None).all()}
+            all_jobs = [j for j in all_jobs if j.task_id in participant_task_ids]
+
+        total = len(all_jobs)
+
+        # Sort (m7 fix: type-appropriate defaults to avoid Decimal/datetime mix)
+        from decimal import Decimal as _Dec
+        sort_col_map = {'created_at': 'created_at', 'price': 'price', 'expiry': 'expiry'}
+        _sort_defaults = {'created_at': datetime.min, 'expiry': datetime.min, 'price': _Dec(0)}
+        sort_key = sort_col_map.get(sort_by, 'created_at')
+        sort_default = _sort_defaults.get(sort_key, datetime.min)
+        reverse = sort_order != 'asc'
+        all_jobs.sort(
+            key=lambda j: getattr(j, sort_key) if getattr(j, sort_key) is not None else sort_default,
+            reverse=reverse,
+        )
+
+        # Clamp limit
+        limit = min(max(1, limit), 200)
+        offset = max(0, offset)
+
+        paginated = all_jobs[offset:offset + limit]
+        return paginated, total
 
     @staticmethod
     def get_job(task_id: str) -> Job:
@@ -71,7 +114,7 @@ class JobService:
             "buyer_id": job.buyer_id,
             "status": job.status,
             "artifact_type": job.artifact_type,
-            "participants": job.participants or [],
+            "participants": [jp.worker_id for jp in JobParticipant.query.filter_by(task_id=job.task_id, unclaimed_at=None).all()],
             "winner_id": job.winner_id,
             "submission_count": submission_count,
             "max_submissions": job.max_submissions,
@@ -80,7 +123,9 @@ class JobService:
             "expiry": job.expiry.isoformat() if job.expiry else None,
             "deposit_tx_hash": job.deposit_tx_hash,
             "payout_tx_hash": job.payout_tx_hash,
+            "payout_status": job.payout_status,
             "fee_tx_hash": job.fee_tx_hash,
+            "fee_bps": job.fee_bps,
             "depositor_address": job.depositor_address,
             "refund_tx_hash": job.refund_tx_hash,
             "solution_price": float(job.solution_price or 0),
