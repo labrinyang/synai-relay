@@ -9,12 +9,10 @@ Write tests consume small amounts of real USDC (~0.17 total).
 """
 import os
 import logging
+import time
 import pytest
 from decimal import Decimal
 from dotenv import load_dotenv
-
-# Load .env BEFORE any imports that read env vars
-load_dotenv()
 
 from services.wallet_service import WalletService
 from tests.helpers.chain_helpers import (
@@ -33,6 +31,7 @@ pytestmark = pytest.mark.onchain
 @pytest.fixture(scope="module")
 def w3():
     """Connected Web3 instance."""
+    load_dotenv()
     _w3 = get_web3()
     assert _w3.is_connected(), "Cannot connect to Base L2 RPC"
     return _w3
@@ -161,6 +160,8 @@ class TestSendUSDC:
 
         # Verify tx_hash is valid hex
         assert tx_hash.startswith("0x") or len(tx_hash) == 64
+        # Wait for RPC node to reflect the new balance
+        time.sleep(2)
         # Verify Agent3 received
         agent3_after = query_usdc_balance(w3, AGENT3_ADDRESS)
         assert agent3_after == agent3_before + Decimal("0.01")
@@ -188,6 +189,8 @@ class TestPayoutReal:
         assert "pending" not in result  # no timeout
         assert "fee_error" not in result  # no partial failure
 
+        # Wait for RPC node to reflect the new balance
+        time.sleep(2)
         # Verify on-chain balances
         agent2_after = query_usdc_balance(w3, AGENT2_ADDRESS)
         fee_after = query_usdc_balance(w3, FEE_ADDRESS)
@@ -209,6 +212,8 @@ class TestRefundReal:
 
         assert tx_hash is not None
         assert len(tx_hash) > 0
+        # Wait for RPC node to reflect the new balance
+        time.sleep(2)
         agent3_after = query_usdc_balance(w3, AGENT3_ADDRESS)
         assert agent3_after == agent3_before + Decimal("0.05")
 

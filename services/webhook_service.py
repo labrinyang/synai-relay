@@ -10,7 +10,8 @@ import secrets
 import socket
 import threading
 import time
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests as http_requests
@@ -19,10 +20,36 @@ from models import db, Webhook, JobParticipant
 
 logger = logging.getLogger('relay.webhooks')
 
+# P2-2: App reference for background thread DB access (avoids circular import)
+_app_ref = None
+
+# Shutdown event reference for graceful thread termination
+_shutdown_ref = None
+
+def set_app_ref(app):
+    """Called once at startup to avoid circular import with server.py."""
+    global _app_ref
+    _app_ref = app
+
+def set_shutdown_event(evt):
+    """Called once at startup to share the shutdown event from server.py."""
+    global _shutdown_ref
+    _shutdown_ref = evt
+
+# Bounded thread pool for webhook delivery
+_webhook_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='webhook')
+
 # Max retries for webhook delivery
 MAX_RETRIES = 3
 # Backoff multiplier (seconds): 1, 2, 4
 BACKOFF_BASE = 1
+
+
+def shutdown_webhook_pool(wait=True):
+    """Shutdown and recreate the webhook pool (useful for test teardown)."""
+    global _webhook_pool
+    _webhook_pool.shutdown(wait=wait)
+    _webhook_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='webhook')
 
 
 def is_safe_webhook_url(url: str) -> bool:
@@ -81,7 +108,7 @@ def delete_webhook(webhook_id: str, agent_id: str) -> bool:
 def fire_event(event: str, task_id: str, data: dict):
     """Fire a webhook event to all matching subscribers (non-blocking)."""
     from models import Job
-    job = Job.query.get(task_id)
+    job = db.session.get(Job, task_id)
     if not job:
         return
 
@@ -110,19 +137,14 @@ def fire_event(event: str, task_id: str, data: dict):
         "event": event,
         "task_id": task_id,
         "data": data,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     for wh in matching:
-        t = threading.Thread(
-            target=_deliver_webhook,
-            args=(wh.url, wh.secret, payload),
-            daemon=True,
-        )
-        t.start()
+        _webhook_pool.submit(_deliver_webhook, wh.url, wh.secret, payload, wh.id)
 
 
-def _deliver_webhook(url: str, secret: str, payload: dict):
+def _deliver_webhook(url: str, secret: str, payload: dict, webhook_id: str = None):
     """Deliver a webhook with retries and HMAC signature."""
     # M8 fix: Re-validate URL at delivery time to prevent DNS rebinding
     if not is_safe_webhook_url(url):
@@ -141,12 +163,16 @@ def _deliver_webhook(url: str, secret: str, payload: dict):
         'X-Webhook-Signature': f'sha256={signature}',
     }
 
+    success = False
     for attempt in range(MAX_RETRIES):
+        if _shutdown_ref and _shutdown_ref.is_set():
+            break
         try:
             resp = http_requests.post(url, data=body, headers=headers, timeout=10)
             if resp.status_code < 400:
                 logger.info("Webhook delivered to %s (status %d)", url, resp.status_code)
-                return
+                success = True
+                break
             logger.warning("Webhook %s returned %d (attempt %d/%d)",
                            url, resp.status_code, attempt + 1, MAX_RETRIES)
         except Exception as e:
@@ -156,7 +182,30 @@ def _deliver_webhook(url: str, secret: str, payload: dict):
         if attempt < MAX_RETRIES - 1:
             time.sleep(BACKOFF_BASE * (2 ** attempt))
 
-    logger.error("Webhook delivery to %s exhausted all retries", url)
+    if not success:
+        logger.error("Webhook delivery to %s exhausted all retries", url)
+
+    # P2-2: Track consecutive failures and auto-disable
+    if webhook_id and _app_ref:
+        try:
+            with _app_ref.app_context():
+                try:
+                    wh = db.session.get(Webhook, webhook_id)
+                    if wh:
+                        if success:
+                            wh.failure_count = 0
+                        else:
+                            wh.failure_count = (wh.failure_count or 0) + 1
+                            wh.last_failure_at = datetime.now(timezone.utc)
+                            if wh.failure_count >= 10:
+                                wh.active = False
+                                wh.disabled_reason = f"Auto-disabled after {wh.failure_count} consecutive failures"
+                                logger.warning("Webhook %s auto-disabled after %d failures", webhook_id, wh.failure_count)
+                        db.session.commit()
+                finally:
+                    db.session.remove()
+        except Exception as e:
+            logger.error("Failed to update webhook failure tracking: %s", e)
 
 
 def _to_dict(wh: Webhook, include_secret: bool = False) -> dict:
