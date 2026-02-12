@@ -932,24 +932,6 @@ def _create_job():
     if not isinstance(max_retries, int) or max_retries < 1:
         max_retries = 3
 
-    min_reputation = None
-    raw_min_rep = data.get('min_reputation')
-    if raw_min_rep is not None:
-        try:
-            min_reputation = Decimal(str(raw_min_rep))
-        except (InvalidOperation, ValueError, TypeError):
-            return jsonify({"error": "Invalid min_reputation value"}), 400
-
-    # G19: Per-job fee configuration
-    fee_bps = data.get('fee_bps')
-    if fee_bps is not None:
-        try:
-            fee_bps = int(fee_bps)
-            if fee_bps < 0 or fee_bps > 10000:
-                return jsonify({"error": "fee_bps must be 0-10000"}), 400
-        except (ValueError, TypeError):
-            return jsonify({"error": "Invalid fee_bps value"}), 400
-
     job = Job(
         title=title,
         description=description,
@@ -961,8 +943,7 @@ def _create_job():
         expiry=expiry,
         max_submissions=max_submissions,
         max_retries=max_retries,
-        min_reputation=min_reputation,
-        fee_bps=fee_bps if fee_bps is not None else Config.PLATFORM_FEE_BPS,
+        fee_bps=Config.PLATFORM_FEE_BPS,
     )
 
     db.session.add(job)
@@ -1145,21 +1126,6 @@ def claim_job(task_id):
     worker = Agent.query.filter_by(agent_id=worker_id).first()
     if not worker:
         return jsonify({"error": "Worker not registered. POST /agents first."}), 400
-
-    # Min reputation check
-    if job.min_reputation is not None:
-        worker_rate = (
-            float(worker.completion_rate)
-            if worker.completion_rate is not None
-            else 0.0
-        )
-        if worker_rate < float(job.min_reputation):
-            return jsonify({
-                "error": (
-                    f"Worker reputation {worker_rate} "
-                    f"below minimum {float(job.min_reputation)}"
-                )
-            }), 403
 
     # Check worker not already a participant
     existing = JobParticipant.query.filter_by(task_id=task_id, worker_id=worker_id, unclaimed_at=None).first()
@@ -1677,7 +1643,7 @@ def update_job(task_id):
         # P2-5 fix (m-S07): Rubric length limit on update
         if 'rubric' in data and data['rubric'] and len(data['rubric']) > 10000:
             return jsonify({"error": "rubric must be <= 10000 characters"}), 400
-        # Mutable when open: title, description, rubric, expiry, max_submissions, max_retries, min_reputation
+        # Mutable when open: title, description, rubric, expiry, max_submissions, max_retries
         for field in ('title', 'description', 'rubric'):
             if field in data:
                 setattr(job, field, data[field])
@@ -1691,13 +1657,6 @@ def update_job(task_id):
                 val = data[int_field]
                 if isinstance(val, int) and val >= 1:
                     setattr(job, int_field, val)
-        if 'min_reputation' in data:
-            try:
-                from decimal import Decimal, InvalidOperation
-                job.min_reputation = Decimal(str(data['min_reputation']))
-            except (InvalidOperation, ValueError, TypeError):
-                return jsonify({"error": "Invalid min_reputation"}), 400
-
     elif job.status == 'funded':
         # When funded: only extend expiry
         if 'expiry' in data:
