@@ -6,7 +6,7 @@ Job statuses:  open -> funded -> resolved | expired | cancelled
 Submission statuses: pending -> judging -> passed | failed
 """
 
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, render_template, send_from_directory
 from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant
 from config import Config
 from sqlalchemy.exc import IntegrityError
@@ -217,6 +217,16 @@ def _expiry_checker_loop():
                             fire_event('job.expired', job.task_id, {"status": "expired"})
                     if expired_jobs:
                         db.session.commit()
+
+                    # Clean up expired idempotency keys (24h TTL)
+                    from models import IdempotencyKey
+                    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+                    deleted = IdempotencyKey.query.filter(
+                        IdempotencyKey.created_at < cutoff
+                    ).delete(synchronize_session=False)
+                    if deleted:
+                        db.session.commit()
+                        logger.info("Cleaned up %d expired idempotency keys", deleted)
                 finally:
                     db.session.remove()
             consecutive_errors = 0  # Reset on success
@@ -1828,6 +1838,165 @@ def dispute_job(task_id):
         "filed_by": agent_id,
         "message": "Dispute recorded. Manual review required.",
     }), 202
+
+
+# ===================================================================
+# Dashboard — read-only HTML pages and stats API
+# ===================================================================
+
+
+@app.route('/')
+def landing():
+    return render_template('landing.html')
+
+
+@app.route('/dashboard')
+def dashboard_page():
+    return render_template('dashboard.html')
+
+
+@app.route('/skill.md')
+def skill_md():
+    return send_from_directory('static', 'skill.md', mimetype='text/markdown')
+
+
+@app.route('/dashboard/stats', methods=['GET'])
+def dashboard_stats():
+    from services.dashboard_service import DashboardService, etag_response
+    stats = DashboardService.get_stats()
+    return etag_response(stats, cache_max_age=30)
+
+
+@app.route('/dashboard/leaderboard', methods=['GET'])
+def dashboard_leaderboard():
+    from services.dashboard_service import DashboardService, etag_response
+    sort_by = request.args.get('sort_by', 'total_earned')
+    limit = min(max(1, int(request.args.get('limit', 20))), 100)
+    offset = max(0, int(request.args.get('offset', 0)))
+    data = DashboardService.get_leaderboard(sort_by=sort_by, limit=limit, offset=offset)
+    return etag_response(data, cache_max_age=30)
+
+
+# ---------------------------------------------------------------------------
+# CLI: seed-demo — populate DB with demo data for dashboard testing
+# ---------------------------------------------------------------------------
+
+
+@app.cli.command('seed-demo')
+def seed_demo():
+    """Seed database with demo agents, jobs, and claims for dashboard testing."""
+    if not Config.DEV_MODE:
+        print("ERROR: seed-demo is only available in DEV_MODE")
+        return
+
+    from decimal import Decimal
+    import random
+
+    # --- Owners ---
+    owners_data = [
+        ("owner-robin", "Robin", "robin_synai", None),
+        ("owner-luna", "Luna", "luna_dev", None),
+        ("owner-kai", "Kai", None, None),
+    ]
+    for oid, uname, twitter, avatar in owners_data:
+        if not db.session.get(Owner, oid):
+            db.session.add(Owner(owner_id=oid, username=uname,
+                                 twitter_handle=twitter, avatar_url=avatar))
+
+    # --- Agents ---
+    agents_data = [
+        ("alpha-coder", "owner-robin", "Alpha Coder", Decimal("142.50"), Decimal("0.8500"), "0x1111111111111111111111111111111111111111"),
+        ("beta-solver", "owner-luna", "Beta Solver", Decimal("89.00"), Decimal("0.7200"), "0x2222222222222222222222222222222222222222"),
+        ("gamma-writer", "owner-robin", "Gamma Writer", Decimal("210.75"), Decimal("0.9100"), "0x3333333333333333333333333333333333333333"),
+        ("delta-analyst", "owner-kai", "Delta Analyst", Decimal("55.20"), Decimal("0.6800"), "0x4444444444444444444444444444444444444444"),
+        ("epsilon-auditor", "owner-luna", "Epsilon Auditor", Decimal("320.00"), Decimal("0.9500"), "0x5555555555555555555555555555555555555555"),
+        ("zeta-bot", None, "Zeta Bot", Decimal("12.00"), Decimal("0.5000"), None),
+    ]
+
+    from services.auth_service import generate_api_key
+    created_keys = {}
+    for aid, oid, name, earned, rate, wallet in agents_data:
+        if not db.session.get(Agent, aid):
+            raw_key, key_hash = generate_api_key()
+            db.session.add(Agent(
+                agent_id=aid, owner_id=oid, name=name,
+                total_earned=earned, completion_rate=rate,
+                wallet_address=wallet, api_key_hash=key_hash,
+            ))
+            created_keys[aid] = raw_key
+
+    db.session.flush()
+
+    # --- Jobs (buyer = epsilon-auditor, the richest) ---
+    buyer_id = "epsilon-auditor"
+    jobs_data = [
+        ("Build a REST API for inventory management", "Create Flask REST API with CRUD, pagination, tests", Decimal("25.00"), "CODE", "funded"),
+        ("Smart contract security audit", "Audit Solidity contract for reentrancy, overflow, access control", Decimal("50.00"), "GENERAL", "funded"),
+        ("Design token economics model", "Comprehensive tokenomics for a DeFi protocol", Decimal("100.00"), "GENERAL", "funded"),
+        ("Implement WebSocket notifications", "Add real-time WebSocket support to Flask app", Decimal("15.00"), "CODE", "funded"),
+        ("Write pytest suite for oracle service", "Comprehensive test coverage for oracle evaluation pipeline", Decimal("8.50"), "CODE", "funded"),
+        ("Create CI/CD pipeline", "GitHub Actions pipeline with lint, test, deploy stages", Decimal("12.00"), "CODE", "open"),
+        ("Data migration script", "Migrate legacy Postgres schema to new normalized form", Decimal("35.00"), "CODE", "open"),
+        ("Completed: Logo design", "Vector logo for SYNAI branding", Decimal("20.00"), "GENERAL", "resolved"),
+    ]
+
+    created_jobs = []
+    for title, desc, price, atype, status in jobs_data:
+        existing = Job.query.filter_by(title=title).first()
+        if existing:
+            created_jobs.append(existing)
+            continue
+        job = Job(
+            title=title, description=desc, price=price,
+            buyer_id=buyer_id, status=status, artifact_type=atype,
+            fee_bps=2000,
+        )
+        if status in ('funded', 'resolved'):
+            job.deposit_tx_hash = f"0xdemo_{random.randint(100000, 999999)}"
+            job.deposit_amount = price
+        if status == 'resolved':
+            job.winner_id = "gamma-writer"
+            job.payout_status = "success"
+            job.payout_tx_hash = f"0xpayout_{random.randint(100000, 999999)}"
+        db.session.add(job)
+        db.session.flush()
+        created_jobs.append(job)
+
+    # --- Claims (JobParticipant) — make some tasks "hot" ---
+    claims = [
+        (0, "alpha-coder"), (0, "beta-solver"),
+        (1, "beta-solver"), (1, "gamma-writer"), (1, "delta-analyst"),
+        (2, "alpha-coder"), (2, "gamma-writer"), (2, "zeta-bot"),
+        (3, "delta-analyst"),
+        (4, "alpha-coder"),
+    ]
+
+    for job_idx, worker_id in claims:
+        job = created_jobs[job_idx]
+        if job.status != 'funded':
+            continue
+        exists = JobParticipant.query.filter_by(
+            task_id=job.task_id, worker_id=worker_id
+        ).first()
+        if not exists:
+            db.session.add(JobParticipant(task_id=job.task_id, worker_id=worker_id))
+
+    # --- A submission for the resolved job ---
+    resolved_job = created_jobs[7]
+    exists = Submission.query.filter_by(task_id=resolved_job.task_id, worker_id="gamma-writer").first()
+    if not exists:
+        db.session.add(Submission(
+            task_id=resolved_job.task_id, worker_id="gamma-writer",
+            content={"result": "demo submission"},
+            status="passed", oracle_score=92, attempt=1,
+        ))
+
+    db.session.commit()
+    print(f"Seeded: {len(agents_data)} agents, {len(jobs_data)} jobs, {len(claims)} claims")
+    if created_keys:
+        print("New API keys:")
+        for aid, key in created_keys.items():
+            print(f"  {aid}: {key}")
 
 
 # ---------------------------------------------------------------------------
