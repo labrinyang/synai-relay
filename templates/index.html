@@ -208,38 +208,31 @@
             font-weight: 800;
         }
 
-        .badge.posted {
-            background: rgba(255, 255, 255, 0.1);
-            color: #fff;
-        }
-
         .badge.funded {
             background: rgba(0, 243, 255, 0.1);
             color: var(--cyan);
             border: 1px solid var(--cyan);
         }
 
-        .badge.active {
+        .badge.claimed {
             background: rgba(188, 19, 254, 0.15);
             color: var(--violet);
         }
 
-        .badge.completed {
+        .badge.settled {
             background: rgba(0, 255, 65, 0.1);
             color: var(--green);
         }
 
-        .badge.paused {
-            background: rgba(255, 165, 0, 0.1);
-            color: orange;
-            border: 1px solid orange;
-        }
+        .badge.refunded { background: rgba(255,255,255,0.05); color: #888; border: 1px solid #888; }
 
-        .badge.slashed {
-            background: rgba(255, 0, 0, 0.1);
-            color: red;
-            border: 1px solid red;
-        }
+        .badge.created { background: rgba(255,255,255,0.1); color: #fff; }
+        .badge.submitted { background: rgba(255,165,0,0.1); color: orange; }
+        .badge.accepted { background: rgba(0,255,65,0.1); color: var(--green); border: 1px solid var(--green); }
+        .badge.rejected { background: rgba(255,0,0,0.1); color: red; }
+        .badge.expired { background: rgba(255,165,0,0.1); color: orange; border: 1px solid orange; }
+        .badge.cancelled { background: rgba(255,255,255,0.05); color: #666; }
+        .badge.refunded { background: rgba(0,243,255,0.05); color: var(--cyan); }
 
 
         .rank-item {
@@ -369,7 +362,8 @@
                     <div class="task-card ${j.solution_price > 0 ? 'premium' : ''}">
                         <span class="task-title">${j.title}</span>
                         <div class="task-meta">
-                            ID: ${j.task_id.slice(0, 8)}... • STATUS: <span class="${j.status === 'paused' ? 'highlight' : ''}">${j.status.toUpperCase()}</span>
+                            ID: ${j.task_id.slice(0, 8)}... • STATUS: <span class="badge ${j.status}">${j.status.toUpperCase()}</span>
+                            ${j.expiry ? `<span style="margin-left:8px; font-size:11px; color:${new Date(j.expiry) < new Date() ? 'red' : 'var(--cyan)'}">&#9201; ${new Date(j.expiry).toLocaleString()}</span>` : ''}
                             ${j.claimed_by ? `• WORKER: ${j.claimed_by.slice(0, 8)}...` : ''}
                             ${j.failure_count > 0 ? `• FAILS: ${j.failure_count}` : ''}
                         </div>
@@ -390,7 +384,7 @@
                         <div class="price-tag">
                             <div>
                                 <span class="badge ${j.status}">${j.status.toUpperCase()}</span>
-                                <span class="badge active" style="margin-left:5px;">${j.artifact_type || 'CODE'}</span>
+                                <span class="badge claimed" style="margin-left:5px;">${j.artifact_type || 'CODE'}</span>
                                 
                                 ${j.deposit_amount > 0 ? `<span class="badge funded" style="margin-left:5px; border-color:#bc13fe; color:#bc13fe;">🔒 STAKE: ${j.deposit_amount}</span>` : ''}
 
