@@ -95,11 +95,17 @@ Respond with exactly one JSON object:
             )
             data = resp.json()
             content = data['choices'][0]['message']['content'].strip()
+            # Strip markdown code fences (GPT-4o often wraps JSON in ```json...```)
+            if content.startswith('```'):
+                content = re.sub(r'^```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```$', '', content)
             result = json.loads(content)
             result['layer'] = 'llm'
             return result
         except Exception as e:
             # H2: Fail-closed — block on guard error
+            import logging
+            logging.getLogger('relay.guard').error("LLM guard scan failed: %s", e)
             return {"blocked": True, "reason": "Guard check failed (fail-closed)", "layer": "llm"}
 
     def check(self, text: str) -> dict:

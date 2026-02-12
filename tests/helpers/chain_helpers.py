@@ -30,6 +30,16 @@ USDC_ABI = [
         "stateMutability": "view",
         "type": "function",
     },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "from", "type": "address"},
+            {"indexed": True, "name": "to", "type": "address"},
+            {"indexed": False, "name": "value", "type": "uint256"},
+        ],
+        "name": "Transfer",
+        "type": "event",
+    },
 ]
 
 
@@ -63,13 +73,18 @@ def send_usdc_from_agent(w3, agent_key: str, to_address: str, amount: Decimal) -
     raw_amount = int(amount * Decimal(10**6))  # USDC has 6 decimals on Base
 
     nonce = w3.eth.get_transaction_count(acct.address, "pending")
+    gas_estimate = usdc.functions.transfer(
+        Web3.to_checksum_address(to_address), raw_amount
+    ).estimate_gas({"from": acct.address})
+    gas_limit = int(gas_estimate * 1.2)  # 20% buffer
+    gas_price = w3.eth.gas_price
     tx = usdc.functions.transfer(
         Web3.to_checksum_address(to_address), raw_amount
     ).build_transaction({
         "from": acct.address,
         "nonce": nonce,
-        "gas": 100_000,
-        "gasPrice": w3.eth.gas_price,
+        "gas": gas_limit,
+        "gasPrice": gas_price,
     })
     signed = w3.eth.account.sign_transaction(tx, agent_key)
     tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)

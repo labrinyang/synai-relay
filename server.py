@@ -528,13 +528,31 @@ def health():
 def deposit_info():
     from services.wallet_service import get_wallet_service
     wallet = get_wallet_service()
-    return jsonify({
+
+    resp = {
         "operations_wallet": wallet.get_ops_address(),
         "usdc_contract": app.config.get('USDC_CONTRACT', ''),
         "chain": "base",
+        "chain_id": 8453,
         "min_amount": app.config.get('MIN_TASK_AMOUNT', 0.1),
         "chain_connected": wallet.is_connected(),
-    }), 200
+        "gas_estimate": None,
+    }
+
+    # Provide real-time gas estimation for Buyer/Worker
+    if wallet.is_connected():
+        from decimal import Decimal
+        gas_info = wallet.estimate_gas(wallet.get_ops_address(), Decimal('1.0'))
+        if 'error' not in gas_info:
+            resp["gas_estimate"] = {
+                "gas_limit": gas_info["gas_limit"],
+                "gas_price_gwei": gas_info["gas_price_gwei"],
+                "estimated_cost_eth": gas_info["estimated_cost_eth"],
+                "note": "Real-time estimate for a USDC transfer on Base L2. "
+                        "Fetch latest before sending your deposit transaction.",
+            }
+
+    return jsonify(resp), 200
 
 
 # ===================================================================
