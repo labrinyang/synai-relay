@@ -65,7 +65,7 @@ class Job(db.Model):
     max_submissions = db.Column(db.Integer, default=20)
     max_retries = db.Column(db.Integer, default=3)
     # Fee (G19)
-    fee_bps = db.Column(db.Integer, default=500)  # basis points: 500 = 5%
+    fee_bps = db.Column(db.Integer, default=2000)  # basis points: 2000 = 20%
     # Lifecycle
     failure_count = db.Column(db.Integer, default=0)
     expiry = db.Column(db.DateTime, nullable=True)

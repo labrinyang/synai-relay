@@ -101,6 +101,34 @@ class WalletService:
             f"connected={self.is_connected()})"
         )
 
+    def estimate_gas(self, to_address: str, amount: Decimal) -> dict:
+        """Estimate gas for a USDC transfer. Returns gas info dict.
+        Used by both Operator (before send) and API (for Buyer/Worker display).
+        """
+        if not self.is_connected():
+            return {"error": "Chain not connected"}
+
+        from web3 import Web3
+        raw_amount = int(amount * Decimal(10 ** self.usdc_decimals))
+        to_addr = Web3.to_checksum_address(to_address)
+
+        try:
+            gas_estimate = self.usdc_contract.functions.transfer(
+                to_addr, raw_amount
+            ).estimate_gas({'from': self.ops_address})
+            gas_limit = int(gas_estimate * 1.2)  # 20% buffer
+            gas_price = self.w3.eth.gas_price
+
+            return {
+                "gas_limit": gas_limit,
+                "gas_price_wei": gas_price,
+                "gas_price_gwei": float(Web3.from_wei(gas_price, 'gwei')),
+                "estimated_cost_wei": gas_limit * gas_price,
+                "estimated_cost_eth": float(Web3.from_wei(gas_limit * gas_price, 'ether')),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
     def verify_deposit(self, tx_hash: str, expected_amount: Decimal) -> dict:
         """Verify a USDC deposit tx. Returns {valid, depositor, amount, error}."""
         if not self.is_connected():
@@ -155,6 +183,19 @@ class WalletService:
         raw_amount = int(amount * Decimal(10 ** self.usdc_decimals))
         to_addr = Web3.to_checksum_address(to_address)
 
+        # Fetch real-time gas estimation before executing
+        gas_info = self.estimate_gas(to_address, amount)
+        if 'error' in gas_info:
+            raise RuntimeError(f"Gas estimation failed: {gas_info['error']}")
+        gas_limit = gas_info['gas_limit']
+        gas_price = gas_info['gas_price_wei']
+
+        logger.info(
+            "Gas estimate: limit=%d price=%d (%.4f Gwei) cost=%.8f ETH",
+            gas_limit, gas_price, gas_info['gas_price_gwei'],
+            gas_info['estimated_cost_eth'],
+        )
+
         # H5: Lock to prevent nonce collisions on concurrent transactions
         # F03: Use a local nonce counter so back-to-back sends don't reuse the
         #      same nonce (get_transaction_count('latest') only sees mined txs).
@@ -166,8 +207,8 @@ class WalletService:
             tx = self.usdc_contract.functions.transfer(to_addr, raw_amount).build_transaction({
                 'from': self.ops_address,
                 'nonce': self._local_nonce,
-                'gas': 100_000,
-                'gasPrice': self.w3.eth.gas_price,
+                'gas': gas_limit,
+                'gasPrice': gas_price,
             })
             signed = self.w3.eth.account.sign_transaction(tx, self.ops_key)
             try:
@@ -184,9 +225,6 @@ class WalletService:
         try:
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
         except Exception as e:
-            # web3.py raises TimeExhausted (a subclass of Web3Exception) on
-            # timeout.  We catch broadly here because the exact class can vary
-            # across web3.py versions.
             if 'timeout' in str(e).lower() or 'timed out' in str(e).lower() \
                     or type(e).__name__ == 'TimeExhausted':
                 raise TransactionPendingError(tx_hash.hex()) from e

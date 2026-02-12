@@ -1520,7 +1520,7 @@ class TestFeeConfig:
         assert resp.status_code == 400
 
     def test_create_job_default_fee(self, client):
-        """Without fee_bps, should use platform default (500)."""
+        """Without fee_bps, should use platform default (2000)."""
         _, key = _register_agent(client, 'fee-buyer4')
         resp = client.post('/jobs',
                            json={'title': 'T', 'description': 'D', 'price': 1.0},
@@ -1528,7 +1528,7 @@ class TestFeeConfig:
         assert resp.status_code == 201
         task_id = resp.get_json()['task_id']
         resp = client.get(f'/jobs/{task_id}')
-        assert resp.get_json()['fee_bps'] == 500  # Config.PLATFORM_FEE_BPS
+        assert resp.get_json()['fee_bps'] == 2000  # Config.PLATFORM_FEE_BPS
 
 
 # ===================================================================
@@ -1776,3 +1776,28 @@ class TestExpiryDoesNotFailJudging(unittest.TestCase):
         j = db.session.get(Submission, judging_id)
         assert p.status == 'failed'
         assert j.status == 'judging'  # F09: not touched by expiry
+
+
+# ===================================================================
+# Deposit Info Gas Estimation
+# ===================================================================
+
+class TestDepositInfoGas:
+    """deposit-info endpoint should include gas estimation field."""
+
+    def test_deposit_info_has_gas_field(self, client):
+        """GET /platform/deposit-info returns gas_estimate field."""
+        rv = client.get('/platform/deposit-info')
+        assert rv.status_code == 200
+        data = rv.get_json()
+        assert 'operations_wallet' in data
+        assert 'usdc_contract' in data
+        assert 'chain_id' in data
+        # gas_estimate should be present (None when not connected in test env)
+        assert 'gas_estimate' in data
+
+    def test_deposit_info_has_chain_id(self, client):
+        """GET /platform/deposit-info returns chain_id=8453."""
+        rv = client.get('/platform/deposit-info')
+        data = rv.get_json()
+        assert data['chain_id'] == 8453

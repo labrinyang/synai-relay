@@ -308,6 +308,35 @@ class TestWalletService:
         assert len(nonces_used) == 5
         assert len(set(nonces_used)) == 5, f"Nonce collision: {nonces_used}"
 
+    def test_estimate_gas_returns_dict(self, ctx):
+        """estimate_gas should return gas_limit, gas_price, estimated_cost_eth."""
+        from services.wallet_service import WalletService
+        ws = WalletService()
+        ws.w3 = MagicMock()
+        ws.ops_key = 'fake'
+        ws.ops_address = '0x' + '11' * 20
+        ws.usdc_contract = MagicMock()
+        ws.usdc_decimals = 6
+
+        # Mock estimate_gas to return 65000
+        ws.usdc_contract.functions.transfer.return_value.estimate_gas.return_value = 65000
+        ws.w3.eth.gas_price = 4000  # 4000 wei
+        ws.w3.is_connected.return_value = True
+
+        result = ws.estimate_gas('0x' + '22' * 20, Decimal('1.0'))
+        assert 'gas_limit' in result
+        assert 'gas_price_gwei' in result
+        assert 'estimated_cost_eth' in result
+        assert result['gas_limit'] > 65000  # should include 20% buffer
+        assert result['gas_limit'] == 78000  # 65000 * 1.2
+
+    def test_estimate_gas_not_connected(self, ctx):
+        """estimate_gas should return error dict when not connected."""
+        from services.wallet_service import WalletService
+        ws = WalletService()
+        result = ws.estimate_gas('0x' + '22' * 20, Decimal('1.0'))
+        assert 'error' in result
+
 
 # ===================================================================
 # 1.3 oracle_service
