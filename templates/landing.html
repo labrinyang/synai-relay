@@ -245,6 +245,7 @@
 </head>
 
 <body>
+    <canvas id="ion-ring" style="position:fixed;inset:0;z-index:1;pointer-events:none;width:100%;height:100%;"></canvas>
     <div class="header">
         <div class="logo"><img src="/static/logo.png" alt="SYNAI"><span class="logo-text">SYNAI.SHOP</span></div>
         <div class="tagline">AGENT-TO-AGENT TRADING PROTOCOL</div>
@@ -311,6 +312,280 @@
                 UILog.info('UI', `click: "${link.textContent.trim()}" href=${link.getAttribute('href')}`);
             }
         });
+    </script>
+
+    <!-- Ion Ring Particle Effect -->
+    <script>
+    (function() {
+        'use strict';
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+        const canvas = document.getElementById('ion-ring');
+        if (!canvas || !canvas.getContext) return;
+        const ctx = canvas.getContext('2d');
+
+        // ── Config ──
+        const IS_MOBILE = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+        let N = IS_MOBILE ? 1000 : 2500;
+        const SPRING_K = 0.018;
+        const DAMPING = 0.93;
+        const REPULSE_STRENGTH = 10;
+        const ROTATION_SPEED = 0.00012;
+
+        // ── State ──
+        let W, H, cx, cy, ringR, dpr;
+        let mouseX = -9999, mouseY = -9999;
+        let gyroX = 0, gyroY = 0;
+        let paused = false;
+        let slowFrames = 0;
+
+        // Struct-of-arrays for performance
+        let baseX, baseY, posX, posY, velX, velY;
+        let sizes, alphas, spriteIdx, angles, radii;
+
+        // Sprite cache
+        const NUM_SPRITES = 32;
+        const SPRITE_SZ = 16;
+        const sprites = [];
+
+        // ── Gaussian random (Box-Muller) ──
+        function gaussRand() {
+            let u = 0, v = 0;
+            while (u === 0) u = Math.random();
+            while (v === 0) v = Math.random();
+            return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+        }
+
+        // ── Build sprite cache (32 hue-variant glowing dots) ──
+        function buildSprites() {
+            sprites.length = 0;
+            for (let s = 0; s < NUM_SPRITES; s++) {
+                const hue = 180 + (s / NUM_SPRITES) * 140; // 180 (cyan) → 320 (pink)
+                const c = document.createElement('canvas');
+                c.width = SPRITE_SZ; c.height = SPRITE_SZ;
+                const g = c.getContext('2d');
+                const r = SPRITE_SZ / 2;
+                const grad = g.createRadialGradient(r, r, 0, r, r, r);
+                grad.addColorStop(0, `hsla(${hue}, 92%, 68%, 1)`);
+                grad.addColorStop(0.25, `hsla(${hue}, 90%, 62%, 0.7)`);
+                grad.addColorStop(0.6, `hsla(${hue}, 88%, 55%, 0.2)`);
+                grad.addColorStop(1, `hsla(${hue}, 85%, 50%, 0)`);
+                g.fillStyle = grad;
+                g.fillRect(0, 0, SPRITE_SZ, SPRITE_SZ);
+                sprites.push(c);
+            }
+        }
+
+        // ── Resize canvas + recalculate ring ──
+        function resize() {
+            dpr = window.devicePixelRatio || 1;
+            W = window.innerWidth;
+            H = window.innerHeight;
+            canvas.width = W * dpr;
+            canvas.height = H * dpr;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            cx = W / 2;
+            cy = H / 2;
+            ringR = Math.min(Math.max(Math.min(W, H) * 0.28, 100), 360);
+        }
+
+        // ── Generate particles on the ring ──
+        function initParticles() {
+            baseX = new Float32Array(N);
+            baseY = new Float32Array(N);
+            posX  = new Float32Array(N);
+            posY  = new Float32Array(N);
+            velX  = new Float32Array(N);
+            velY  = new Float32Array(N);
+            sizes   = new Float32Array(N);
+            alphas  = new Float32Array(N);
+            spriteIdx = new Uint8Array(N);
+            angles  = new Float32Array(N);
+            radii   = new Float32Array(N);
+
+            const coreW  = ringR * 0.03;
+            const midW   = ringR * 0.09;
+            const outerW = ringR * 0.20;
+
+            for (let i = 0; i < N; i++) {
+                const a = Math.random() * Math.PI * 2;
+                angles[i] = a;
+
+                let offset, alpha, size;
+                const band = i / N;
+                if (band < 0.55) {
+                    // Core — tight, bright
+                    offset = gaussRand() * coreW;
+                    alpha = 0.45 + Math.random() * 0.45;
+                    size = 0.7 + Math.random() * 1.2;
+                } else if (band < 0.85) {
+                    // Mid — moderate scatter
+                    offset = gaussRand() * midW;
+                    alpha = 0.25 + Math.random() * 0.35;
+                    size = 0.5 + Math.random() * 1.0;
+                } else {
+                    // Outer — sparse haze
+                    offset = gaussRand() * outerW;
+                    alpha = 0.08 + Math.random() * 0.2;
+                    size = 0.3 + Math.random() * 0.8;
+                }
+
+                const r = ringR + offset;
+                radii[i] = r;
+                baseX[i] = cx + Math.cos(a) * r;
+                baseY[i] = cy + Math.sin(a) * r;
+                posX[i] = baseX[i];
+                posY[i] = baseY[i];
+                sizes[i] = size;
+                alphas[i] = alpha;
+
+                // Map angle to sprite hue index (with jitter)
+                const norm = ((a / (Math.PI * 2)) + (Math.random() - 0.5) * 0.06) % 1;
+                spriteIdx[i] = Math.floor(((norm + 1) % 1) * NUM_SPRITES) % NUM_SPRITES;
+            }
+        }
+
+        // ── Recalculate base positions (on resize) ──
+        function rebase() {
+            for (let i = 0; i < N; i++) {
+                const scale = ringR / (radii[i] > 0 ? (radii[i] / (radii[i] / ringR * (ringR))) : ringR);
+                baseX[i] = cx + Math.cos(angles[i]) * radii[i];
+                baseY[i] = cy + Math.sin(angles[i]) * radii[i];
+            }
+        }
+
+        // ── Physics update ──
+        function update() {
+            const gyroOffX = gyroX * ringR * 0.07;
+            const gyroOffY = gyroY * ringR * 0.07;
+
+            const mDistC = Math.sqrt((mouseX - cx) ** 2 + (mouseY - cy) ** 2);
+            const inRange = mDistC < ringR * 0.9;
+            const proximity = inRange ? Math.pow(1 - mDistC / (ringR * 0.9), 3) : 0;
+
+            for (let i = 0; i < N; i++) {
+                // Slowly rotate base position
+                angles[i] += ROTATION_SPEED;
+                const bx = cx + Math.cos(angles[i]) * radii[i] + gyroOffX;
+                const by = cy + Math.sin(angles[i]) * radii[i] + gyroOffY;
+
+                // Spring toward base
+                let ax = (bx - posX[i]) * SPRING_K;
+                let ay = (by - posY[i]) * SPRING_K;
+
+                // Mouse repulsion
+                if (inRange) {
+                    const dx = posX[i] - mouseX;
+                    const dy = posY[i] - mouseY;
+                    const d = Math.sqrt(dx * dx + dy * dy);
+                    if (d > 1 && d < ringR * 1.2) {
+                        const f = Math.min(REPULSE_STRENGTH * proximity / (d * 0.08), 4);
+                        ax += (dx / d) * f;
+                        ay += (dy / d) * f;
+                    }
+                }
+
+                velX[i] = (velX[i] + ax) * DAMPING;
+                velY[i] = (velY[i] + ay) * DAMPING;
+                posX[i] += velX[i];
+                posY[i] += velY[i];
+            }
+        }
+
+        // ── Render ──
+        function render() {
+            ctx.clearRect(0, 0, W, H);
+            ctx.globalCompositeOperation = 'lighter';
+
+            for (let i = 0; i < N; i++) {
+                const s = sizes[i] * 2.5;
+                ctx.globalAlpha = alphas[i];
+                ctx.drawImage(sprites[spriteIdx[i]], posX[i] - s * 0.5, posY[i] - s * 0.5, s, s);
+            }
+
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1;
+        }
+
+        // ── Animation loop ──
+        let lastT = 0;
+        function tick(t) {
+            if (paused) { lastT = t; requestAnimationFrame(tick); return; }
+
+            const dt = t - lastT;
+            lastT = t;
+
+            // Auto-reduce if consistently slow
+            if (dt > 33) slowFrames++;
+            else slowFrames = Math.max(0, slowFrames - 1);
+            if (slowFrames > 90 && N > 600) {
+                N = Math.floor(N * 0.7);
+                initParticles();
+                slowFrames = 0;
+                UILog.info('PARTICLES', `reduced to ${N} particles`);
+            }
+
+            update();
+            render();
+            requestAnimationFrame(tick);
+        }
+
+        // ── Input: Mouse ──
+        window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+        document.addEventListener('mouseleave', () => { mouseX = -9999; mouseY = -9999; });
+
+        // ── Input: Touch (mobile fallback) ──
+        window.addEventListener('touchmove', e => {
+            const t = e.touches[0];
+            if (t) { mouseX = t.clientX; mouseY = t.clientY; }
+        }, { passive: true });
+        window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; });
+
+        // ── Input: Gyroscope ──
+        function onGyro(e) {
+            gyroX = (e.gamma || 0) / 90;  // left-right tilt, normalized -1..1
+            gyroY = (e.beta  || 0) / 90;  // front-back tilt
+        }
+
+        function initGyro() {
+            if (typeof DeviceOrientationEvent === 'undefined') return;
+            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                // iOS — request on first user interaction
+                document.addEventListener('click', function h() {
+                    DeviceOrientationEvent.requestPermission()
+                        .then(s => { if (s === 'granted') window.addEventListener('deviceorientation', onGyro); })
+                        .catch(() => {});
+                    document.removeEventListener('click', h);
+                }, { once: true });
+            } else {
+                window.addEventListener('deviceorientation', onGyro);
+            }
+        }
+
+        // ── Visibility: pause when tab hidden ──
+        document.addEventListener('visibilitychange', () => { paused = document.hidden; });
+
+        // ── Resize ──
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                const oldR = ringR;
+                resize();
+                const scale = ringR / (oldR || ringR);
+                for (let i = 0; i < N; i++) radii[i] *= scale;
+                rebase();
+            }, 100);
+        });
+
+        // ── Init ──
+        resize();
+        buildSprites();
+        initParticles();
+        initGyro();
+        requestAnimationFrame(tick);
+        UILog.info('PARTICLES', `ion ring initialized: ${N} particles, ring=${Math.round(ringR)}px`);
+    })();
     </script>
 </body>
 
