@@ -340,6 +340,10 @@
         let paused = false;
         let slowFrames = 0;
         let frameCount = 0;
+        let hoveredCard = null;
+        let activeRect = null;  // padded bounding rect of hovered card
+        let cardForce = 0;      // smooth 0→1 easing
+        let cardBurst = 0;      // initial explosion impulse, decays to 0
 
         // Struct-of-arrays
         let baseX, baseY, posX, posY, velX, velY;
@@ -476,22 +480,107 @@
                 mouseVel = mouseVel * 0.7 + Math.sqrt(mdx * mdx + mdy * mdy) * 0.3;
             }
             prevMX = mouseX; prevMY = mouseY;
-            const velBoost = Math.min(mouseVel / 30, 1.5); // faster mouse → stronger effect
+            const velBoost = Math.min(mouseVel / 30, 1.5);
 
             const mDistC = Math.sqrt((mouseX - cx) ** 2 + (mouseY - cy) ** 2);
             const inRange = mDistC < ringR * 1.3;
             const proximity = inRange ? Math.pow(Math.max(0, 1 - mDistC / (ringR * 1.3)), 2.5) : 0;
             const effectStr = proximity * (1 + velBoost);
 
+            // Card force smooth transition
+            cardForce += ((hoveredCard ? 1 : 0) - cardForce) * 0.06;
+            cardBurst *= 0.94; // decay burst over ~40 frames
+            const hasCard = (cardForce > 0.01 || cardBurst > 0.02) && activeRect;
+
+            // Update card rect periodically (handles CSS hover transform)
+            if (hoveredCard && frameCount % 10 === 0) {
+                const r = hoveredCard.getBoundingClientRect();
+                activeRect = {
+                    left: r.left - 15, top: r.top - 15,
+                    right: r.right + 15, bottom: r.bottom + 15,
+                    cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
+                };
+            }
+
             for (let i = 0; i < N; i++) {
-                // Per-particle rotation (inner bands faster)
                 angles[i] += rotSpeed[i];
                 const bx = cx + Math.cos(angles[i]) * radii[i] + gyroOffX;
                 const by = cy + Math.sin(angles[i]) * radii[i] + gyroOffY;
 
-                // Spring toward base
-                let ax = (bx - posX[i]) * SPRING_K;
-                let ay = (by - posY[i]) * SPRING_K;
+                // Card interaction: 2-phase inertial effect
+                let cardInf = 0;
+                let cardAx = 0, cardAy = 0;
+
+                if (hasCard) {
+                    const px = posX[i], py = posY[i];
+                    const cr = activeRect;
+
+                    // Phase 1: Burst — repulse from card center (decaying)
+                    if (cardBurst > 0.02) {
+                        const dx = px - cr.cx, dy = py - cr.cy;
+                        const d = Math.sqrt(dx * dx + dy * dy);
+                        if (d > 1 && d < 350) {
+                            const f = 22 * cardBurst / Math.max(d * 0.02, 0.3);
+                            cardAx += (dx / d) * f;
+                            cardAy += (dy / d) * f;
+                            cardInf = Math.max(cardInf, cardBurst);
+                        }
+                    }
+
+                    // Phase 2: Gather — attract to card edge (ramping up)
+                    const gatherStr = Math.max(0, cardForce - cardBurst * 0.5);
+                    if (gatherStr > 0.01) {
+                        const inside = px > cr.left && px < cr.right && py > cr.top && py < cr.bottom;
+
+                        // Nearest point on card perimeter
+                        let ex, ey;
+                        if (inside) {
+                            const dL = px - cr.left, dR = cr.right - px;
+                            const dT = py - cr.top, dB = cr.bottom - py;
+                            const mn = Math.min(dL, dR, dT, dB);
+                            if (mn === dL) { ex = cr.left; ey = py; }
+                            else if (mn === dR) { ex = cr.right; ey = py; }
+                            else if (mn === dT) { ex = px; ey = cr.top; }
+                            else { ex = px; ey = cr.bottom; }
+                        } else {
+                            ex = Math.max(cr.left, Math.min(cr.right, px));
+                            ey = Math.max(cr.top, Math.min(cr.bottom, py));
+                        }
+
+                        const edx = ex - px, edy = ey - py;
+                        const ed = Math.sqrt(edx * edx + edy * edy);
+
+                        if (inside && ed > 0.5) {
+                            // Inside card → push to nearest edge
+                            cardInf = Math.max(cardInf, gatherStr);
+                            const f = 16 * gatherStr;
+                            cardAx += (edx / ed) * f;
+                            cardAy += (edy / ed) * f;
+                        } else if (!inside && ed < 250 && ed > 0.5) {
+                            // Outside, within range → attract to edge
+                            // Constant-ish force for slow→fast approach feel
+                            cardInf = Math.max(cardInf, (1 - ed / 250) * gatherStr);
+                            const f = 4.5 * gatherStr;
+                            cardAx += (edx / ed) * f;
+                            cardAy += (edy / ed) * f;
+                            // Soft brake near edge (prevents overshoot)
+                            if (ed < 25) {
+                                const brake = ed / 25;
+                                velX[i] *= 0.92 + 0.08 * brake;
+                                velY[i] *= 0.92 + 0.08 * brake;
+                            }
+                        }
+                    }
+                }
+
+                // Spring toward ring base (weakened by card influence)
+                const sk = SPRING_K * (1 - cardInf * 0.85);
+                let ax = (bx - posX[i]) * sk;
+                let ay = (by - posY[i]) * sk;
+
+                // Card forces
+                ax += cardAx;
+                ay += cardAy;
 
                 // Mouse repulsion + vortex swirl
                 if (effectStr > 0.01) {
@@ -501,10 +590,8 @@
                     if (d > 1 && d < ringR * 1.5) {
                         const f = Math.min(REPULSE_STRENGTH * effectStr / (d * 0.06), 6);
                         const nx = dx / d, ny = dy / d;
-                        // Radial push
                         ax += nx * f;
                         ay += ny * f;
-                        // Tangential swirl (perpendicular to radial)
                         const vortex = f * VORTEX_STRENGTH;
                         ax += -ny * vortex;
                         ay +=  nx * vortex;
@@ -524,22 +611,35 @@
             ctx.globalCompositeOperation = 'lighter';
 
             const time = frameCount * 0.02;
+            const hasCard = cardForce > 0.01 && activeRect;
 
             for (let i = 0; i < N; i++) {
-                // Velocity magnitude → excitement level
                 const vMag = Math.sqrt(velX[i] * velX[i] + velY[i] * velY[i]);
                 const excitement = Math.min(vMag / 3, 1);
-
-                // Size pulsation (subtle sine wave, per-particle phase from angle)
                 const pulse = 1 + Math.sin(time + angles[i] * 3) * 0.12;
-                const s = sizes[i] * (2.5 + excitement * 2) * pulse;
 
-                // Alpha: base + excitement boost
-                const alpha = Math.min(baseAlpha[i] + excitement * 0.5, 1);
+                // Card edge glow: particles near hovered card perimeter glow brighter
+                let cardGlow = 0;
+                if (hasCard) {
+                    const cr = activeRect;
+                    const inside = posX[i] > cr.left && posX[i] < cr.right
+                                && posY[i] > cr.top && posY[i] < cr.bottom;
+                    if (!inside) {
+                        const clx = Math.max(cr.left, Math.min(cr.right, posX[i]));
+                        const cly = Math.max(cr.top, Math.min(cr.bottom, posY[i]));
+                        const d = Math.sqrt((clx - posX[i]) ** 2 + (cly - posY[i]) ** 2);
+                        if (d < 60) {
+                            cardGlow = (1 - d / 60) * cardForce * 0.5;
+                        }
+                    }
+                }
+
+                const sizeBoost = 1 + cardGlow * 2.5;
+                const s = sizes[i] * (2.5 + excitement * 2) * pulse * sizeBoost;
+                const alpha = Math.min(baseAlpha[i] + excitement * 0.5 + cardGlow, 1);
                 ctx.globalAlpha = alpha;
 
-                // Use bright sprite when excited, normal otherwise
-                const sprite = excitement > 0.3
+                const sprite = excitement > 0.3 || cardGlow > 0.12
                     ? spritesBright[spriteIdx[i]]
                     : sprites[spriteIdx[i]];
                 ctx.drawImage(sprite, posX[i] - s * 0.5, posY[i] - s * 0.5, s, s);
@@ -580,6 +680,21 @@
             if (t) { mouseX = t.clientX; mouseY = t.clientY; }
         }, { passive: true });
         window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; mouseVel = 0; });
+
+        // ── Input: Card hover ──
+        document.querySelectorAll('.split-card').forEach(card => {
+            card.addEventListener('mouseenter', () => {
+                hoveredCard = card;
+                cardBurst = 1; // trigger initial explosion
+                const r = card.getBoundingClientRect();
+                activeRect = {
+                    left: r.left - 15, top: r.top - 15,
+                    right: r.right + 15, bottom: r.bottom + 15,
+                    cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
+                };
+            });
+            card.addEventListener('mouseleave', () => { hoveredCard = null; });
+        });
 
         // ── Input: Gyroscope ──
         function onGyro(e) {
