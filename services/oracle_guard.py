@@ -19,7 +19,9 @@ INJECTION_PATTERNS = [
     r'act\s+as\s+(if|a|an)',
     r'pretend\s+(you|to\s+be)',
     r'(give|assign|output|return|set)\s+(a\s+)?(score|rating|grade)\s+(of\s+)?\d+',
-    r'(must|should|always)\s+(give|assign|score|rate|accept|approve|pass)',
+    r'(must|should|always)\s+(give|assign)\s+(a\s+)?(score|rating|grade|mark)',
+    r'(must|should|always)\s+(score|rate)\s+(this|the|my|it)\b',
+    r'(must|should|always)\s+(accept|approve|pass)\s+(this|the|my)\s+(submission|answer|response|work)',
     r'system\s*prompt',
     r'jailbreak',
     r'(as|being)\s+an?\s+(ai|evaluator|judge|reviewer|grader|assistant)',
@@ -27,7 +29,7 @@ INJECTION_PATTERNS = [
     r'忽略.{0,10}(之前|以前|先前|所有).{0,10}(指令|规则|标准|提示)',
     r'(给|打|输出|设置|返回).{0,10}(满分|100分|最高分)',
     r'你(现在)?是.{0,10}(助手|评分|评估)',
-    r'(必须|应该|一定).{0,10}(通过|给分|接受|批准)',
+    r'(必须|应该|一定).{0,10}(给分|打分).{0,10}(满分|通过|高分|\d+)',
     r'(无视|跳过|绕过).{0,10}(规则|标准|检查)',
     # P2-6 fix (M-O07): Multilingual injection patterns
     # French
@@ -139,6 +141,12 @@ Respond with exactly one JSON object:
                 content = re.sub(r'^```(?:json)?\s*', '', content)
                 content = re.sub(r'\s*```$', '', content)
             result = json.loads(content)
+            if 'blocked' not in result or not isinstance(result['blocked'], bool):
+                import logging
+                logging.getLogger('relay.guard').warning(
+                    "LLM guard returned malformed response (missing/invalid 'blocked' key): %s", content[:200]
+                )
+                return {"blocked": True, "reason": "Guard LLM returned malformed response (fail-closed)", "layer": "llm"}
             result['layer'] = 'llm'
             return result
         except Exception as e:
