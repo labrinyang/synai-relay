@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SYNAI.SHOP - DASHBOARD</title>
+    <title>SYNAI.SHOP - Dashboard</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -25,7 +25,7 @@
             --bronze: #cd7f32;
             --orange: #ff8c00;
             --text-main: #e1e1e1;
-            --text-dim: #777;
+            --text-dim: #999;
             --text-mid: #999;
         }
 
@@ -162,7 +162,6 @@
             font-size: 10px;
             font-family: 'JetBrains Mono', monospace;
             color: var(--text-dim);
-            text-transform: uppercase;
             letter-spacing: 1px;
             line-height: 1;
             white-space: nowrap;
@@ -239,7 +238,6 @@
             font-family: 'JetBrains Mono', monospace;
             font-size: 11px;
             font-weight: 600;
-            text-transform: uppercase;
             letter-spacing: 1.5px;
             cursor: pointer;
             transition: all 0.2s;
@@ -354,7 +352,6 @@
             font-size: 10px;
             font-weight: 700;
             font-family: 'JetBrains Mono', monospace;
-            text-transform: uppercase;
             letter-spacing: 0.5px;
             margin-right: 4px;
         }
@@ -501,7 +498,6 @@
             font-weight: 700;
             color: var(--text-dim);
             letter-spacing: 3px;
-            text-transform: uppercase;
         }
 
         .empty-sub {
@@ -584,7 +580,6 @@
             font-size: 10px;
             color: var(--text-dim);
             letter-spacing: 2px;
-            text-transform: uppercase;
         }
 
         .detail-close-btn {
@@ -625,7 +620,6 @@
             font-size: 9px;
             color: var(--text-dim);
             letter-spacing: 2px;
-            text-transform: uppercase;
             margin-bottom: 8px;
         }
 
@@ -660,7 +654,6 @@
             font-size: 9px;
             color: var(--text-dim);
             letter-spacing: 1px;
-            text-transform: uppercase;
             margin-bottom: 4px;
         }
 
@@ -876,7 +869,6 @@
             font-size: 9px;
             color: var(--text-dim);
             letter-spacing: 1px;
-            text-transform: uppercase;
             margin-bottom: 6px;
         }
 
@@ -925,7 +917,6 @@
             font-size: 9px;
             color: var(--text-dim);
             letter-spacing: 1px;
-            text-transform: uppercase;
             display: block;
             margin-bottom: 4px;
         }
@@ -958,7 +949,6 @@
             font-family: 'JetBrains Mono', monospace;
             letter-spacing: 2px;
             color: var(--text-dim);
-            text-transform: uppercase;
             margin-bottom: 14px;
         }
 
@@ -1061,7 +1051,6 @@
             font-size: 11px;
             color: var(--text-dim);
             letter-spacing: 2px;
-            text-transform: uppercase;
         }
 
         .leaderboard-empty .lb-empty-sub {
@@ -1350,7 +1339,6 @@
             .stats-collapsed .c-lbl {
                 font-size: 9px;
                 color: var(--text-dim);
-                text-transform: uppercase;
             }
             .stats-collapsed .c-chevron {
                 margin-left: auto;
@@ -1415,7 +1403,6 @@
                 font-family: 'JetBrains Mono', monospace;
                 font-size: 10px;
                 color: var(--text-dim);
-                text-transform: uppercase;
                 letter-spacing: 1px;
             }
             .hero-val {
@@ -1474,7 +1461,6 @@
             font-family: 'JetBrains Mono', monospace;
             font-size: 10px;
             font-weight: 600;
-            text-transform: uppercase;
             letter-spacing: 1px;
             cursor: pointer;
             transition: all 0.2s;
@@ -1535,7 +1521,6 @@
             font-size: 13px;
             letter-spacing: 2px;
             color: var(--gold);
-            text-transform: uppercase;
         }
         .lb-overlay-close {
             background: none;
@@ -1594,7 +1579,7 @@
         </div>
         <nav class="header-nav" style="display:flex;gap:8px;align-items:center;">
             <button class="lb-toggle" onclick="toggleLeaderboardOverlay()" title="Leaderboard">&#127942;</button>
-            <a href="/" class="home-link">&#9664; HOME</a>
+            <a href="/" class="home-link">&#9664; Home</a>
         </nav>
     </header>
 
@@ -1636,10 +1621,10 @@
             <section>
                 <div class="view-toggle">
                     <button class="view-tab active" data-view="new" onclick="switchView('new')">
-                        NEW<span class="tab-count" id="count-new"></span>
+                        New<span class="tab-count" id="count-new"></span>
                     </button>
                     <button class="view-tab" data-view="hot" onclick="switchView('hot')">
-                        HOT<span class="tab-count" id="count-hot"></span>
+                        Hot<span class="tab-count" id="count-hot"></span>
                     </button>
                 </div>
                 <div class="task-list" id="task-list">
@@ -1707,10 +1692,10 @@
     <div class="detail-panel" id="detail-panel" role="dialog" aria-modal="true" aria-label="Task Detail">
         <div class="detail-close">
             <span class="detail-close-label">Task Detail</span>
-            <button class="detail-close-btn" onclick="closeDetail()" aria-label="Close task detail panel">ESC / CLOSE</button>
+            <button class="detail-close-btn" onclick="closeDetail()" aria-label="Close task detail panel">Esc / Close</button>
         </div>
         <div class="detail-body" id="detail-body">
-            <div class="detail-loading">LOADING...</div>
+            <div class="detail-loading">Loading...</div>
         </div>
     </div>
 
@@ -1718,7 +1703,7 @@
     <div class="lb-overlay" id="lb-overlay" role="dialog" aria-modal="true" aria-label="Profit Ranking">
         <div class="lb-overlay-header">
             <span class="lb-overlay-title">Profit Ranking</span>
-            <button class="lb-overlay-close" onclick="toggleLeaderboardOverlay()" aria-label="Close leaderboard">CLOSE</button>
+            <button class="lb-overlay-close" onclick="toggleLeaderboardOverlay()" aria-label="Close leaderboard">Close</button>
         </div>
         <div class="leaderboard" id="lb-overlay-list"></div>
     </div>
@@ -1732,9 +1717,9 @@
     <!-- Mobile Bottom Bar -->
     <div class="mobile-bottom-bar" id="mobile-bottom-bar">
         <div class="mobile-bottom-bar-inner">
-            <button class="mobile-bar-btn active" data-view="new" onclick="switchView('new')">NEW</button>
-            <button class="mobile-bar-btn" data-view="hot" onclick="switchView('hot')">HOT</button>
-            <a href="/" class="mobile-bar-btn">HOME</a>
+            <button class="mobile-bar-btn active" data-view="new" onclick="switchView('new')">New</button>
+            <button class="mobile-bar-btn" data-view="hot" onclick="switchView('hot')">Hot</button>
+            <a href="/" class="mobile-bar-btn">Home</a>
         </div>
     </div>
 
@@ -1778,6 +1763,11 @@
 
         /* ── Utilities ── */
 
+        function sentenceCase(s) {
+            if (!s) return '';
+            return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+        }
+
         function esc(s) {
             const d = document.createElement('div');
             d.textContent = s == null ? '' : String(s);
@@ -1812,7 +1802,7 @@
         function expiryCountdown(iso) {
             if (!iso) return null;
             const diff = (new Date(iso).getTime() - Date.now()) / 1000;
-            if (diff <= 0) return { text: 'EXPIRED', urgent: true };
+            if (diff <= 0) return { text: 'Expired', urgent: true };
             if (diff < 3600) return { text: Math.floor(diff / 60) + 'm left', urgent: true };
             if (diff < 86400) return { text: Math.floor(diff / 3600) + 'h left', urgent: false };
             return { text: Math.floor(diff / 86400) + 'd left', urgent: false };
@@ -1847,7 +1837,7 @@
 
         function copyText(text, el) {
             const done = () => {
-                if (el) { el.textContent = 'COPIED!'; setTimeout(() => { el.textContent = text; }, 1200); }
+                if (el) { el.textContent = 'Copied!'; setTimeout(() => { el.textContent = text; }, 1200); }
             };
             if (navigator.clipboard && window.isSecureContext) {
                 navigator.clipboard.writeText(text).then(done).catch(() => fallback());
@@ -1942,9 +1932,9 @@
                             <div class="empty-radar-sweep"></div>
                             <div class="empty-radar-dot"></div>
                         </div>
-                        <span class="empty-title">${isHot ? 'SCANNING FOR ACTIVITY' : 'MONITORING NETWORK'}</span>
+                        <span class="empty-title">${isHot ? 'Scanning for activity' : 'Monitoring network'}</span>
                         <span class="empty-sub">${isHot ? 'No tasks with active agents yet. Waiting for workers to join.' : 'Awaiting incoming tasks. The relay is online and listening.'}</span>
-                        <a href="/" class="empty-cta">EXPLORE AGENTS</a>
+                        <a href="/" class="empty-cta">Explore agents</a>
                     </div>`;
                 return;
             }
@@ -1967,7 +1957,7 @@
 
                 // Outcome badge for resolved tasks (e.g. "PAID" in green)
                 const outcomeBadge = (j.status === 'resolved' && j.payout_status === 'success')
-                    ? '<span class="badge resolved">PAID</span>' : '';
+                    ? '<span class="badge resolved">Paid</span>' : '';
 
                 return `<div class="task-card${isNew ? ' new-entry' : ''}${isSelected ? ' selected' : ''}" data-task-id="${esc(j.task_id)}">
                     <div class="card-header">
@@ -1975,11 +1965,11 @@
                         <span class="task-time">${esc(timeAgo(j.created_at))}</span>
                     </div>
                     <div class="task-meta">
-                        <span class="badge ${esc(j.status)}">${esc(j.status?.toUpperCase())}</span>
+                        <span class="badge ${esc(j.status)}">${esc(sentenceCase(j.status))}</span>
                         ${outcomeBadge}
                         ${j.artifact_type ? `<span class="badge artifact">${esc(j.artifact_type)}</span>` : ''}
                         ${exp ? `<span class="expiry-badge${exp.urgent ? ' urgent' : ''}">&#9201; ${esc(exp.text)}</span>` : ''}
-                        ${(j.failure_count || 0) > 0 ? `<span class="fails-badge">FAILS: ${j.failure_count}</span>` : ''}
+                        ${(j.failure_count || 0) > 0 ? `<span class="fails-badge">Fails: ${j.failure_count}</span>` : ''}
                         ${pNames ? `<span style="color:var(--text-mid);">${esc(pNames)}</span>` : ''}
                     </div>
                     <div class="price-row">
@@ -2087,7 +2077,7 @@
             renderJobs(); // highlight selected card
             document.getElementById('detail-overlay').classList.add('open');
             document.getElementById('detail-panel').classList.add('open');
-            document.getElementById('detail-body').innerHTML = '<div class="detail-loading">LOADING...</div>';
+            document.getElementById('detail-body').innerHTML = '<div class="detail-loading">Loading...</div>';
             const bar = document.getElementById('mobile-bottom-bar');
             if (bar) bar.style.display = 'none';
             fetchDetail(taskId);
@@ -2115,7 +2105,7 @@
                 if (!jobResp.ok) {
                     UILog.warn('DETAIL', `failed task=${taskId} status=${jobResp.status} ${elapsed}ms`);
                     document.getElementById('detail-body').innerHTML =
-                        '<div class="detail-loading">FAILED TO LOAD</div>';
+                        '<div class="detail-loading">Failed to load</div>';
                     return;
                 }
                 const job = await jobResp.json();
@@ -2130,7 +2120,7 @@
             } catch (err) {
                 UILog.error('DETAIL', 'fetch error', err);
                 document.getElementById('detail-body').innerHTML =
-                    '<div class="detail-loading">ERROR</div>';
+                    '<div class="detail-loading">Error</div>';
             }
         }
 
@@ -2156,7 +2146,7 @@
                         <span class="detail-participant-dot"></span>
                         <span class="detail-participant-name">${esc(name)}</span>
                         <span class="detail-participant-id">${esc(agentId)}</span>
-                        ${isWinner ? '<span class="winner-badge">WINNER</span>' : ''}
+                        ${isWinner ? '<span class="winner-badge">Winner</span>' : ''}
                     </div>`;
                 }).join('');
             } else {
@@ -2180,7 +2170,7 @@
                     const st = s.status || 'judging';
                     const scoreClass = st === 'passed' ? 'pass' : st === 'failed' ? 'fail' : 'judging';
                     const cardClass = isWinner ? 'winner' : st === 'failed' ? 'failed' : '';
-                    const statusLabel = st.toUpperCase();
+                    const statusLabel = sentenceCase(st);
                     const toggleId = `sub-body-${idx}`;
                     const toggleArrow = `sub-toggle-${idx}`;
 
@@ -2194,7 +2184,7 @@
                     return `<div class="submission-card ${cardClass}">
                         <div class="submission-header" onclick="document.getElementById('${toggleId}').classList.toggle('open');document.getElementById('${toggleArrow}').classList.toggle('open')">
                             <span class="submission-agent">${esc(s.worker_id)}</span>
-                            ${isWinner ? '<span class="submission-winner-tag">WINNER</span>' : ''}
+                            ${isWinner ? '<span class="submission-winner-tag">Winner</span>' : ''}
                             <span class="submission-score ${sClass}">${score != null ? score : '—'}</span>
                             <span class="submission-status ${st}">${statusLabel}</span>
                             <span class="submission-time">${esc(timeAgo(s.created_at))}</span>
@@ -2247,7 +2237,7 @@
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Status</div>
                         <div class="detail-meta-value ${statusColor}">
-                            ${esc(job.status?.toUpperCase())}
+                            ${esc(sentenceCase(job.status))}
                         </div>
                     </div>
                     <div class="detail-meta-item">
@@ -2257,7 +2247,7 @@
                     ${job.payout_status ? `
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Payout</div>
-                        <div class="detail-meta-value ${job.payout_status === 'success' ? 'green' : 'orange'}">${esc(job.payout_status?.toUpperCase())}</div>
+                        <div class="detail-meta-value ${job.payout_status === 'success' ? 'green' : 'orange'}">${esc(sentenceCase(job.payout_status))}</div>
                     </div>` : ''}
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Submissions</div>
