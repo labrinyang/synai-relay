@@ -2066,7 +2066,7 @@
                             <div class="submission-reason-label">Oracle Evaluation</div>
                             <div class="submission-reason">${esc(s.oracle_reason)}</div>` : ''}
                             <div class="submission-reason-label">Solution</div>
-                            <div class="submission-content">${esc(s.content || '[No content]')}</div>
+                            <div class="submission-content">${esc(typeof s.content === 'object' ? JSON.stringify(s.content, null, 2) : (s.content || '[No content]'))}</div>
                         </div>
                     </div>`;
                 }).join('');
