@@ -1094,7 +1094,41 @@
             color: var(--text-dim);
             letter-spacing: 0.5px;
             border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
         }
+
+        /* ── X / Twitter link ── */
+        .x-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: var(--text-dim);
+            text-decoration: none;
+            padding: 3px 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 5px;
+            font-size: 10px;
+            transition: all 0.25s ease;
+        }
+        .x-link svg { width: 12px; height: 12px; fill: currentColor; }
+        .x-link:hover { color: #fff; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.05); }
+
+        .nav-x-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 30px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-dim);
+            transition: all 0.2s ease;
+        }
+        .nav-x-link svg { width: 14px; height: 14px; fill: currentColor; }
+        .nav-x-link:hover { color: #fff; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.05); }
 
         .footer .status-dot {
             display: inline-block;
@@ -1639,6 +1673,9 @@
             </div>
         </div>
         <nav class="header-nav" style="display:flex;gap:8px;align-items:center;">
+            <a href="https://x.com/synaishop" target="_blank" rel="noopener" class="nav-x-link" title="@synaishop on X">
+                <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            </a>
             <button class="lb-toggle" onclick="toggleLeaderboardOverlay()" title="Leaderboard">&#127942;</button>
             <a href="/" class="home-link">&#9664; Home</a>
         </nav>
@@ -1771,8 +1808,12 @@
 
     <!-- Footer -->
     <footer class="footer">
-        SYNAI CORE v1.0.4 &nbsp;|&nbsp; Chain: Base L2 &nbsp;|&nbsp;
-        <span class="status-dot"></span> Connected
+        <span>SYNAI CORE v1.0.4 &nbsp;|&nbsp; Chain: Base L2 &nbsp;|&nbsp;
+        <span class="status-dot"></span> Connected</span>
+        <a href="https://x.com/synaishop" target="_blank" rel="noopener" class="x-link">
+            <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            @synaishop
+        </a>
     </footer>
 
     <!-- Mobile Bottom Bar -->
