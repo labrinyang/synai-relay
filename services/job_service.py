@@ -1,5 +1,7 @@
+from collections import defaultdict
 from models import db, Agent, Job, Submission, JobParticipant, utc_iso
 from datetime import datetime, timezone
+from sqlalchemy import case, func
 
 
 # Expirable states (funded tasks that haven't resolved)
@@ -105,6 +107,9 @@ class JobService:
     @staticmethod
     def to_dict(job: Job) -> dict:
         submission_count = Submission.query.filter_by(task_id=job.task_id).count()
+        judging_count = Submission.query.filter_by(task_id=job.task_id, status='judging').count()
+        passed_count = Submission.query.filter_by(task_id=job.task_id, status='passed').count()
+        failed_count = Submission.query.filter_by(task_id=job.task_id, status='failed').count()
         participants_query = JobParticipant.query.filter_by(task_id=job.task_id, unclaimed_at=None).all()
         if participants_query:
             agent_names = {a.agent_id: a.name for a in Agent.query.filter(
@@ -124,6 +129,9 @@ class JobService:
             "participants": [{"agent_id": jp.worker_id, "name": agent_names.get(jp.worker_id, jp.worker_id)} for jp in participants_query],
             "winner_id": job.winner_id,
             "submission_count": submission_count,
+            "judging_count": judging_count,
+            "passed_count": passed_count,
+            "failed_count": failed_count,
             "max_submissions": job.max_submissions,
             "max_retries": job.max_retries,
             "min_reputation": float(job.min_reputation) if job.min_reputation else None,
@@ -141,3 +149,77 @@ class JobService:
             "created_at": utc_iso(job.created_at),
             "updated_at": utc_iso(job.updated_at),
         }
+
+    @staticmethod
+    def to_dict_batch(jobs: list) -> list:
+        """Batch-serialize jobs with O(1) aggregate queries instead of O(N)."""
+        if not jobs:
+            return []
+
+        task_ids = [j.task_id for j in jobs]
+
+        # Single query: submission counts grouped by status
+        sub_rows = (
+            db.session.query(
+                Submission.task_id,
+                func.count(Submission.id).label("submission_count"),
+                func.sum(case((Submission.status == 'judging', 1), else_=0)).label("judging_count"),
+                func.sum(case((Submission.status == 'passed', 1), else_=0)).label("passed_count"),
+                func.sum(case((Submission.status == 'failed', 1), else_=0)).label("failed_count"),
+            )
+            .filter(Submission.task_id.in_(task_ids))
+            .group_by(Submission.task_id)
+            .all()
+        )
+        sub_stats = {r.task_id: r for r in sub_rows}
+
+        # Single query: all participants + agent names
+        participant_rows = (
+            db.session.query(JobParticipant.task_id, JobParticipant.worker_id, Agent.name)
+            .outerjoin(Agent, Agent.agent_id == JobParticipant.worker_id)
+            .filter(
+                JobParticipant.task_id.in_(task_ids),
+                JobParticipant.unclaimed_at.is_(None),
+            )
+            .all()
+        )
+        participants_map = defaultdict(list)
+        for tid, wid, name in participant_rows:
+            participants_map[tid].append({"agent_id": wid, "name": name or wid})
+
+        result = []
+        for job in jobs:
+            stats = sub_stats.get(job.task_id)
+            result.append({
+                "task_id": job.task_id,
+                "title": job.title,
+                "description": job.description,
+                "rubric": job.rubric,
+                "price": float(job.price),
+                "buyer_id": job.buyer_id,
+                "status": job.status,
+                "artifact_type": job.artifact_type,
+                "participants": participants_map.get(job.task_id, []),
+                "winner_id": job.winner_id,
+                "submission_count": stats.submission_count if stats else 0,
+                "judging_count": int(stats.judging_count) if stats else 0,
+                "passed_count": int(stats.passed_count) if stats else 0,
+                "failed_count": int(stats.failed_count) if stats else 0,
+                "max_submissions": job.max_submissions,
+                "max_retries": job.max_retries,
+                "min_reputation": float(job.min_reputation) if job.min_reputation else None,
+                "expiry": utc_iso(job.expiry),
+                "deposit_tx_hash": job.deposit_tx_hash,
+                "payout_tx_hash": job.payout_tx_hash,
+                "payout_status": job.payout_status,
+                "fee_tx_hash": job.fee_tx_hash,
+                "fee_bps": job.fee_bps,
+                "depositor_address": job.depositor_address,
+                "failure_count": job.failure_count or 0,
+                "deposit_amount": float(job.deposit_amount) if job.deposit_amount else None,
+                "refund_tx_hash": job.refund_tx_hash,
+                "solution_price": float(job.solution_price or 0),
+                "created_at": utc_iso(job.created_at),
+                "updated_at": utc_iso(job.updated_at),
+            })
+        return result
