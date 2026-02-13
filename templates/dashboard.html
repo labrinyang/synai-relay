@@ -1806,6 +1806,24 @@
             return 'https://basescan.org/tx/' + encodeURIComponent(tx);
         }
 
+        function copyText(text, el) {
+            const done = () => {
+                if (el) { el.textContent = 'COPIED!'; setTimeout(() => { el.textContent = text; }, 1200); }
+            };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(done).catch(() => fallback());
+            } else {
+                fallback();
+            }
+            function fallback() {
+                const ta = document.createElement('textarea');
+                ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta); ta.select();
+                try { document.execCommand('copy'); done(); } catch (e) { UILog.error('UI', 'copy failed', e); }
+                document.body.removeChild(ta);
+            }
+        }
+
         /* ── State ── */
 
         let currentView = 'new';
@@ -2241,16 +2259,16 @@
                     <div class="detail-meta-grid">
                         <div class="detail-meta-item">
                             <div class="detail-meta-label">Task ID</div>
-                            <div class="detail-meta-value" style="font-size:10px;cursor:pointer;" onclick="navigator.clipboard.writeText('${esc(job.task_id)}').then(()=>{this.textContent='COPIED!';setTimeout(()=>{this.textContent='${esc(job.task_id)}'},1200)})" title="Click to copy">${esc(job.task_id)}</div>
+                            <div class="detail-meta-value" style="font-size:10px;cursor:pointer;" onclick="copyText('${esc(job.task_id)}', this)" title="Click to copy">${esc(job.task_id)}</div>
                         </div>
                         <div class="detail-meta-item">
                             <div class="detail-meta-label">Buyer</div>
-                            <div class="detail-meta-value" style="font-size:10px;">${esc(job.buyer_id)}</div>
+                            <div class="detail-meta-value" style="font-size:10px;cursor:pointer;" onclick="copyText('${esc(job.buyer_id)}', this)" title="Click to copy">${esc(job.buyer_id)}</div>
                         </div>
                         ${job.winner_id ? `
                         <div class="detail-meta-item">
                             <div class="detail-meta-label">Winner</div>
-                            <div class="detail-meta-value green" style="font-size:10px;">${esc(job.winner_id)}</div>
+                            <div class="detail-meta-value green" style="font-size:10px;cursor:pointer;" onclick="copyText('${esc(job.winner_id)}', this)" title="Click to copy">${esc(job.winner_id)}</div>
                         </div>` : ''}
                         <div class="detail-meta-item">
                             <div class="detail-meta-label">Created</div>
