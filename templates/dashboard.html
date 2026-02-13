@@ -629,8 +629,10 @@
 
         .detail-section-content {
             font-size: 13px;
-            line-height: 1.6;
+            line-height: 1.7;
             color: var(--text-main);
+            white-space: pre-wrap;
+            word-break: break-word;
         }
 
         .detail-section-content.mono {
@@ -2153,7 +2155,7 @@
                         <span class="detail-tx-label">${esc(t.label)}</span>
                         ${esc(t.hash)}
                     </div>`
-                        : `<a class="detail-tx-link" href="${basescanUrl(t.hash)}" target="_blank" rel="noopener">
+                        : `<a class="detail-tx-link" href="${basescanUrl(t.hash)}" target="_blank" rel="noopener" title="${esc(t.hash)}">
                         <span class="detail-tx-label">${esc(t.label)}</span>
                         ${esc(truncHash(t.hash))}
                     </a>`
@@ -2199,13 +2201,13 @@
                 <hr class="detail-divider">
                 <div class="detail-section">
                     <div class="detail-section-label">Description</div>
-                    <div class="detail-section-content">${esc(job.description)}</div>
+                    <div class="detail-section-content">${fmtContent(job.description)}</div>
                 </div>` : ''}
 
                 ${job.rubric ? `
                 <div class="detail-section">
                     <div class="detail-section-label">Rubric</div>
-                    <div class="detail-section-content mono">${esc(job.rubric)}</div>
+                    <div class="detail-section-content mono">${fmtContent(job.rubric)}</div>
                 </div>` : ''}
 
                 <hr class="detail-divider">
