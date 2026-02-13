@@ -2229,7 +2229,7 @@
             try {
                 const [jobResp, subResp] = await Promise.all([
                     fetch('/jobs/' + encodeURIComponent(taskId)),
-                    fetch('/jobs/' + encodeURIComponent(taskId) + '/submissions?limit=200'),
+                    fetch('/jobs/' + encodeURIComponent(taskId) + '/submissions?limit=200&public=true'),
                 ]);
                 const elapsed = (performance.now() - t0).toFixed(0);
                 if (!jobResp.ok) {
