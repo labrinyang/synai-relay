@@ -97,6 +97,12 @@ if not guard_url or not guard_key:
 with app.app_context():
     try:
         db.create_all()
+        # Ensure indexes exist on pre-existing databases (create_all only builds new tables)
+        with db.engine.connect() as conn:
+            conn.execute(db.text(
+                "CREATE INDEX IF NOT EXISTS ix_submissions_task_status ON submissions (task_id, status)"
+            ))
+            conn.commit()
         logger.info("Database tables created / verified")
     except Exception as e:
         logger.critical("Database init failed: %s", e)
