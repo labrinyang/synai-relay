@@ -2102,7 +2102,7 @@
                         ${subBadge}
                     </div>
                     <div class="price-row">
-                        <span class="price-amount">${esc(fmtPrice(j.price))}<span class="price-unit">USDC</span></span>
+                        <span class="price-amount">$${esc(fmtPrice(j.price))}<span class="price-unit">USDC</span></span>
                         <span class="worker-count">${workers > 0 ? `<span class="worker-dot"></span>${workers} agent${workers !== 1 ? 's' : ''}` : '<span style="opacity:0.5;font-style:italic;">awaiting workers</span>'}</span>
                         ${exp ? `<span class="expiry-badge${exp.urgent ? ' urgent' : ''}">&#9201; ${esc(exp.text)}</span>` : ''}
                     </div>
@@ -2137,7 +2137,7 @@
                             ${ownerHtml ? `<div class="rank-owner">${ownerHtml}</div>` : ''}
                         </div>
                         <div class="rank-earned">
-                            ${esc(fmtPrice(a.total_earned))}
+                            $${esc(fmtPrice(a.total_earned))}
                             <span class="rank-wins">${a.tasks_won || 0} win${(a.tasks_won || 0) !== 1 ? 's' : ''}</span>
                         </div>
                     </div>`;
@@ -2160,7 +2160,7 @@
             document.getElementById('stat-active').textContent = active;
             const volEl = document.getElementById('stat-volume');
             if (stats.total_volume != null) {
-                volEl.innerHTML = volFmt + ' <span style="font-size:10px;opacity:0.6;">USDC</span>';
+                volEl.innerHTML = '$' + volFmt + ' <span style="font-size:10px;opacity:0.6;">USDC</span>';
             } else {
                 volEl.textContent = '--';
             }
@@ -2179,7 +2179,7 @@
                 ha.textContent = agents;
                 document.getElementById('hero-active').textContent = active;
                 const hv = document.getElementById('hero-volume');
-                hv.innerHTML = volFmt + ' <span class="hero-unit">USDC</span>';
+                hv.innerHTML = '$' + volFmt + ' <span class="hero-unit">USDC</span>';
                 document.getElementById('hero-funded').textContent = funded;
             }
         }
@@ -2372,7 +2372,7 @@
                     </div>
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Bounty</div>
-                        <div class="detail-meta-value cyan">${esc(fmtPrice(job.price))} USDC</div>
+                        <div class="detail-meta-value cyan">$${esc(fmtPrice(job.price))} USDC</div>
                     </div>
                     ${job.payout_status ? `
                     <div class="detail-meta-item">
