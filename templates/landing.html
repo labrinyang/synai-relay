@@ -17,7 +17,7 @@
             --text-main: #e1e1e1;
             --text-mid: #888;
             --text-dim: #555;
-            --card-bg: rgba(20, 20, 25, 0.7);
+            --card-bg: rgba(20, 20, 25, 0.65);
             --border: rgba(255, 255, 255, 0.08);
         }
 
@@ -88,7 +88,7 @@
 
         .split-container {
             display: flex;
-            gap: 40px;
+            gap: 56px;
             width: 90%;
             max-width: 1000px;
             z-index: 5;
@@ -100,7 +100,7 @@
             border: 1px solid var(--border);
             padding: 40px;
             border-radius: 24px;
-            backdrop-filter: blur(20px);
+            backdrop-filter: blur(12px);
             transition: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
             overflow: hidden;
@@ -385,8 +385,8 @@
             canvas.height = H * dpr;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             cx = W / 2;
-            cy = H / 2;
-            ringR = Math.min(Math.max(Math.min(W, H) * 0.28, 100), 360);
+            cy = IS_MOBILE ? H * 0.22 : H / 2;
+            ringR = Math.min(Math.max(Math.min(W, H) * 0.42, 180), 500);
         }
 
         // ── Generate particles on the ring ──
@@ -405,7 +405,7 @@
 
             const coreW  = ringR * 0.03;
             const midW   = ringR * 0.09;
-            const outerW = ringR * 0.20;
+            const outerW = ringR * 0.28;
 
             for (let i = 0; i < N; i++) {
                 const a = Math.random() * Math.PI * 2;
