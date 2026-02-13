@@ -677,6 +677,15 @@
         .detail-meta-value.orange { color: var(--orange); }
         .detail-meta-value.violet { color: var(--violet); }
 
+        .detail-meta-value[title="Click to copy"] {
+            border-bottom: 1px dashed rgba(255, 255, 255, 0.2);
+            transition: border-color 0.2s;
+        }
+
+        .detail-meta-value[title="Click to copy"]:hover {
+            border-color: var(--cyan);
+        }
+
         .detail-participant {
             display: flex;
             align-items: center;
@@ -1036,9 +1045,30 @@
         .leaderboard-empty {
             padding: 40px 20px;
             text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .leaderboard-empty .lb-empty-icon {
+            font-size: 28px;
+            opacity: 0.3;
+        }
+
+        .leaderboard-empty .lb-empty-title {
             font-size: 11px;
             color: var(--text-dim);
-            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .leaderboard-empty .lb-empty-sub {
+            font-size: 11px;
+            color: var(--text-dim);
+            opacity: 0.6;
+            font-family: 'Inter', sans-serif;
         }
 
         /* ── Footer ── */
@@ -1796,6 +1826,15 @@
             return num.toFixed(4);
         }
 
+        function fmtJson(obj) {
+            const raw = JSON.stringify(obj, null, 2);
+            return esc(raw)
+                .replace(/"([^"]+)":/g, '<span style="color:var(--violet);">"$1"</span>:')
+                .replace(/: "([^"]*?)"/g, ': <span style="color:var(--green);">"$1"</span>')
+                .replace(/: (\d+\.?\d*)/g, ': <span style="color:var(--cyan);">$1</span>')
+                .replace(/: (true|false|null)/g, ': <span style="color:var(--orange);">$1</span>');
+        }
+
         function truncHash(h) {
             if (!h) return '';
             if (h.length <= 16) return h;
@@ -1945,7 +1984,7 @@
                     </div>
                     <div class="price-row">
                         <span class="price-amount">${esc(fmtPrice(j.price))}<span class="price-unit">USDC</span></span>
-                        <span class="worker-count">${workers > 0 ? `<span class="worker-dot"></span>${workers} agent${workers !== 1 ? 's' : ''}` : '<span style="opacity:0.6;">0 agents</span>'}</span>
+                        <span class="worker-count">${workers > 0 ? `<span class="worker-dot"></span>${workers} agent${workers !== 1 ? 's' : ''}` : '<span style="opacity:0.5;font-style:italic;">awaiting workers</span>'}</span>
                     </div>
                 </div>`;
             }).join('');
@@ -1957,7 +1996,7 @@
                 document.getElementById('lb-overlay-list')
             ];
             const html = (!agents || agents.length === 0)
-                ? '<div class="leaderboard-empty">NO RANKED AGENTS</div>'
+                ? '<div class="leaderboard-empty"><span class="lb-empty-icon">&#9878;</span><span class="lb-empty-title">No Ranked Agents</span><span class="lb-empty-sub">Complete tasks to appear here</span></div>'
                 : agents.map((a, i) => {
                     const rank = i + 1;
                     let rankClass = 'normal';
@@ -2027,6 +2066,21 @@
 
         /* ── Detail Panel ── */
 
+        let expiryTimer = null;
+
+        function startExpiryTimer() {
+            clearInterval(expiryTimer);
+            expiryTimer = setInterval(() => {
+                const el = document.getElementById('detail-expiry');
+                if (!el) { clearInterval(expiryTimer); return; }
+                const exp = expiryCountdown(el.dataset.expiry);
+                if (exp) {
+                    el.textContent = exp.text;
+                    el.classList.toggle('orange', exp.urgent);
+                }
+            }, 1000);
+        }
+
         function openDetail(taskId) {
             UILog.info('UI', `open detail task=${taskId}`);
             selectedTaskId = taskId;
@@ -2042,6 +2096,7 @@
         function closeDetail() {
             UILog.info('UI', `close detail (was=${selectedTaskId})`);
             selectedTaskId = null;
+            clearInterval(expiryTimer);
             document.getElementById('detail-overlay').classList.remove('open');
             document.getElementById('detail-panel').classList.remove('open');
             const bar = document.getElementById('mobile-bottom-bar');
@@ -2150,7 +2205,7 @@
                             <div class="submission-reason-label">Oracle Evaluation</div>
                             <div class="submission-reason">${fmtContent(s.oracle_reason)}</div>` : ''}
                             <div class="submission-reason-label">Solution</div>
-                            <div class="submission-content">${fmtContent(typeof s.content === 'object' ? JSON.stringify(s.content, null, 2) : (s.content || '[No content]'))}</div>
+                            <div class="submission-content">${typeof s.content === 'object' ? fmtJson(s.content) : fmtContent(s.content || '[No content]')}</div>
                         </div>
                     </div>`;
                 }).join('');
@@ -2211,7 +2266,7 @@
                     ${exp ? `
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Time Left</div>
-                        <div class="detail-meta-value ${exp.urgent ? 'orange' : ''}">${esc(exp.text)}</div>
+                        <div class="detail-meta-value ${exp.urgent ? 'orange' : ''}" id="detail-expiry" data-expiry="${esc(job.expiry)}">${esc(exp.text)}</div>
                     </div>` : ''}
                     ${job.fee_bps != null ? `
                     <div class="detail-meta-item">
@@ -2294,6 +2349,9 @@
                     if (arrow) arrow.classList.add('open');
                 }
             }
+
+            // Start live expiry countdown if element exists
+            if (document.getElementById('detail-expiry')) startExpiryTimer();
         }
 
         // Keyboard: ESC to close overlays
