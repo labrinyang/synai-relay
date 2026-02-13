@@ -594,45 +594,46 @@
                         const GR = CARD_R + GATHER_PAD;
                         const b = pd.b;
 
-                        // Map ring angle → perimeter distance (CCW from right-center)
+                        // Map ring angle → perimeter distance (CW from right-center)
+                        // CW matches screen-coords convention: angle 0=right, π/2=down
+                        // so angle→perimeter alignment is natural (no crossed paths)
                         let pa = angles[i] % (Math.PI * 2);
                         if (pa < 0) pa += Math.PI * 2;
                         const pd2 = (pa / (Math.PI * 2)) * pd.P;
 
-                        // Compute perimeter target point via 9-segment parameterization
-                        // Segments CCW: right↑, TR arc, top←, TL arc, left↓, BL arc, bottom→, BR arc, right↑
+                        // 9-segment CW: right↓, BR arc, bottom←, BL arc, left↑, TL arc, top→, TR arc, right↓
                         let ex, ey;
                         if (pd2 < b[1]) {
-                            // Right edge upper half
-                            ex = cr.right + GATHER_PAD; ey = pd.midY - pd2;
+                            // Right edge lower half (going down from midY)
+                            ex = cr.right + GATHER_PAD; ey = pd.midY + pd2;
                         } else if (pd2 < b[2]) {
-                            // TR corner arc
-                            const t = -(pd2 - b[1]) / CARD_R;
-                            ex = pd.iR + GR * Math.cos(t); ey = pd.iT + GR * Math.sin(t);
-                        } else if (pd2 < b[3]) {
-                            // Top edge
-                            ex = pd.iR - (pd2 - b[2]); ey = cr.top - GATHER_PAD;
-                        } else if (pd2 < b[4]) {
-                            // TL corner arc
-                            const t = -Math.PI / 2 - (pd2 - b[3]) / CARD_R;
-                            ex = pd.iL + GR * Math.cos(t); ey = pd.iT + GR * Math.sin(t);
-                        } else if (pd2 < b[5]) {
-                            // Left edge
-                            ex = cr.left - GATHER_PAD; ey = pd.iT + (pd2 - b[4]);
-                        } else if (pd2 < b[6]) {
-                            // BL corner arc
-                            const t = Math.PI - (pd2 - b[5]) / CARD_R;
-                            ex = pd.iL + GR * Math.cos(t); ey = pd.iB + GR * Math.sin(t);
-                        } else if (pd2 < b[7]) {
-                            // Bottom edge
-                            ex = pd.iL + (pd2 - b[6]); ey = cr.bottom + GATHER_PAD;
-                        } else if (pd2 < b[8]) {
-                            // BR corner arc
-                            const t = Math.PI / 2 - (pd2 - b[7]) / CARD_R;
+                            // BR corner arc (0 → π/2)
+                            const t = (pd2 - b[1]) / CARD_R;
                             ex = pd.iR + GR * Math.cos(t); ey = pd.iB + GR * Math.sin(t);
+                        } else if (pd2 < b[3]) {
+                            // Bottom edge (going left)
+                            ex = pd.iR - (pd2 - b[2]); ey = cr.bottom + GATHER_PAD;
+                        } else if (pd2 < b[4]) {
+                            // BL corner arc (π/2 → π)
+                            const t = Math.PI / 2 + (pd2 - b[3]) / CARD_R;
+                            ex = pd.iL + GR * Math.cos(t); ey = pd.iB + GR * Math.sin(t);
+                        } else if (pd2 < b[5]) {
+                            // Left edge (going up)
+                            ex = cr.left - GATHER_PAD; ey = pd.iB - (pd2 - b[4]);
+                        } else if (pd2 < b[6]) {
+                            // TL corner arc (π → 3π/2)
+                            const t = Math.PI + (pd2 - b[5]) / CARD_R;
+                            ex = pd.iL + GR * Math.cos(t); ey = pd.iT + GR * Math.sin(t);
+                        } else if (pd2 < b[7]) {
+                            // Top edge (going right)
+                            ex = pd.iL + (pd2 - b[6]); ey = cr.top - GATHER_PAD;
+                        } else if (pd2 < b[8]) {
+                            // TR corner arc (3π/2 → 2π)
+                            const t = Math.PI * 3 / 2 + (pd2 - b[7]) / CARD_R;
+                            ex = pd.iR + GR * Math.cos(t); ey = pd.iT + GR * Math.sin(t);
                         } else {
-                            // Right edge lower half
-                            ex = cr.right + GATHER_PAD; ey = pd.iB - (pd2 - b[8]);
+                            // Right edge upper half (going down from iT to midY)
+                            ex = cr.right + GATHER_PAD; ey = pd.iT + (pd2 - b[8]);
                         }
 
                         const edx = ex - px, edy = ey - py;
