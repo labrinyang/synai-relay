@@ -243,6 +243,7 @@
             text-align: center;
             z-index: 5;
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             justify-content: center;
             gap: 12px;
@@ -292,6 +293,13 @@
             .code-block { padding: 12px; font-size: 11px; margin-bottom: 16px; -webkit-tap-highlight-color: rgba(0, 255, 65, 0.2); }
             .logo-text { font-size: 26px; }
             .footer { padding: 20px 0; }
+        }
+        @media (max-width: 380px) {
+            .split-card { padding: 18px 16px; }
+            .btn { padding: 11px; font-size: 12px; }
+            .code-block { font-size: 10px; word-break: break-all; }
+            .footer { gap: 6px 12px; font-size: 10px; padding: 16px 12px; }
+            .x-link { font-size: 10px; }
         }
         @media (prefers-reduced-motion: reduce) {
             .split-card { transition: none !important; }
