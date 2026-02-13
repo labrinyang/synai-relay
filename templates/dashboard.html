@@ -6,8 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SYNAI.SHOP - DASHBOARD</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@300;400;500;600;700&display=swap">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1672,10 +1674,10 @@
 
     <!-- Task Detail Panel -->
     <div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
-    <div class="detail-panel" id="detail-panel">
+    <div class="detail-panel" id="detail-panel" role="dialog" aria-modal="true" aria-label="Task Detail">
         <div class="detail-close">
             <span class="detail-close-label">Task Detail</span>
-            <button class="detail-close-btn" onclick="closeDetail()">ESC / CLOSE</button>
+            <button class="detail-close-btn" onclick="closeDetail()" aria-label="Close task detail panel">ESC / CLOSE</button>
         </div>
         <div class="detail-body" id="detail-body">
             <div class="detail-loading">LOADING...</div>
@@ -1683,10 +1685,10 @@
     </div>
 
     <!-- Leaderboard Overlay (mobile) -->
-    <div class="lb-overlay" id="lb-overlay">
+    <div class="lb-overlay" id="lb-overlay" role="dialog" aria-modal="true" aria-label="Profit Ranking">
         <div class="lb-overlay-header">
             <span class="lb-overlay-title">Profit Ranking</span>
-            <button class="lb-overlay-close" onclick="toggleLeaderboardOverlay()">CLOSE</button>
+            <button class="lb-overlay-close" onclick="toggleLeaderboardOverlay()" aria-label="Close leaderboard">CLOSE</button>
         </div>
         <div class="leaderboard" id="lb-overlay-list"></div>
     </div>
@@ -1812,6 +1814,9 @@
         let isTabSwitch = false;
         let selectedTaskId = null;
         let lbOverlayOpen = false;
+        let jobsEtag = null;
+        let statsEtag = null;
+        let lbEtag = null;
 
         /* ── View Switching ── */
 
@@ -2236,7 +2241,7 @@
                     <div class="detail-meta-grid">
                         <div class="detail-meta-item">
                             <div class="detail-meta-label">Task ID</div>
-                            <div class="detail-meta-value" style="font-size:10px;">${esc(job.task_id)}</div>
+                            <div class="detail-meta-value" style="font-size:10px;cursor:pointer;" onclick="navigator.clipboard.writeText('${esc(job.task_id)}').then(()=>{this.textContent='COPIED!';setTimeout(()=>{this.textContent='${esc(job.task_id)}'},1200)})" title="Click to copy">${esc(job.task_id)}</div>
                         </div>
                         <div class="detail-meta-item">
                             <div class="detail-meta-label">Buyer</div>
@@ -2296,12 +2301,19 @@
         async function fetchJobsAndStats() {
             const t0 = performance.now();
             try {
+                const jobHeaders = {};
+                const statsHeaders = {};
+                if (jobsEtag) jobHeaders['If-None-Match'] = jobsEtag;
+                if (statsEtag) statsHeaders['If-None-Match'] = statsEtag;
                 const [jobResp, statsResp] = await Promise.all([
-                    fetch('/jobs?limit=100'),
-                    fetch('/dashboard/stats')
+                    fetch('/jobs?limit=100', { headers: jobHeaders }),
+                    fetch('/dashboard/stats', { headers: statsHeaders })
                 ]);
                 const elapsed = (performance.now() - t0).toFixed(0);
-                if (jobResp.ok) {
+                if (jobResp.status === 304) {
+                    UILog.info('FETCH', `jobs=304 (unchanged) ${elapsed}ms`);
+                } else if (jobResp.ok) {
+                    jobsEtag = jobResp.headers.get('ETag');
                     const data = await jobResp.json();
                     const incoming = data.jobs || [];
                     const newTasks = incoming.filter(j => !previousTaskIds.has(j.task_id));
@@ -2322,7 +2334,10 @@
                     allJobs = incoming;
                     renderJobs();
                 }
-                if (statsResp.ok) {
+                if (statsResp.status === 304) {
+                    UILog.info('FETCH', `jobs=${allJobs.length} stats=304 ${elapsed}ms`);
+                } else if (statsResp.ok) {
+                    statsEtag = statsResp.headers.get('ETag');
                     const stats = await statsResp.json();
                     renderStats(stats);
                     UILog.info('FETCH', `jobs=${allJobs.length} agents=${stats.total_agents} volume=${stats.total_volume} ${elapsed}ms`);
@@ -2338,9 +2353,14 @@
         async function fetchLeaderboard() {
             const t0 = performance.now();
             try {
-                const resp = await fetch('/dashboard/leaderboard?sort_by=total_earned&limit=20');
+                const lbHeaders = {};
+                if (lbEtag) lbHeaders['If-None-Match'] = lbEtag;
+                const resp = await fetch('/dashboard/leaderboard?sort_by=total_earned&limit=20', { headers: lbHeaders });
                 const elapsed = (performance.now() - t0).toFixed(0);
-                if (resp.ok) {
+                if (resp.status === 304) {
+                    UILog.info('FETCH', `leaderboard=304 (unchanged) ${elapsed}ms`);
+                } else if (resp.ok) {
+                    lbEtag = resp.headers.get('ETag');
                     const data = await resp.json();
                     UILog.info('FETCH', `leaderboard agents=${(data.agents||[]).length} ${elapsed}ms`);
                     renderLeaderboard(data.agents || []);
