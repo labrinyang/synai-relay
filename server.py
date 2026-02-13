@@ -677,13 +677,13 @@ def _sanitize_oracle_steps(steps):
     return sanitized
 
 
-def _submission_to_dict(sub: Submission, viewer_id: str = None) -> dict:
+def _submission_to_dict(sub: Submission, viewer_id: str = None, public_content: bool = False) -> dict:
     """Serialize submission. Content is only shown to the submitting worker or the job buyer (G16),
     plus the winning submission is public once the task is resolved."""
     # Determine if viewer is allowed to see content
-    show_content = False
+    show_content = public_content
     job = None
-    if viewer_id:
+    if not show_content and viewer_id:
         if viewer_id == sub.worker_id:
             show_content = True
         else:
@@ -1331,6 +1331,8 @@ def list_submissions(task_id):
     except (ValueError, TypeError):
         offset = 0
 
+    public = request.args.get('public', '').lower() == 'true'
+
     query = Submission.query.filter_by(task_id=task_id).order_by(
         Submission.created_at.asc()
     )
@@ -1338,7 +1340,7 @@ def list_submissions(task_id):
     subs = query.offset(offset).limit(limit).all()
 
     return jsonify({
-        "submissions": [_submission_to_dict(s, viewer_id=viewer_id) for s in subs],
+        "submissions": [_submission_to_dict(s, viewer_id=viewer_id, public_content=public) for s in subs],
         "total": total,
         "limit": limit,
         "offset": offset,
