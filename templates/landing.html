@@ -496,8 +496,8 @@
             if (hoveredCard && frameCount % 10 === 0) {
                 const r = hoveredCard.getBoundingClientRect();
                 activeRect = {
-                    left: r.left - 15, top: r.top - 15,
-                    right: r.right + 15, bottom: r.bottom + 15,
+                    left: r.left - 5, top: r.top - 5,
+                    right: r.right + 5, bottom: r.bottom + 5,
                     cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
                 };
             }
@@ -515,20 +515,20 @@
                     const px = posX[i], py = posY[i];
                     const cr = activeRect;
 
-                    // Phase 1: Burst — repulse from card center (decaying)
+                    // Phase 1: Burst — explosive repulse from card center
                     if (cardBurst > 0.02) {
                         const dx = px - cr.cx, dy = py - cr.cy;
                         const d = Math.sqrt(dx * dx + dy * dy);
-                        if (d > 1 && d < 350) {
-                            const f = 22 * cardBurst / Math.max(d * 0.02, 0.3);
+                        if (d > 1 && d < 400) {
+                            const f = 28 * cardBurst / Math.max(d * 0.015, 0.25);
                             cardAx += (dx / d) * f;
                             cardAy += (dy / d) * f;
                             cardInf = Math.max(cardInf, cardBurst);
                         }
                     }
 
-                    // Phase 2: Gather — attract to card edge (ramping up)
-                    const gatherStr = Math.max(0, cardForce - cardBurst * 0.5);
+                    // Phase 2: Gather — snap to card edge
+                    const gatherStr = Math.max(0, cardForce - cardBurst * 0.6);
                     if (gatherStr > 0.01) {
                         const inside = px > cr.left && px < cr.right && py > cr.top && py < cr.bottom;
 
@@ -551,30 +551,38 @@
                         const ed = Math.sqrt(edx * edx + edy * edy);
 
                         if (inside && ed > 0.5) {
-                            // Inside card → push to nearest edge
+                            // Inside card → hard push to nearest edge
                             cardInf = Math.max(cardInf, gatherStr);
-                            const f = 16 * gatherStr;
+                            const f = 22 * gatherStr;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
-                        } else if (!inside && ed < 250 && ed > 0.5) {
-                            // Outside, within range → attract to edge
-                            // Constant-ish force for slow→fast approach feel
-                            cardInf = Math.max(cardInf, (1 - ed / 250) * gatherStr);
-                            const f = 4.5 * gatherStr;
+                        } else if (!inside && ed < 280 && ed > 0.5) {
+                            // Outside → attract to edge with accelerating force
+                            cardInf = Math.max(cardInf, (1 - ed / 280) * gatherStr);
+                            // Force ramps up as particle approaches (slow→fast feel)
+                            const ramp = 1 + Math.pow(1 - ed / 280, 2) * 3;
+                            const f = 5 * gatherStr * ramp;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
-                            // Soft brake near edge (prevents overshoot)
-                            if (ed < 25) {
-                                const brake = ed / 25;
-                                velX[i] *= 0.92 + 0.08 * brake;
-                                velY[i] *= 0.92 + 0.08 * brake;
+                            // Hard snap zone — particles lock to edge
+                            if (ed < 12) {
+                                // Critically damped: kill velocity, spring to exact edge
+                                velX[i] *= 0.75;
+                                velY[i] *= 0.75;
+                                posX[i] += edx * 0.15; // nudge toward exact edge
+                                posY[i] += edy * 0.15;
+                            } else if (ed < 35) {
+                                // Brake zone — progressive damping
+                                const brake = ed / 35;
+                                velX[i] *= 0.88 + 0.12 * brake;
+                                velY[i] *= 0.88 + 0.12 * brake;
                             }
                         }
                     }
                 }
 
                 // Spring toward ring base (weakened by card influence)
-                const sk = SPRING_K * (1 - cardInf * 0.85);
+                const sk = SPRING_K * (1 - cardInf * 0.92);
                 let ax = (bx - posX[i]) * sk;
                 let ay = (by - posY[i]) * sk;
 
@@ -618,7 +626,7 @@
                 const excitement = Math.min(vMag / 3, 1);
                 const pulse = 1 + Math.sin(time + angles[i] * 3) * 0.12;
 
-                // Card edge glow: particles near hovered card perimeter glow brighter
+                // Card edge glow: tight halo at card perimeter
                 let cardGlow = 0;
                 if (hasCard) {
                     const cr = activeRect;
@@ -628,13 +636,14 @@
                         const clx = Math.max(cr.left, Math.min(cr.right, posX[i]));
                         const cly = Math.max(cr.top, Math.min(cr.bottom, posY[i]));
                         const d = Math.sqrt((clx - posX[i]) ** 2 + (cly - posY[i]) ** 2);
-                        if (d < 60) {
-                            cardGlow = (1 - d / 60) * cardForce * 0.5;
+                        if (d < 30) {
+                            // Sharp falloff for crisp edge line
+                            cardGlow = Math.pow(1 - d / 30, 1.5) * cardForce * 0.6;
                         }
                     }
                 }
 
-                const sizeBoost = 1 + cardGlow * 2.5;
+                const sizeBoost = 1 + cardGlow * 3;
                 const s = sizes[i] * (2.5 + excitement * 2) * pulse * sizeBoost;
                 const alpha = Math.min(baseAlpha[i] + excitement * 0.5 + cardGlow, 1);
                 ctx.globalAlpha = alpha;
@@ -688,8 +697,8 @@
                 cardBurst = 1; // trigger initial explosion
                 const r = card.getBoundingClientRect();
                 activeRect = {
-                    left: r.left - 15, top: r.top - 15,
-                    right: r.right + 15, bottom: r.bottom + 15,
+                    left: r.left - 5, top: r.top - 5,
+                    right: r.right + 5, bottom: r.bottom + 5,
                     cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
                 };
             });
