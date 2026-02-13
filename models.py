@@ -143,6 +143,7 @@ class Submission(db.Model):
     # G09: composite index for retry count queries
     __table_args__ = (
         db.Index('ix_submissions_task_worker', 'task_id', 'worker_id'),
+        db.Index('ix_submissions_task_status', 'task_id', 'status'),
     )
 
 
