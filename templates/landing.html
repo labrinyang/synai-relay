@@ -96,15 +96,18 @@
 
         .split-card {
             flex: 1;
-            background: linear-gradient(165deg, rgba(22, 22, 32, 0.72), rgba(12, 12, 18, 0.58));
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background:
+                linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0%, transparent 50%),
+                linear-gradient(165deg, rgba(20, 20, 35, 0.62), rgba(12, 12, 20, 0.45));
+            border: 1px solid rgba(255, 255, 255, 0.12);
             padding: 40px;
             border-radius: 24px;
-            backdrop-filter: blur(18px) saturate(1.3);
-            -webkit-backdrop-filter: blur(18px) saturate(1.3);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
-                        inset 0 -1px 0 rgba(0, 0, 0, 0.2),
-                        0 8px 32px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(20px) saturate(1.4) brightness(1.05);
+            -webkit-backdrop-filter: blur(20px) saturate(1.4) brightness(1.05);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1),
+                        inset 0 0 30px rgba(255, 255, 255, 0.02),
+                        0 8px 32px rgba(0, 0, 0, 0.5),
+                        0 0 0 0.5px rgba(255, 255, 255, 0.06);
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
                         border-color 0.3s ease,
                         box-shadow 0.35s ease;
@@ -369,7 +372,7 @@
 
         // ── Config ──
         const IS_MOBILE = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-        let N = IS_MOBILE ? 1000 : 3200;
+        let N = IS_MOBILE ? 1500 : 5000;
         const SPRING_K = 0.016;
         const DAMPING = 0.925;
         const REPULSE_STRENGTH = 18;
@@ -390,6 +393,7 @@
         let cardForce = 0;      // smooth 0→1 easing
         let cardBurst = 0;      // initial explosion impulse, decays to 0
         let cardType = null;    // 'human' or 'agent' — persists for release glow
+        let perimData = null;   // precomputed perimeter geometry for uniform edge distribution
 
         // Struct-of-arrays
         let baseX, baseY, posX, posY, velX, velY;
@@ -546,6 +550,11 @@
                     left: r.left, top: r.top, right: r.right, bottom: r.bottom,
                     cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
                 };
+                if (perimData) {
+                    perimData.iL = r.left + CARD_R; perimData.iT = r.top + CARD_R;
+                    perimData.iR = r.right - CARD_R; perimData.iB = r.bottom - CARD_R;
+                    perimData.midY = (perimData.iT + perimData.iB) / 2;
+                }
             }
 
             for (let i = 0; i < N; i++) {
@@ -574,45 +583,69 @@
                         }
                     }
 
-                    // Phase 2: Gather — snap to card edge
+                    // Phase 2: Gather — perimeter-proportional uniform edge distribution
+                    // Maps each particle's ring angle to an arc-length position on the
+                    // card's rounded-rect perimeter. This guarantees uniform coverage:
+                    // no corner clumps, no edge gaps. Counter-rotating bands create
+                    // a flowing effect as particles slowly slide along the card border.
                     const gatherStr = Math.max(0, cardForce - cardBurst * 0.6);
-                    if (gatherStr > 0.01) {
-                        // ── Rounded rect edge via Minkowski sum ──
-                        // Inner rect = card shrunk by border-radius
+                    if (gatherStr > 0.01 && perimData) {
+                        const pd = perimData;
                         const GR = CARD_R + GATHER_PAD;
-                        const iL = cr.left + CARD_R, iT = cr.top + CARD_R;
-                        const iR = cr.right - CARD_R, iB = cr.bottom - CARD_R;
+                        const b = pd.b;
 
-                        // Nearest point on inner rect
-                        const qx = Math.max(iL, Math.min(iR, px));
-                        const qy = Math.max(iT, Math.min(iB, py));
+                        // Map ring angle → perimeter distance (CCW from right-center)
+                        let pa = angles[i] % (Math.PI * 2);
+                        if (pa < 0) pa += Math.PI * 2;
+                        const pd2 = (pa / (Math.PI * 2)) * pd.P;
 
-                        // Vector from inner-nearest to particle
-                        const vx = px - qx, vy = py - qy;
-                        const vd = Math.sqrt(vx * vx + vy * vy);
-
-                        // Gather target = inner point + direction * (R + pad)
+                        // Compute perimeter target point via 9-segment parameterization
+                        // Segments CCW: right↑, TR arc, top←, TL arc, left↓, BL arc, bottom→, BR arc, right↑
                         let ex, ey;
-                        if (vd > 0.001) {
-                            ex = qx + (vx / vd) * GR;
-                            ey = qy + (vy / vd) * GR;
+                        if (pd2 < b[1]) {
+                            // Right edge upper half
+                            ex = cr.right + GATHER_PAD; ey = pd.midY - pd2;
+                        } else if (pd2 < b[2]) {
+                            // TR corner arc
+                            const t = -(pd2 - b[1]) / CARD_R;
+                            ex = pd.iR + GR * Math.cos(t); ey = pd.iT + GR * Math.sin(t);
+                        } else if (pd2 < b[3]) {
+                            // Top edge
+                            ex = pd.iR - (pd2 - b[2]); ey = cr.top - GATHER_PAD;
+                        } else if (pd2 < b[4]) {
+                            // TL corner arc
+                            const t = -Math.PI / 2 - (pd2 - b[3]) / CARD_R;
+                            ex = pd.iL + GR * Math.cos(t); ey = pd.iT + GR * Math.sin(t);
+                        } else if (pd2 < b[5]) {
+                            // Left edge
+                            ex = cr.left - GATHER_PAD; ey = pd.iT + (pd2 - b[4]);
+                        } else if (pd2 < b[6]) {
+                            // BL corner arc
+                            const t = Math.PI - (pd2 - b[5]) / CARD_R;
+                            ex = pd.iL + GR * Math.cos(t); ey = pd.iB + GR * Math.sin(t);
+                        } else if (pd2 < b[7]) {
+                            // Bottom edge
+                            ex = pd.iL + (pd2 - b[6]); ey = cr.bottom + GATHER_PAD;
+                        } else if (pd2 < b[8]) {
+                            // BR corner arc
+                            const t = Math.PI / 2 - (pd2 - b[7]) / CARD_R;
+                            ex = pd.iR + GR * Math.cos(t); ey = pd.iB + GR * Math.sin(t);
                         } else {
-                            // Deep inside inner rect — nearest inner wall
-                            const dL = Math.max(0, px - iL), dR2 = Math.max(0, iR - px);
-                            const dT = Math.max(0, py - iT), dB = Math.max(0, iB - py);
-                            const mn = Math.min(dL || Infinity, dR2 || Infinity, dT || Infinity, dB || Infinity);
-                            if (mn === dL) { ex = cr.left - GATHER_PAD; ey = py; }
-                            else if (mn === dR2) { ex = cr.right + GATHER_PAD; ey = py; }
-                            else if (mn === dT) { ex = px; ey = cr.top - GATHER_PAD; }
-                            else { ex = px; ey = cr.bottom + GATHER_PAD; }
+                            // Right edge lower half
+                            ex = cr.right + GATHER_PAD; ey = pd.iB - (pd2 - b[8]);
                         }
 
                         const edx = ex - px, edy = ey - py;
                         const ed = Math.sqrt(edx * edx + edy * edy);
-                        const insideGather = vd < GR; // inside the gather ring
 
-                        // Settled zone — near gather ring (prevents oscillation)
+                        // Signed distance from card border (negative = inside card)
+                        const sqx = Math.max(pd.iL, Math.min(pd.iR, px));
+                        const sqy = Math.max(pd.iT, Math.min(pd.iB, py));
+                        const svx = px - sqx, svy = py - sqy;
+                        const sdf = Math.sqrt(svx * svx + svy * svy) - CARD_R;
+
                         if (ed < 8) {
+                            // Settled zone — damped micro-spring
                             velX[i] *= 0.72;
                             velY[i] *= 0.72;
                             if (ed > 0.3) {
@@ -620,14 +653,14 @@
                                 cardAy += edy * 0.12;
                             }
                             cardInf = Math.max(cardInf, gatherStr);
-                        } else if (insideGather) {
-                            // Inside gather ring → push outward to edge
+                        } else if (sdf < GATHER_PAD) {
+                            // Inside card or very close — strong push to target
                             cardInf = Math.max(cardInf, gatherStr);
                             const f = 22 * gatherStr;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
                         } else if (ed < 280) {
-                            // Outside gather ring → attract to edge
+                            // Outside — attract to perimeter slot
                             cardInf = Math.max(cardInf, (1 - ed / 280) * gatherStr);
                             const ramp = 1 + Math.pow(1 - ed / 280, 2) * 3;
                             const f = 5 * gatherStr * ramp;
@@ -783,6 +816,17 @@
                 left: r.left, top: r.top, right: r.right, bottom: r.bottom,
                 cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
             };
+            // Precompute perimeter geometry for uniform edge distribution
+            const W = r.right - r.left, H = r.bottom - r.top;
+            const ew = W - 2 * CARD_R, eh = H - 2 * CARD_R;
+            const ca = Math.PI * CARD_R / 2;
+            const P = 2 * ew + 2 * eh + 4 * ca;
+            const iL = r.left + CARD_R, iT = r.top + CARD_R;
+            const iR = r.right - CARD_R, iB = r.bottom - CARD_R;
+            const b1 = eh/2, b2 = b1+ca, b3 = b2+ew, b4 = b3+ca;
+            const b5 = b4+eh, b6 = b5+ca, b7 = b6+ew, b8 = b7+ca;
+            perimData = { P, iL, iT, iR, iB, midY: (iT + iB) / 2,
+                          b: [0, b1, b2, b3, b4, b5, b6, b7, b8, P] };
         }
         function cardLeave() {
             hoveredCard = null;
