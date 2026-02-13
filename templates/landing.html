@@ -661,7 +661,20 @@
                         const svx = px - sqx, svy = py - sqy;
                         const sdf = Math.sqrt(svx * svx + svy * svy) - CARD_R;
 
-                        if (ed < 8) {
+                        // Mouse proximity — push gathered particles apart
+                        const mpdx = px - mouseX, mpdy = py - mouseY;
+                        const mpd = Math.sqrt(mpdx * mpdx + mpdy * mpdy);
+                        const mouseRepel = mpd > 1 && mpd < 70 && sdf < 30;
+
+                        if (mouseRepel) {
+                            // Mouse near edge particle — repel, light damping (no jitter)
+                            cardInf = Math.max(cardInf, gatherStr);
+                            velX[i] *= 0.92;
+                            velY[i] *= 0.92;
+                            const repF = 18 * gatherStr * Math.pow(1 - mpd / 70, 1.5);
+                            cardAx += (mpdx / mpd) * repF;
+                            cardAy += (mpdy / mpd) * repF;
+                        } else if (ed < 8) {
                             // Settled zone — damped micro-spring
                             velX[i] *= 0.72;
                             velY[i] *= 0.72;
