@@ -910,26 +910,7 @@
             if (hoveredCard && !e.target.closest('.split-card')) cardLeave();
         }, { passive: true });
 
-        // ── Input: Gyroscope ──
-        function onGyro(e) {
-            const tx = Math.max(-1, Math.min(1, (e.gamma || 0) / 90));
-            const ty = Math.max(-1, Math.min(1, (e.beta  || 0) / 90));
-            gyroX = gyroX * 0.8 + tx * 0.2; // EMA smooth — eliminates sensor noise jitter
-            gyroY = gyroY * 0.8 + ty * 0.2;
-        }
-        function initGyro() {
-            if (!IS_MOBILE || typeof DeviceOrientationEvent === 'undefined') return;
-            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-                document.addEventListener('click', function h() {
-                    DeviceOrientationEvent.requestPermission()
-                        .then(s => { if (s === 'granted') window.addEventListener('deviceorientation', onGyro); })
-                        .catch(() => {});
-                    document.removeEventListener('click', h);
-                }, { once: true });
-            } else {
-                window.addEventListener('deviceorientation', onGyro);
-            }
-        }
+        // ── Gyroscope disabled — no DeviceOrientation requests ──
 
         // ── Lifecycle ──
         document.addEventListener('visibilitychange', () => {
@@ -953,7 +934,7 @@
         resize();
         buildSprites();
         initParticles();
-        initGyro();
+        // initGyro() — disabled
 
         // Entrance: particles start at center → spring pulls them outward naturally
         for (let i = 0; i < N; i++) {
