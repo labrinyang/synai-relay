@@ -550,32 +550,36 @@
                         const edx = ex - px, edy = ey - py;
                         const ed = Math.sqrt(edx * edx + edy * edy);
 
-                        if (inside && ed > 0.5) {
-                            // Inside card → hard push to nearest edge
+                        // Settled zone — check FIRST to prevent inside/outside oscillation
+                        // Particles within 8px of edge get locked regardless of side
+                        if (ed < 8) {
+                            velX[i] *= 0.65;
+                            velY[i] *= 0.65;
+                            // Micro-spring holds position against residual ring pull
+                            if (ed > 0.3) {
+                                cardAx += edx * 0.12;
+                                cardAy += edy * 0.12;
+                            }
+                            cardInf = Math.max(cardInf, gatherStr);
+                        } else if (inside) {
+                            // Inside card → push to nearest edge
                             cardInf = Math.max(cardInf, gatherStr);
                             const f = 22 * gatherStr;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
-                        } else if (!inside && ed < 280 && ed > 0.5) {
-                            // Outside → attract to edge with accelerating force
+                        } else if (ed < 280) {
+                            // Outside, within range → attract to edge
                             cardInf = Math.max(cardInf, (1 - ed / 280) * gatherStr);
                             // Force ramps up as particle approaches (slow→fast feel)
                             const ramp = 1 + Math.pow(1 - ed / 280, 2) * 3;
                             const f = 5 * gatherStr * ramp;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
-                            // Hard snap zone — particles lock to edge
-                            if (ed < 12) {
-                                // Critically damped: kill velocity, spring to exact edge
-                                velX[i] *= 0.75;
-                                velY[i] *= 0.75;
-                                posX[i] += edx * 0.15; // nudge toward exact edge
-                                posY[i] += edy * 0.15;
-                            } else if (ed < 35) {
-                                // Brake zone — progressive damping
+                            // Brake zone — progressive damping before settled zone
+                            if (ed < 35) {
                                 const brake = ed / 35;
-                                velX[i] *= 0.88 + 0.12 * brake;
-                                velY[i] *= 0.88 + 0.12 * brake;
+                                velX[i] *= 0.86 + 0.14 * brake;
+                                velY[i] *= 0.86 + 0.14 * brake;
                             }
                         }
                     }
