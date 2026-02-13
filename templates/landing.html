@@ -434,13 +434,13 @@
         const ctx = canvas.getContext('2d');
 
         // ── Config ──
-        const IS_MOBILE = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+        const IS_MOBILE = window.matchMedia('(max-width: 768px)').matches;
         let N = IS_MOBILE ? 1500 : 5000;
         const SPRING_K = 0.016;
         const DAMPING = 0.925;
         const REPULSE_STRENGTH = 18;
         const VORTEX_STRENGTH = 0.45;
-        const CARD_R = IS_MOBILE ? 18 : 24; // matches CSS border-radius per breakpoint
+        let CARD_R = IS_MOBILE ? 18 : 24;
         const GATHER_PAD = 5;
 
         // ── State ──
@@ -536,6 +536,7 @@
                 cy = H / 2;
             }
             ringR = Math.min(Math.max(Math.min(W, H) * 0.42, 180), 500);
+            CARD_R = W <= 768 ? 18 : 24;
         }
 
         // ── 5-band particle generation ──
