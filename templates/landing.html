@@ -275,30 +275,43 @@
         }
 
         @media (max-width: 768px) {
+            body {
+                min-height: 100vh;
+                min-height: 100svh;
+                justify-content: flex-start;
+            }
+            .header { flex-shrink: 0; padding-top: 20px; margin-bottom: 12px; }
             .split-container {
+                flex: 1;
                 flex-direction: column;
-                gap: 16px;
+                gap: 12px;
                 width: 94%;
+                min-height: 0;
             }
             .split-card {
-                padding: 22px 24px;
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+                overflow-y: auto;
+                overscroll-behavior: contain;
+                padding: 16px 20px;
                 border-radius: 18px;
             }
-            .icon-box { font-size: 32px; margin-bottom: 14px; }
-            h2 { font-size: 20px; margin-bottom: 10px; }
-            p { font-size: 13px; line-height: 1.5; margin-bottom: 20px; }
-            .header { padding-top: 28px; margin-bottom: 20px; }
-            .btn { padding: 12px; font-size: 13px; }
-            .btn-group { gap: 10px; }
-            .code-block { padding: 12px; font-size: 11px; margin-bottom: 16px; -webkit-tap-highlight-color: rgba(0, 255, 65, 0.2); }
+            .split-card .icon-box { font-size: 28px; margin-bottom: 8px; }
+            .split-card h2 { font-size: 18px; margin-bottom: 6px; }
+            .split-card p { font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+            .btn { padding: 10px; font-size: 13px; }
+            .btn-group { gap: 8px; margin-top: auto; }
+            .code-block { padding: 10px; font-size: 11px; margin-bottom: 10px; -webkit-tap-highlight-color: rgba(0, 255, 65, 0.2); }
             .logo-text { font-size: 26px; }
-            .footer { padding: 20px 0; }
+            .footer { flex-shrink: 0; padding: 14px 0; }
         }
         @media (max-width: 380px) {
-            .split-card { padding: 18px 16px; }
-            .btn { padding: 11px; font-size: 12px; }
+            .split-card { padding: 14px 16px; }
+            .btn { padding: 10px; font-size: 12px; }
             .code-block { font-size: 10px; word-break: break-all; }
-            .footer { gap: 6px 12px; font-size: 10px; padding: 16px 12px; }
+            .footer { gap: 6px 12px; font-size: 10px; padding: 10px 12px; }
             .x-link { font-size: 10px; }
         }
         @media (prefers-reduced-motion: reduce) {
