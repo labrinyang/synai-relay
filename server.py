@@ -112,7 +112,7 @@ with app.app_context():
         stuck = Submission.query.filter_by(status='judging').count()
         if stuck > 0:
             Submission.query.filter_by(status='judging').update(
-                {'status': 'failed', 'oracle_reason': 'Server restarted during evaluation'},
+                {'status': 'failed', 'oracle_score': 0, 'oracle_reason': 'Server restarted during evaluation'},
                 synchronize_session='fetch'
             )
             db.session.commit()
@@ -269,6 +269,7 @@ def _mark_submission_timed_out(submission_id):
             ).with_for_update().first()
             if sub and sub.status == 'judging':
                 sub.status = 'failed'
+                sub.oracle_score = 0
                 sub.oracle_reason = f"Evaluation timed out after {timeout}s"
                 sub.oracle_steps = [{"step": 0, "name": "timeout", "output": {"error": "timeout"}}]
                 db.session.commit()
@@ -436,7 +437,11 @@ def _run_oracle(app, submission_id):
                         Submission.task_id == sub.task_id,
                         Submission.id != sub.id,
                         Submission.status.in_(['pending', 'judging']),
-                    ).update({'status': 'failed'}, synchronize_session='fetch')
+                    ).update({
+                        'status': 'failed',
+                        'oracle_score': 0,
+                        'oracle_reason': 'Another submission was accepted for this task',
+                    }, synchronize_session='fetch')
 
                     # This submission won — attempt payout (G06: track status)
                     # P0-3 fix (C-06): Lock Job row before payout to prevent race with cancel
@@ -447,6 +452,7 @@ def _run_oracle(app, submission_id):
                     if not job_obj or job_obj.status != 'resolved':
                         # State changed concurrently (e.g., cancelled), abort payout
                         sub.status = 'failed'
+                        sub.oracle_score = 0
                         sub.oracle_reason = "Job state changed during payout preparation"
                         db.session.commit()
                         return
@@ -511,6 +517,7 @@ def _run_oracle(app, submission_id):
                 else:
                     # C4: Job was no longer funded (cancelled/expired during evaluation)
                     sub.status = 'failed'
+                    sub.oracle_score = 0
                     sub.oracle_reason = "Job was no longer in funded state"
             else:
                 sub.status = 'failed'
@@ -535,6 +542,7 @@ def _run_oracle(app, submission_id):
             })
         except Exception as e:
             sub.status = 'failed'
+            sub.oracle_score = 0
             # M8: Don't leak internal error details to client
             sub.oracle_reason = "Internal processing error"
             sub.oracle_steps = [{"step": 0, "name": "error", "output": {"error": "internal"}}]
@@ -557,6 +565,7 @@ def _launch_oracle_with_timeout(submission_id):
                 sub = db.session.query(Submission).filter_by(id=submission_id).first()
                 if sub and sub.status == 'judging':
                     sub.status = 'failed'
+                    sub.oracle_score = 0
                     sub.oracle_reason = "Oracle evaluation queue full — please retry later"
                     db.session.commit()
             finally:
