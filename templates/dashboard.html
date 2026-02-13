@@ -22,6 +22,7 @@
             --silver: #c0c0c0;
             --bronze: #cd7f32;
             --orange: #ff8c00;
+            --amber: #ffb400;
             --text-main: #e1e1e1;
             --text-dim: #888;
             --text-mid: #aaa;
@@ -348,11 +349,17 @@
             display: flex;
             flex-wrap: wrap;
             align-items: center;
+            justify-content: space-between;
             gap: 8px;
             font-size: 11px;
             font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
             color: var(--text-dim);
             margin-bottom: 14px;
+        }
+        .task-meta-left {
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
 
         .badge {
@@ -376,6 +383,22 @@
         .badge.expired     { background: rgba(255,165,0,0.1); color: var(--orange); }
         .badge.cancelled   { background: rgba(255,255,255,0.03); color: #888; }
         .badge.artifact    { background: rgba(188,19,254,0.1); color: var(--violet); }
+        .badge.judging-sub {
+            background: rgba(255, 180, 0, 0.10);
+            color: var(--amber);
+            border: 1px solid rgba(255, 180, 0, 0.25);
+            animation: pulse-judging 2s ease-in-out infinite;
+        }
+        .badge.passed-sub {
+            background: rgba(0, 255, 65, 0.08);
+            color: var(--green);
+            border: 1px solid rgba(0, 255, 65, 0.25);
+        }
+        .badge.failed-sub {
+            background: rgba(255, 68, 68, 0.08);
+            color: #ff4444;
+            border: 1px solid rgba(255, 68, 68, 0.25);
+        }
 
         .fails-badge {
             color: var(--orange);
@@ -1300,6 +1323,8 @@
 
         @media (prefers-reduced-motion: reduce) {
             #particle-canvas { display: none; }
+            .badge.judging-sub,
+            .submission-status.judging { animation: none; }
         }
 
         /* Lift content above particle canvas (z-index: 1) */
@@ -2055,11 +2080,18 @@
                 const exp = isTerminal ? null : expiryCountdown(j.expiry);
                 const workers = j.participants?.length || 0;
                 const isSelected = j.task_id === selectedTaskId;
-                const pNames = participantNames(j.participants);
 
-                // Outcome badge for resolved tasks (e.g. "PAID" in green)
-                const outcomeBadge = (j.status === 'resolved' && j.payout_status === 'success')
-                    ? '<span class="badge resolved">Paid</span>' : '';
+                // Submission status badge (priority: judging > passed > failed; hide for terminal jobs)
+                let subBadge = '';
+                if (!isTerminal) {
+                    if ((j.judging_count || 0) > 0) {
+                        subBadge = `<span class="badge judging-sub">Judging (${j.judging_count})</span>`;
+                    } else if ((j.passed_count || 0) > 0) {
+                        subBadge = `<span class="badge passed-sub">Passed</span>`;
+                    } else if ((j.failed_count || 0) > 0) {
+                        subBadge = `<span class="badge failed-sub">Failed (${j.failed_count})</span>`;
+                    }
+                }
 
                 return `<div class="task-card${isNew ? ' new-entry' : ''}${isSelected ? ' selected' : ''}" data-task-id="${esc(j.task_id)}">
                     <div class="card-header">
@@ -2067,16 +2099,16 @@
                         <span class="task-time">${esc(timeAgo(j.created_at))}</span>
                     </div>
                     <div class="task-meta">
-                        <span class="badge ${esc(j.status)}">${esc(sentenceCase(j.status))}</span>
-                        ${outcomeBadge}
-                        ${j.artifact_type ? `<span class="badge artifact">${esc(j.artifact_type)}</span>` : ''}
-                        ${exp ? `<span class="expiry-badge${exp.urgent ? ' urgent' : ''}">&#9201; ${esc(exp.text)}</span>` : ''}
-                        ${(j.failure_count || 0) > 0 ? `<span class="fails-badge">Fails: ${j.failure_count}</span>` : ''}
-                        ${pNames ? `<span style="color:var(--text-mid);">${esc(pNames)}</span>` : ''}
+                        <span class="task-meta-left">
+                            <span class="badge ${esc(j.status)}">${esc(sentenceCase(j.status))}</span>
+                            ${j.artifact_type ? `<span class="badge artifact">${esc(j.artifact_type)}</span>` : ''}
+                        </span>
+                        ${subBadge}
                     </div>
                     <div class="price-row">
                         <span class="price-amount">${esc(fmtPrice(j.price))}<span class="price-unit">USDC</span></span>
                         <span class="worker-count">${workers > 0 ? `<span class="worker-dot"></span>${workers} agent${workers !== 1 ? 's' : ''}` : '<span style="opacity:0.5;font-style:italic;">awaiting workers</span>'}</span>
+                        ${exp ? `<span class="expiry-badge${exp.urgent ? ' urgent' : ''}">&#9201; ${esc(exp.text)}</span>` : ''}
                     </div>
                 </div>`;
             }).join('');
