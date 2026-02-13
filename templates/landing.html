@@ -608,18 +608,14 @@
             const globalCardInf = hasCard ? cardForce * 0.85 : 0;
             const gatherCutoff = Math.max(280, ringR * 1.2);
 
-            // Update card rect periodically (handles CSS hover transform)
+            // Update card rect periodically (handles CSS hover transform & flex resize)
             if (hoveredCard && frameCount % 10 === 0) {
                 const r = hoveredCard.getBoundingClientRect();
                 activeRect = {
                     left: r.left, top: r.top, right: r.right, bottom: r.bottom,
                     cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
                 };
-                if (perimData) {
-                    perimData.iL = r.left + CARD_R; perimData.iT = r.top + CARD_R;
-                    perimData.iR = r.right - CARD_R; perimData.iB = r.bottom - CARD_R;
-                    perimData.midY = (perimData.iT + perimData.iB) / 2;
-                }
+                rebuildPerimData(r);
             }
 
             for (let i = 0; i < N; i++) {
@@ -929,7 +925,13 @@
                 left: r.left, top: r.top, right: r.right, bottom: r.bottom,
                 cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
             };
-            // Precompute perimeter geometry for uniform edge distribution
+            rebuildPerimData(r);
+        }
+        function cardLeave() {
+            hoveredCard = null;
+            cardBurst = 0.35; // small outward pop on release
+        }
+        function rebuildPerimData(r) {
             const cW = r.right - r.left, cH = r.bottom - r.top;
             const ew = cW - 2 * CARD_R, eh = cH - 2 * CARD_R;
             const ca = Math.PI * CARD_R / 2;
@@ -940,10 +942,6 @@
             const b5 = b4+eh, b6 = b5+ca, b7 = b6+ew, b8 = b7+ca;
             perimData = { P, iL, iT, iR, iB, midY: (iT + iB) / 2,
                           b: [0, b1, b2, b3, b4, b5, b6, b7, b8, P] };
-        }
-        function cardLeave() {
-            hoveredCard = null;
-            cardBurst = 0.35; // small outward pop on release
         }
 
         document.querySelectorAll('.split-card').forEach(card => {
@@ -976,6 +974,14 @@
                 const scale = ringR / (oldR || ringR);
                 for (let i = 0; i < N; i++) radii[i] *= scale;
                 rebase();
+                if (hoveredCard) {
+                    const r = hoveredCard.getBoundingClientRect();
+                    activeRect = {
+                        left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+                        cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
+                    };
+                    rebuildPerimData(r);
+                }
             }, 100);
         });
 
