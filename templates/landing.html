@@ -448,6 +448,7 @@
         let mouseX = -9999, mouseY = -9999;
         let prevMX = -9999, prevMY = -9999, mouseVel = 0;
         let gyroX = 0, gyroY = 0;
+        let touchStartX = 0, touchStartY = 0, touchStartCard = null;
         let paused = false;
         let slowFrames = 0;
         let frameCount = 0;
@@ -918,13 +919,26 @@
         window.addEventListener('touchmove', e => {
             const t = e.touches[0];
             if (t) {
-                // EMA smoothing — prevents sub-pixel finger jitter from propagating
                 mouseX = mouseX < -9000 ? t.clientX : mouseX * 0.6 + t.clientX * 0.4;
                 mouseY = mouseY < -9000 ? t.clientY : mouseY * 0.6 + t.clientY * 0.4;
             }
+            if (touchStartCard) touchStartCard = null;
             if (hoveredCard) cardLeave();
         }, { passive: true });
-        window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; mouseVel = 0; });
+        window.addEventListener('touchend', (e) => {
+            if (touchStartCard) {
+                const t = e.changedTouches[0];
+                if (t) {
+                    const dx = t.clientX - touchStartX, dy = t.clientY - touchStartY;
+                    if (dx * dx + dy * dy < 100) {
+                        cardEnter(touchStartCard);
+                        setTimeout(cardLeave, 1200);
+                    }
+                }
+                touchStartCard = null;
+            }
+            mouseX = -9999; mouseY = -9999; mouseVel = 0;
+        });
 
         // ── Input: Card hover (mouse + touch) ──
         function cardEnter(card) {
@@ -958,9 +972,13 @@
         document.querySelectorAll('.split-card').forEach(card => {
             card.addEventListener('mouseenter', () => cardEnter(card));
             card.addEventListener('mouseleave', cardLeave);
-            // Touch: tap triggers burst, tap elsewhere or scroll releases
             card.addEventListener('touchstart', (e) => {
-                if (hoveredCard !== card) cardEnter(card);
+                const t = e.touches[0];
+                if (t) {
+                    touchStartX = t.clientX;
+                    touchStartY = t.clientY;
+                    touchStartCard = card;
+                }
             }, { passive: true });
         });
         // Release card on touch outside cards
