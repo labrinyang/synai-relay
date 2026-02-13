@@ -6,8 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SYNAI.SHOP - AGENT SILICON VALLEY</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700&family=JetBrains+Mono:wght@400;700&display=swap">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
         :root {
             --bg-color: #050505;
@@ -42,7 +44,7 @@
             position: fixed;
             inset: 0;
             background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.015), rgba(0, 0, 255, 0.04));
-            z-index: 10;
+            z-index: 3;
             background-size: 100% 2px, 3px 100%;
             pointer-events: none;
             opacity: 0.4;
@@ -171,7 +173,7 @@
             align-items: center;
             justify-content: center;
             gap: 10px;
-            transition: 0.2s;
+            transition: background 0.2s, border-color 0.2s;
             cursor: pointer;
         }
 
@@ -251,6 +253,7 @@
             .split-container {
                 flex-direction: column;
                 gap: 16px;
+                width: 94%;
             }
             .split-card {
                 padding: 22px 24px;
@@ -265,7 +268,9 @@
             .code-block { padding: 12px; font-size: 11px; margin-bottom: 16px; -webkit-tap-highlight-color: rgba(0, 255, 65, 0.2); }
             .logo-text { font-size: 26px; }
             .footer { padding: 20px 0; }
-            .split-container { width: 94%; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .split-card { transition: none !important; }
         }
         #ion-ring { opacity: 0; transition: opacity 0.8s ease-out; }
 
@@ -345,11 +350,20 @@
         window.copyToClipboard = function (el) {
             UILog.info('UI', 'copy shell command');
             const text = el.innerText.trim();
-            navigator.clipboard.writeText(text).then(() => {
+            const showToast = () => {
                 const toast = document.getElementById('copy-toast');
                 toast.classList.add('show');
                 setTimeout(() => toast.classList.remove('show'), 1500);
-            });
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(showToast).catch(showToast);
+            } else {
+                const ta = Object.assign(document.createElement('textarea'), { value: text });
+                ta.style.cssText = 'position:fixed;opacity:0';
+                document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+                document.body.removeChild(ta);
+                showToast();
+            }
         }
 
         document.addEventListener('click', (e) => {
@@ -542,6 +556,8 @@
             cardForce += (cardTarget - cardForce) * (cardTarget > cardForce ? 0.09 : 0.14);
             cardBurst *= 0.94; // decay burst over ~40 frames
             const hasCard = (cardForce > 0.01 || cardBurst > 0.02) && activeRect;
+            const globalCardInf = hasCard ? cardForce * 0.85 : 0;
+            const gatherCutoff = Math.max(280, ringR * 1.2);
 
             // Update card rect periodically (handles CSS hover transform)
             if (hoveredCard && frameCount % 10 === 0) {
@@ -660,10 +676,10 @@
                             const f = 22 * gatherStr;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
-                        } else if (ed < 280) {
+                        } else if (ed < gatherCutoff) {
                             // Outside — attract to perimeter slot
-                            cardInf = Math.max(cardInf, (1 - ed / 280) * gatherStr);
-                            const ramp = 1 + Math.pow(1 - ed / 280, 2) * 3;
+                            cardInf = Math.max(cardInf, (1 - ed / gatherCutoff) * gatherStr);
+                            const ramp = 1 + Math.pow(1 - ed / gatherCutoff, 2) * 3;
                             const f = 5 * gatherStr * ramp;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
@@ -677,7 +693,7 @@
                 }
 
                 // Spring toward ring base (weakened by card influence)
-                const sk = SPRING_K * (1 - cardInf * 0.92);
+                const sk = SPRING_K * (1 - Math.max(globalCardInf, cardInf) * 0.92);
                 let ax = (bx - posX[i]) * sk;
                 let ay = (by - posY[i]) * sk;
 
@@ -765,7 +781,17 @@
                 ctx.strokeStyle = `rgba(${gc},${(0.12 * cardForce).toFixed(3)})`;
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
-                ctx.roundRect(cr.left, cr.top, cr.right - cr.left, cr.bottom - cr.top, CARD_R);
+                if (ctx.roundRect) {
+                    ctx.roundRect(cr.left, cr.top, cr.right - cr.left, cr.bottom - cr.top, CARD_R);
+                } else {
+                    const rx = cr.left, ry = cr.top, rw = cr.right - cr.left, rh = cr.bottom - cr.top, rr = CARD_R;
+                    ctx.moveTo(rx + rr, ry);
+                    ctx.arcTo(rx + rw, ry, rx + rw, ry + rh, rr);
+                    ctx.arcTo(rx + rw, ry + rh, rx, ry + rh, rr);
+                    ctx.arcTo(rx, ry + rh, rx, ry, rr);
+                    ctx.arcTo(rx, ry, rx + rw, ry, rr);
+                    ctx.closePath();
+                }
                 ctx.stroke();
                 ctx.shadowBlur = 0;
                 ctx.shadowColor = 'transparent';
@@ -778,7 +804,7 @@
         // ── Animation loop ──
         let lastT = 0;
         function tick(t) {
-            if (paused) { lastT = t; requestAnimationFrame(tick); return; }
+            if (paused) { lastT = t; return; }
             const dt = t - lastT;
             lastT = t;
 
@@ -804,6 +830,7 @@
         window.addEventListener('touchmove', e => {
             const t = e.touches[0];
             if (t) { mouseX = t.clientX; mouseY = t.clientY; }
+            if (hoveredCard) cardLeave();
         }, { passive: true });
         window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; mouseVel = 0; });
 
@@ -818,8 +845,8 @@
                 cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
             };
             // Precompute perimeter geometry for uniform edge distribution
-            const W = r.right - r.left, H = r.bottom - r.top;
-            const ew = W - 2 * CARD_R, eh = H - 2 * CARD_R;
+            const cW = r.right - r.left, cH = r.bottom - r.top;
+            const ew = cW - 2 * CARD_R, eh = cH - 2 * CARD_R;
             const ca = Math.PI * CARD_R / 2;
             const P = 2 * ew + 2 * eh + 4 * ca;
             const iL = r.left + CARD_R, iT = r.top + CARD_R;
@@ -853,7 +880,7 @@
             gyroY = Math.max(-1, Math.min(1, (e.beta  || 0) / 90));
         }
         function initGyro() {
-            if (typeof DeviceOrientationEvent === 'undefined') return;
+            if (!IS_MOBILE || typeof DeviceOrientationEvent === 'undefined') return;
             if (typeof DeviceOrientationEvent.requestPermission === 'function') {
                 document.addEventListener('click', function h() {
                     DeviceOrientationEvent.requestPermission()
@@ -867,7 +894,10 @@
         }
 
         // ── Lifecycle ──
-        document.addEventListener('visibilitychange', () => { paused = document.hidden; });
+        document.addEventListener('visibilitychange', () => {
+            paused = document.hidden;
+            if (!paused) { lastT = performance.now(); requestAnimationFrame(tick); }
+        });
 
         let resizeTimer;
         window.addEventListener('resize', () => {
