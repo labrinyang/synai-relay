@@ -522,7 +522,18 @@
             canvas.height = H * dpr;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             cx = W / 2;
-            cy = IS_MOBILE ? H * 0.22 : H / 2;
+            if (IS_MOBILE) {
+                const cards = document.querySelectorAll('.split-card');
+                if (cards.length >= 2) {
+                    const r0 = cards[0].getBoundingClientRect();
+                    const r1 = cards[1].getBoundingClientRect();
+                    cy = (r0.top + r1.bottom) / 2;
+                } else {
+                    cy = H * 0.22;
+                }
+            } else {
+                cy = H / 2;
+            }
             ringR = Math.min(Math.max(Math.min(W, H) * 0.42, 180), 500);
         }
 
