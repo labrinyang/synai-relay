@@ -452,6 +452,16 @@
             vertical-align: middle;
         }
 
+        .participant-names {
+            font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+            font-size: 10px;
+            color: var(--text-mid);
+            margin-top: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         /* ── Empty State ── */
         .empty-state {
             display: flex;
@@ -2007,6 +2017,13 @@
         }
 
         /* ── Rendering ── */
+
+        function participantNames(participants) {
+            if (!participants || participants.length === 0) return '';
+            const names = participants.map(p => typeof p === 'string' ? p : (p.name || p.agent_id));
+            if (names.length <= 3) return names.join(', ');
+            return names.slice(0, 3).join(', ') + ' +' + (names.length - 3) + ' more';
+        }
 
         function getFilteredJobs() {
             if (currentView === 'hot') {
