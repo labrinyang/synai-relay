@@ -96,11 +96,15 @@
 
         .split-card {
             flex: 1;
-            background: var(--card-bg);
-            border: 1px solid var(--border);
+            background: linear-gradient(165deg, rgba(22, 22, 32, 0.72), rgba(12, 12, 18, 0.58));
+            border: 1px solid rgba(255, 255, 255, 0.1);
             padding: 40px;
             border-radius: 24px;
-            backdrop-filter: blur(12px);
+            backdrop-filter: blur(18px) saturate(1.3);
+            -webkit-backdrop-filter: blur(18px) saturate(1.3);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
+                        inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+                        0 8px 32px rgba(0, 0, 0, 0.4);
             transition: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
             overflow: hidden;
@@ -112,13 +116,17 @@
         }
 
         .split-card.human:hover {
-            box-shadow: 0 20px 50px rgba(188, 19, 254, 0.15);
-            border-color: var(--violet);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
+                        0 20px 50px rgba(188, 19, 254, 0.2),
+                        0 0 1px rgba(188, 19, 254, 0.4);
+            border-color: rgba(188, 19, 254, 0.5);
         }
 
         .split-card.agent:hover {
-            box-shadow: 0 20px 50px rgba(0, 243, 255, 0.15);
-            border-color: var(--cyan);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
+                        0 20px 50px rgba(0, 243, 255, 0.2),
+                        0 0 1px rgba(0, 243, 255, 0.4);
+            border-color: rgba(0, 243, 255, 0.5);
         }
 
         .icon-box {
@@ -219,9 +227,19 @@
         @media (max-width: 768px) {
             .split-container {
                 flex-direction: column;
-                gap: 20px;
+                gap: 16px;
             }
-            .split-card { padding: 28px; }
+            .split-card {
+                padding: 22px 24px;
+                border-radius: 18px;
+            }
+            .icon-box { font-size: 32px; margin-bottom: 14px; }
+            h2 { font-size: 20px; margin-bottom: 10px; }
+            p { font-size: 13px; line-height: 1.5; margin-bottom: 20px; }
+            .header { padding-top: 28px; margin-bottom: 20px; }
+            .btn { padding: 12px; font-size: 13px; }
+            .btn-group { gap: 10px; }
+            .code-block { padding: 12px; font-size: 11px; margin-bottom: 16px; }
         }
         .copy-toast {
             position: fixed;
@@ -331,6 +349,8 @@
         const DAMPING = 0.925;
         const REPULSE_STRENGTH = 18;
         const VORTEX_STRENGTH = 0.45;
+        const CARD_R = 24;       // matches CSS border-radius
+        const GATHER_PAD = 5;    // particles settle 5px outside visible border
 
         // ── State ──
         let W, H, cx, cy, ringR, dpr;
@@ -496,8 +516,7 @@
             if (hoveredCard && frameCount % 10 === 0) {
                 const r = hoveredCard.getBoundingClientRect();
                 activeRect = {
-                    left: r.left - 5, top: r.top - 5,
-                    right: r.right + 5, bottom: r.bottom + 5,
+                    left: r.left, top: r.top, right: r.right, bottom: r.bottom,
                     cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
                 };
             }
@@ -530,52 +549,61 @@
                     // Phase 2: Gather — snap to card edge
                     const gatherStr = Math.max(0, cardForce - cardBurst * 0.6);
                     if (gatherStr > 0.01) {
-                        const inside = px > cr.left && px < cr.right && py > cr.top && py < cr.bottom;
+                        // ── Rounded rect edge via Minkowski sum ──
+                        // Inner rect = card shrunk by border-radius
+                        const GR = CARD_R + GATHER_PAD;
+                        const iL = cr.left + CARD_R, iT = cr.top + CARD_R;
+                        const iR = cr.right - CARD_R, iB = cr.bottom - CARD_R;
 
-                        // Nearest point on card perimeter
+                        // Nearest point on inner rect
+                        const qx = Math.max(iL, Math.min(iR, px));
+                        const qy = Math.max(iT, Math.min(iB, py));
+
+                        // Vector from inner-nearest to particle
+                        const vx = px - qx, vy = py - qy;
+                        const vd = Math.sqrt(vx * vx + vy * vy);
+
+                        // Gather target = inner point + direction * (R + pad)
                         let ex, ey;
-                        if (inside) {
-                            const dL = px - cr.left, dR = cr.right - px;
-                            const dT = py - cr.top, dB = cr.bottom - py;
-                            const mn = Math.min(dL, dR, dT, dB);
-                            if (mn === dL) { ex = cr.left; ey = py; }
-                            else if (mn === dR) { ex = cr.right; ey = py; }
-                            else if (mn === dT) { ex = px; ey = cr.top; }
-                            else { ex = px; ey = cr.bottom; }
+                        if (vd > 0.001) {
+                            ex = qx + (vx / vd) * GR;
+                            ey = qy + (vy / vd) * GR;
                         } else {
-                            ex = Math.max(cr.left, Math.min(cr.right, px));
-                            ey = Math.max(cr.top, Math.min(cr.bottom, py));
+                            // Deep inside inner rect — nearest inner wall
+                            const dL = px - iL, dR2 = iR - px, dT = py - iT, dB = iB - py;
+                            const mn = Math.min(dL, dR2, dT, dB);
+                            if (mn === dL) { ex = cr.left - GATHER_PAD; ey = py; }
+                            else if (mn === dR2) { ex = cr.right + GATHER_PAD; ey = py; }
+                            else if (mn === dT) { ex = px; ey = cr.top - GATHER_PAD; }
+                            else { ex = px; ey = cr.bottom + GATHER_PAD; }
                         }
 
                         const edx = ex - px, edy = ey - py;
                         const ed = Math.sqrt(edx * edx + edy * edy);
+                        const insideGather = vd < GR; // inside the gather ring
 
-                        // Settled zone — check FIRST to prevent inside/outside oscillation
-                        // Particles within 8px of edge get locked regardless of side
+                        // Settled zone — near gather ring (prevents oscillation)
                         if (ed < 8) {
                             velX[i] *= 0.65;
                             velY[i] *= 0.65;
-                            // Micro-spring holds position against residual ring pull
                             if (ed > 0.3) {
                                 cardAx += edx * 0.12;
                                 cardAy += edy * 0.12;
                             }
                             cardInf = Math.max(cardInf, gatherStr);
-                        } else if (inside) {
-                            // Inside card → push to nearest edge
+                        } else if (insideGather) {
+                            // Inside gather ring → push outward to edge
                             cardInf = Math.max(cardInf, gatherStr);
                             const f = 22 * gatherStr;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
                         } else if (ed < 280) {
-                            // Outside, within range → attract to edge
+                            // Outside gather ring → attract to edge
                             cardInf = Math.max(cardInf, (1 - ed / 280) * gatherStr);
-                            // Force ramps up as particle approaches (slow→fast feel)
                             const ramp = 1 + Math.pow(1 - ed / 280, 2) * 3;
                             const f = 5 * gatherStr * ramp;
                             cardAx += (edx / ed) * f;
                             cardAy += (edy / ed) * f;
-                            // Brake zone — progressive damping before settled zone
                             if (ed < 35) {
                                 const brake = ed / 35;
                                 velX[i] *= 0.86 + 0.14 * brake;
@@ -630,20 +658,20 @@
                 const excitement = Math.min(vMag / 3, 1);
                 const pulse = 1 + Math.sin(time + angles[i] * 3) * 0.12;
 
-                // Card edge glow: tight halo at card perimeter
+                // Card edge glow via rounded rect SDF
                 let cardGlow = 0;
                 if (hasCard) {
                     const cr = activeRect;
-                    const inside = posX[i] > cr.left && posX[i] < cr.right
-                                && posY[i] > cr.top && posY[i] < cr.bottom;
-                    if (!inside) {
-                        const clx = Math.max(cr.left, Math.min(cr.right, posX[i]));
-                        const cly = Math.max(cr.top, Math.min(cr.bottom, posY[i]));
-                        const d = Math.sqrt((clx - posX[i]) ** 2 + (cly - posY[i]) ** 2);
-                        if (d < 30) {
-                            // Sharp falloff for crisp edge line
-                            cardGlow = Math.pow(1 - d / 30, 1.5) * cardForce * 0.6;
-                        }
+                    // Rounded rect SDF: distance to card border (positive = outside)
+                    const iL = cr.left + CARD_R, iT = cr.top + CARD_R;
+                    const iR = cr.right - CARD_R, iB = cr.bottom - CARD_R;
+                    const qx = Math.max(iL, Math.min(iR, posX[i]));
+                    const qy = Math.max(iT, Math.min(iB, posY[i]));
+                    const vx = posX[i] - qx, vy = posY[i] - qy;
+                    const signedDist = Math.sqrt(vx * vx + vy * vy) - CARD_R;
+                    // Glow for particles just outside the visible card border
+                    if (signedDist > 0 && signedDist < 30) {
+                        cardGlow = Math.pow(1 - signedDist / 30, 1.5) * cardForce * 0.6;
                     }
                 }
 
@@ -701,8 +729,7 @@
                 cardBurst = 1; // trigger initial explosion
                 const r = card.getBoundingClientRect();
                 activeRect = {
-                    left: r.left - 5, top: r.top - 5,
-                    right: r.right + 5, bottom: r.bottom + 5,
+                    left: r.left, top: r.top, right: r.right, bottom: r.bottom,
                     cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
                 };
             });
