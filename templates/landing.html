@@ -242,11 +242,35 @@
             color: var(--text-dim);
             text-align: center;
             z-index: 5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
         }
 
         .footer a {
             color: var(--cyan);
             text-decoration: none;
+        }
+
+        .x-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            color: var(--text-dim);
+            text-decoration: none;
+            padding: 4px 10px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px;
+            transition: all 0.25s ease;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .x-link svg { width: 13px; height: 13px; fill: currentColor; }
+        .x-link:hover {
+            color: #fff;
+            border-color: rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.05);
         }
 
         @media (max-width: 768px) {
@@ -334,7 +358,11 @@
     </div>
 
     <div class="footer">
-        PROCESSED BY SYNAI CORE v1.0.4 | <a href="/dashboard">SYSTEM STATS</a>
+        <span>PROCESSED BY SYNAI CORE v1.0.4 | <a href="/dashboard">SYSTEM STATS</a></span>
+        <a href="https://x.com/synaishop" target="_blank" rel="noopener" class="x-link">
+            <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            @synaishop
+        </a>
     </div>
 
     <div class="copy-toast" id="copy-toast">COPIED!</div>
