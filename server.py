@@ -1003,7 +1003,7 @@ def _list_jobs():
     )
 
     return jsonify({
-        "jobs": [JobService.to_dict(j) for j in jobs],
+        "jobs": JobService.to_dict_batch(jobs),
         "total": total,
         "limit": limit,
         "offset": offset,

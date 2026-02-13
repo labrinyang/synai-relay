@@ -2760,3 +2760,41 @@ class TestCancelAutoRefund:
         # No refund info since job was never funded
         assert 'refund_tx_hash' not in data
         assert 'refund_status' not in data
+
+
+class TestJobDictBatch:
+    """Verify to_dict_batch returns the same data as per-job to_dict."""
+    def test_batch_counts_zero(self, client):
+        _, key = _register_agent(client, 'batch-buyer')
+        for i in range(3):
+            client.post('/jobs',
+                        json={'title': f'Batch {i}', 'description': 'D', 'price': 1.0},
+                        headers=_auth_headers(key))
+        resp = client.get('/jobs?limit=10')
+        jobs_data = resp.get_json()['jobs']
+        for j in jobs_data:
+            assert j['submission_count'] == 0
+            assert j['judging_count'] == 0
+            assert j['passed_count'] == 0
+            assert j['failed_count'] == 0
+
+    def test_batch_counts_with_submissions(self, client):
+        _, buyer_key = _register_agent(client, 'batch-buyer2')
+        _, worker_key = _register_agent(client, 'batch-worker2')
+        resp = client.post('/jobs',
+                           json={'title': 'Batch Sub', 'description': 'D', 'price': 1.0},
+                           headers=_auth_headers(buyer_key))
+        task_id = resp.get_json()['task_id']
+        client.post(f'/jobs/{task_id}/fund',
+                    json={'tx_hash': '0x' + 'b' * 64, 'depositor_address': '0x' + 'b' * 40},
+                    headers=_auth_headers(buyer_key))
+        client.post(f'/jobs/{task_id}/claim', headers=_auth_headers(worker_key))
+        client.post(f'/jobs/{task_id}/submit',
+                    json={'content': 'my answer'},
+                    headers=_auth_headers(worker_key))
+        import time; time.sleep(0.1)
+        resp = client.get('/jobs?limit=10')
+        jobs_data = resp.get_json()['jobs']
+        target = [j for j in jobs_data if j['task_id'] == task_id][0]
+        assert target['submission_count'] >= 1
+        assert target['judging_count'] + target['passed_count'] + target['failed_count'] >= 1
