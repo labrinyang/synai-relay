@@ -143,7 +143,7 @@
         }
 
         p {
-            color: var(--text-dim);
+            color: #999;
             font-size: 14px;
             line-height: 1.6;
             margin-bottom: 30px;
@@ -173,8 +173,8 @@
         }
 
         .btn:hover {
-            background: white;
-            color: black;
+            background: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255, 255, 255, 0.25);
         }
 
         .btn.primary {
@@ -183,8 +183,8 @@
         }
 
         .btn.primary:hover {
-            background: white;
-            color: black;
+            background: #d040ff;
+            box-shadow: 0 0 20px rgba(188, 19, 254, 0.3);
         }
 
         .code-block {
@@ -209,6 +209,24 @@
             padding: 0 5px;
             font-size: 9px;
             color: var(--text-dim);
+        }
+
+        .code-block::after {
+            content: "COPY";
+            position: absolute;
+            right: 12px;
+            bottom: 10px;
+            font-size: 9px;
+            color: var(--green);
+            opacity: 0;
+            transition: opacity 0.2s;
+            letter-spacing: 1px;
+        }
+        .code-block:active::after { opacity: 0.8; }
+
+        @media (hover: hover) {
+            .code-block:hover { border-color: rgba(0, 255, 65, 0.45); }
+            .code-block:hover::after { opacity: 0.5; }
         }
 
         .footer {
@@ -246,6 +264,8 @@
             .footer { padding: 20px 0; }
             .split-container { width: 94%; }
         }
+        #ion-ring { opacity: 0; transition: opacity 0.8s ease-out; }
+
         .copy-toast {
             position: fixed;
             bottom: 80px;
@@ -369,6 +389,7 @@
         let activeRect = null;  // padded bounding rect of hovered card
         let cardForce = 0;      // smooth 0→1 easing
         let cardBurst = 0;      // initial explosion impulse, decays to 0
+        let cardType = null;    // 'human' or 'agent' — persists for release glow
 
         // Struct-of-arrays
         let baseX, baseY, posX, posY, velX, velY;
@@ -670,16 +691,14 @@
                 let cardGlow = 0;
                 if (hasCard) {
                     const cr = activeRect;
-                    // Rounded rect SDF: distance to card border (positive = outside)
                     const iL = cr.left + CARD_R, iT = cr.top + CARD_R;
                     const iR = cr.right - CARD_R, iB = cr.bottom - CARD_R;
                     const qx = Math.max(iL, Math.min(iR, posX[i]));
                     const qy = Math.max(iT, Math.min(iB, posY[i]));
                     const vx = posX[i] - qx, vy = posY[i] - qy;
                     const signedDist = Math.sqrt(vx * vx + vy * vy) - CARD_R;
-                    // Glow for particles just outside the visible card border
-                    if (signedDist > 0 && signedDist < 30) {
-                        cardGlow = Math.pow(1 - signedDist / 30, 1.5) * cardForce * 0.6;
+                    if (signedDist > 0 && signedDist < 50) {
+                        cardGlow = Math.pow(1 - signedDist / 50, 1.2) * cardForce * 0.6;
                     }
                 }
 
@@ -688,10 +707,34 @@
                 const alpha = Math.min(baseAlpha[i] + excitement * 0.5 + cardGlow, 1);
                 ctx.globalAlpha = alpha;
 
+                // Shift sprite hue toward card theme color
+                let si = spriteIdx[i];
+                if (cardGlow > 0.08 && cardType) {
+                    const shift = Math.floor(cardGlow * 12);
+                    si = cardType === 'human'
+                        ? Math.min(si + shift, NUM_SPRITES - 1)   // → violet
+                        : Math.max(si - shift, 0);                // → cyan
+                }
+
                 const sprite = excitement > 0.3 || cardGlow > 0.12
-                    ? spritesBright[spriteIdx[i]]
-                    : sprites[spriteIdx[i]];
+                    ? spritesBright[si]
+                    : sprites[si];
                 ctx.drawImage(sprite, posX[i] - s * 0.5, posY[i] - s * 0.5, s, s);
+            }
+
+            // Ambient card glow halo — colored rounded rect behind the card
+            if (hasCard && cardForce > 0.08 && cardType) {
+                const cr = activeRect;
+                const gc = cardType === 'human' ? '188,19,254' : '0,243,255';
+                ctx.shadowColor = `rgba(${gc},0.5)`;
+                ctx.shadowBlur = 35 * cardForce;
+                ctx.strokeStyle = `rgba(${gc},${(0.12 * cardForce).toFixed(3)})`;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.roundRect(cr.left, cr.top, cr.right - cr.left, cr.bottom - cr.top, CARD_R);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+                ctx.shadowColor = 'transparent';
             }
 
             ctx.globalCompositeOperation = 'source-over';
@@ -733,6 +776,7 @@
         // ── Input: Card hover (mouse + touch) ──
         function cardEnter(card) {
             hoveredCard = card;
+            cardType = card.classList.contains('human') ? 'human' : 'agent';
             cardBurst = 1;
             const r = card.getBoundingClientRect();
             activeRect = {
@@ -740,7 +784,10 @@
                 cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2
             };
         }
-        function cardLeave() { hoveredCard = null; }
+        function cardLeave() {
+            hoveredCard = null;
+            cardBurst = 0.35; // small outward pop on release
+        }
 
         document.querySelectorAll('.split-card').forEach(card => {
             card.addEventListener('mouseenter', () => cardEnter(card));
@@ -800,6 +847,9 @@
             posX[i] = cx + (Math.random() - 0.5) * 4;
             posY[i] = cy + (Math.random() - 0.5) * 4;
         }
+
+        // Fade in canvas after particles start expanding from center
+        requestAnimationFrame(() => { canvas.style.opacity = '1'; });
 
         requestAnimationFrame(tick);
         UILog.info('PARTICLES', `ion ring v2: ${N} particles, 5 bands, ring=${Math.round(ringR)}px`);
