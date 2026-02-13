@@ -326,27 +326,30 @@
 
         // ── Config ──
         const IS_MOBILE = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-        let N = IS_MOBILE ? 1000 : 2500;
-        const SPRING_K = 0.018;
-        const DAMPING = 0.93;
-        const REPULSE_STRENGTH = 10;
-        const ROTATION_SPEED = 0.00012;
+        let N = IS_MOBILE ? 1400 : 3200;
+        const SPRING_K = 0.016;
+        const DAMPING = 0.925;
+        const REPULSE_STRENGTH = 18;
+        const VORTEX_STRENGTH = 0.45;
 
         // ── State ──
         let W, H, cx, cy, ringR, dpr;
         let mouseX = -9999, mouseY = -9999;
+        let prevMX = -9999, prevMY = -9999, mouseVel = 0;
         let gyroX = 0, gyroY = 0;
         let paused = false;
         let slowFrames = 0;
+        let frameCount = 0;
 
-        // Struct-of-arrays for performance
+        // Struct-of-arrays
         let baseX, baseY, posX, posY, velX, velY;
-        let sizes, alphas, spriteIdx, angles, radii;
+        let sizes, baseAlpha, spriteIdx, angles, radii, rotSpeed;
 
-        // Sprite cache
+        // Sprite cache — normal + bright variants
         const NUM_SPRITES = 32;
-        const SPRITE_SZ = 16;
-        const sprites = [];
+        const SPRITE_SZ = 20;
+        const sprites = [];       // normal glow
+        const spritesBright = []; // excited/bright variant
 
         // ── Gaussian random (Box-Muller) ──
         function gaussRand() {
@@ -356,27 +359,44 @@
             return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
         }
 
-        // ── Build sprite cache (32 hue-variant glowing dots) ──
+        // ── Build sprite cache ──
         function buildSprites() {
             sprites.length = 0;
+            spritesBright.length = 0;
             for (let s = 0; s < NUM_SPRITES; s++) {
-                const hue = 180 + (s / NUM_SPRITES) * 140; // 180 (cyan) → 320 (pink)
-                const c = document.createElement('canvas');
-                c.width = SPRITE_SZ; c.height = SPRITE_SZ;
-                const g = c.getContext('2d');
+                const hue = 180 + (s / NUM_SPRITES) * 140;
+
+                // Normal sprite
+                const c1 = document.createElement('canvas');
+                c1.width = SPRITE_SZ; c1.height = SPRITE_SZ;
+                const g1 = c1.getContext('2d');
                 const r = SPRITE_SZ / 2;
-                const grad = g.createRadialGradient(r, r, 0, r, r, r);
-                grad.addColorStop(0, `hsla(${hue}, 92%, 68%, 1)`);
-                grad.addColorStop(0.25, `hsla(${hue}, 90%, 62%, 0.7)`);
-                grad.addColorStop(0.6, `hsla(${hue}, 88%, 55%, 0.2)`);
-                grad.addColorStop(1, `hsla(${hue}, 85%, 50%, 0)`);
-                g.fillStyle = grad;
-                g.fillRect(0, 0, SPRITE_SZ, SPRITE_SZ);
-                sprites.push(c);
+                const grad1 = g1.createRadialGradient(r, r, 0, r, r, r);
+                grad1.addColorStop(0, `hsla(${hue}, 92%, 68%, 1)`);
+                grad1.addColorStop(0.2, `hsla(${hue}, 90%, 62%, 0.75)`);
+                grad1.addColorStop(0.5, `hsla(${hue}, 88%, 55%, 0.25)`);
+                grad1.addColorStop(1, `hsla(${hue}, 85%, 50%, 0)`);
+                g1.fillStyle = grad1;
+                g1.fillRect(0, 0, SPRITE_SZ, SPRITE_SZ);
+                sprites.push(c1);
+
+                // Bright/excited sprite — hotter core, wider glow
+                const c2 = document.createElement('canvas');
+                c2.width = SPRITE_SZ; c2.height = SPRITE_SZ;
+                const g2 = c2.getContext('2d');
+                const grad2 = g2.createRadialGradient(r, r, 0, r, r, r);
+                grad2.addColorStop(0, `hsla(${hue}, 100%, 85%, 1)`);
+                grad2.addColorStop(0.15, `hsla(${hue}, 95%, 75%, 0.9)`);
+                grad2.addColorStop(0.4, `hsla(${hue}, 92%, 65%, 0.4)`);
+                grad2.addColorStop(0.7, `hsla(${hue}, 88%, 55%, 0.1)`);
+                grad2.addColorStop(1, `hsla(${hue}, 85%, 50%, 0)`);
+                g2.fillStyle = grad2;
+                g2.fillRect(0, 0, SPRITE_SZ, SPRITE_SZ);
+                spritesBright.push(c2);
             }
         }
 
-        // ── Resize canvas + recalculate ring ──
+        // ── Resize ──
         function resize() {
             dpr = window.devicePixelRatio || 1;
             W = window.innerWidth;
@@ -389,66 +409,56 @@
             ringR = Math.min(Math.max(Math.min(W, H) * 0.42, 180), 500);
         }
 
-        // ── Generate particles on the ring ──
+        // ── 5-band particle generation ──
         function initParticles() {
-            baseX = new Float32Array(N);
-            baseY = new Float32Array(N);
-            posX  = new Float32Array(N);
-            posY  = new Float32Array(N);
-            velX  = new Float32Array(N);
-            velY  = new Float32Array(N);
-            sizes   = new Float32Array(N);
-            alphas  = new Float32Array(N);
+            baseX     = new Float32Array(N);
+            baseY     = new Float32Array(N);
+            posX      = new Float32Array(N);
+            posY      = new Float32Array(N);
+            velX      = new Float32Array(N);
+            velY      = new Float32Array(N);
+            sizes     = new Float32Array(N);
+            baseAlpha = new Float32Array(N);
             spriteIdx = new Uint8Array(N);
-            angles  = new Float32Array(N);
-            radii   = new Float32Array(N);
+            angles    = new Float32Array(N);
+            radii     = new Float32Array(N);
+            rotSpeed  = new Float32Array(N);
 
-            const coreW  = ringR * 0.03;
-            const midW   = ringR * 0.09;
-            const outerW = ringR * 0.28;
+            // 5 density bands: inner glow → core → mid → outer → ambient dust
+            const bands = [
+                { end: 0.08, spread: ringR * 0.015, rOff: -ringR * 0.06, aMin: 0.6, aMax: 0.95, sMin: 0.5, sMax: 1.0, rot: 0.00025 },  // inner glow
+                { end: 0.50, spread: ringR * 0.035, rOff: 0,             aMin: 0.4, aMax: 0.85, sMin: 0.6, sMax: 1.5, rot: 0.00015 },  // core
+                { end: 0.75, spread: ringR * 0.10,  rOff: 0,             aMin: 0.2, aMax: 0.5,  sMin: 0.4, sMax: 1.2, rot: 0.00010 },  // mid
+                { end: 0.90, spread: ringR * 0.28,  rOff: 0,             aMin: 0.06,aMax: 0.25, sMin: 0.3, sMax: 0.9, rot: 0.00007 },  // outer
+                { end: 1.00, spread: ringR * 0.50,  rOff: 0,             aMin: 0.02,aMax: 0.10, sMin: 0.8, sMax: 2.2, rot: 0.00004 },  // ambient dust
+            ];
 
             for (let i = 0; i < N; i++) {
+                const t = i / N;
+                const b = bands.find(b => t < b.end);
                 const a = Math.random() * Math.PI * 2;
                 angles[i] = a;
 
-                let offset, alpha, size;
-                const band = i / N;
-                if (band < 0.55) {
-                    // Core — tight, bright
-                    offset = gaussRand() * coreW;
-                    alpha = 0.45 + Math.random() * 0.45;
-                    size = 0.7 + Math.random() * 1.2;
-                } else if (band < 0.85) {
-                    // Mid — moderate scatter
-                    offset = gaussRand() * midW;
-                    alpha = 0.25 + Math.random() * 0.35;
-                    size = 0.5 + Math.random() * 1.0;
-                } else {
-                    // Outer — sparse haze
-                    offset = gaussRand() * outerW;
-                    alpha = 0.08 + Math.random() * 0.2;
-                    size = 0.3 + Math.random() * 0.8;
-                }
-
+                const offset = gaussRand() * b.spread + b.rOff;
                 const r = ringR + offset;
                 radii[i] = r;
+                baseAlpha[i] = b.aMin + Math.random() * (b.aMax - b.aMin);
+                sizes[i] = b.sMin + Math.random() * (b.sMax - b.sMin);
+                rotSpeed[i] = b.rot * (0.8 + Math.random() * 0.4); // per-particle speed variance
+
                 baseX[i] = cx + Math.cos(a) * r;
                 baseY[i] = cy + Math.sin(a) * r;
                 posX[i] = baseX[i];
                 posY[i] = baseY[i];
-                sizes[i] = size;
-                alphas[i] = alpha;
 
-                // Map angle to sprite hue index (with jitter)
-                const norm = ((a / (Math.PI * 2)) + (Math.random() - 0.5) * 0.06) % 1;
+                const norm = ((a / (Math.PI * 2)) + (Math.random() - 0.5) * 0.08) % 1;
                 spriteIdx[i] = Math.floor(((norm + 1) % 1) * NUM_SPRITES) % NUM_SPRITES;
             }
         }
 
-        // ── Recalculate base positions (on resize) ──
+        // ── Rebase on resize ──
         function rebase() {
             for (let i = 0; i < N; i++) {
-                const scale = ringR / (radii[i] > 0 ? (radii[i] / (radii[i] / ringR * (ringR))) : ringR);
                 baseX[i] = cx + Math.cos(angles[i]) * radii[i];
                 baseY[i] = cy + Math.sin(angles[i]) * radii[i];
             }
@@ -456,16 +466,26 @@
 
         // ── Physics update ──
         function update() {
+            frameCount++;
             const gyroOffX = gyroX * ringR * 0.07;
             const gyroOffY = gyroY * ringR * 0.07;
 
+            // Mouse velocity (smoothed)
+            if (prevMX > -9000) {
+                const mdx = mouseX - prevMX, mdy = mouseY - prevMY;
+                mouseVel = mouseVel * 0.7 + Math.sqrt(mdx * mdx + mdy * mdy) * 0.3;
+            }
+            prevMX = mouseX; prevMY = mouseY;
+            const velBoost = Math.min(mouseVel / 30, 1.5); // faster mouse → stronger effect
+
             const mDistC = Math.sqrt((mouseX - cx) ** 2 + (mouseY - cy) ** 2);
-            const inRange = mDistC < ringR * 0.9;
-            const proximity = inRange ? Math.pow(1 - mDistC / (ringR * 0.9), 3) : 0;
+            const inRange = mDistC < ringR * 1.3;
+            const proximity = inRange ? Math.pow(Math.max(0, 1 - mDistC / (ringR * 1.3)), 2.5) : 0;
+            const effectStr = proximity * (1 + velBoost);
 
             for (let i = 0; i < N; i++) {
-                // Slowly rotate base position
-                angles[i] += ROTATION_SPEED;
+                // Per-particle rotation (inner bands faster)
+                angles[i] += rotSpeed[i];
                 const bx = cx + Math.cos(angles[i]) * radii[i] + gyroOffX;
                 const by = cy + Math.sin(angles[i]) * radii[i] + gyroOffY;
 
@@ -473,15 +493,21 @@
                 let ax = (bx - posX[i]) * SPRING_K;
                 let ay = (by - posY[i]) * SPRING_K;
 
-                // Mouse repulsion
-                if (inRange) {
+                // Mouse repulsion + vortex swirl
+                if (effectStr > 0.01) {
                     const dx = posX[i] - mouseX;
                     const dy = posY[i] - mouseY;
                     const d = Math.sqrt(dx * dx + dy * dy);
-                    if (d > 1 && d < ringR * 1.2) {
-                        const f = Math.min(REPULSE_STRENGTH * proximity / (d * 0.08), 4);
-                        ax += (dx / d) * f;
-                        ay += (dy / d) * f;
+                    if (d > 1 && d < ringR * 1.5) {
+                        const f = Math.min(REPULSE_STRENGTH * effectStr / (d * 0.06), 6);
+                        const nx = dx / d, ny = dy / d;
+                        // Radial push
+                        ax += nx * f;
+                        ay += ny * f;
+                        // Tangential swirl (perpendicular to radial)
+                        const vortex = f * VORTEX_STRENGTH;
+                        ax += -ny * vortex;
+                        ay +=  nx * vortex;
                     }
                 }
 
@@ -497,10 +523,26 @@
             ctx.clearRect(0, 0, W, H);
             ctx.globalCompositeOperation = 'lighter';
 
+            const time = frameCount * 0.02;
+
             for (let i = 0; i < N; i++) {
-                const s = sizes[i] * 2.5;
-                ctx.globalAlpha = alphas[i];
-                ctx.drawImage(sprites[spriteIdx[i]], posX[i] - s * 0.5, posY[i] - s * 0.5, s, s);
+                // Velocity magnitude → excitement level
+                const vMag = Math.sqrt(velX[i] * velX[i] + velY[i] * velY[i]);
+                const excitement = Math.min(vMag / 3, 1);
+
+                // Size pulsation (subtle sine wave, per-particle phase from angle)
+                const pulse = 1 + Math.sin(time + angles[i] * 3) * 0.12;
+                const s = sizes[i] * (2.5 + excitement * 2) * pulse;
+
+                // Alpha: base + excitement boost
+                const alpha = Math.min(baseAlpha[i] + excitement * 0.5, 1);
+                ctx.globalAlpha = alpha;
+
+                // Use bright sprite when excited, normal otherwise
+                const sprite = excitement > 0.3
+                    ? spritesBright[spriteIdx[i]]
+                    : sprites[spriteIdx[i]];
+                ctx.drawImage(sprite, posX[i] - s * 0.5, posY[i] - s * 0.5, s, s);
             }
 
             ctx.globalCompositeOperation = 'source-over';
@@ -511,11 +553,9 @@
         let lastT = 0;
         function tick(t) {
             if (paused) { lastT = t; requestAnimationFrame(tick); return; }
-
             const dt = t - lastT;
             lastT = t;
 
-            // Auto-reduce if consistently slow
             if (dt > 33) slowFrames++;
             else slowFrames = Math.max(0, slowFrames - 1);
             if (slowFrames > 90 && N > 600) {
@@ -532,25 +572,23 @@
 
         // ── Input: Mouse ──
         window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-        document.addEventListener('mouseleave', () => { mouseX = -9999; mouseY = -9999; });
+        document.addEventListener('mouseleave', () => { mouseX = -9999; mouseY = -9999; mouseVel = 0; });
 
-        // ── Input: Touch (mobile fallback) ──
+        // ── Input: Touch ──
         window.addEventListener('touchmove', e => {
             const t = e.touches[0];
             if (t) { mouseX = t.clientX; mouseY = t.clientY; }
         }, { passive: true });
-        window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; });
+        window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; mouseVel = 0; });
 
         // ── Input: Gyroscope ──
         function onGyro(e) {
-            gyroX = (e.gamma || 0) / 90;  // left-right tilt, normalized -1..1
-            gyroY = (e.beta  || 0) / 90;  // front-back tilt
+            gyroX = (e.gamma || 0) / 90;
+            gyroY = (e.beta  || 0) / 90;
         }
-
         function initGyro() {
             if (typeof DeviceOrientationEvent === 'undefined') return;
             if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-                // iOS — request on first user interaction
                 document.addEventListener('click', function h() {
                     DeviceOrientationEvent.requestPermission()
                         .then(s => { if (s === 'granted') window.addEventListener('deviceorientation', onGyro); })
@@ -562,10 +600,9 @@
             }
         }
 
-        // ── Visibility: pause when tab hidden ──
+        // ── Lifecycle ──
         document.addEventListener('visibilitychange', () => { paused = document.hidden; });
 
-        // ── Resize ──
         let resizeTimer;
         window.addEventListener('resize', () => {
             clearTimeout(resizeTimer);
@@ -584,7 +621,7 @@
         initParticles();
         initGyro();
         requestAnimationFrame(tick);
-        UILog.info('PARTICLES', `ion ring initialized: ${N} particles, ring=${Math.round(ringR)}px`);
+        UILog.info('PARTICLES', `ion ring v2: ${N} particles, 5 bands, ring=${Math.round(ringR)}px`);
     })();
     </script>
 </body>
