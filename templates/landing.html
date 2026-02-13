@@ -661,47 +661,66 @@
                         const svx = px - sqx, svy = py - sqy;
                         const sdf = Math.sqrt(svx * svx + svy * svy) - CARD_R;
 
-                        // Mouse proximity — push gathered particles apart
+                        // ── Continuous force blending (jitter-free) ──
+                        // All forces use smooth weights — no hard zone boundaries
+                        // that cause frame-to-frame oscillation.
                         const mpdx = px - mouseX, mpdy = py - mouseY;
                         const mpd = Math.sqrt(mpdx * mpdx + mpdy * mpdy);
-                        const mouseRepel = mpd > 1 && mpd < 70 && sdf < 30;
 
-                        if (mouseRepel) {
-                            // Mouse near edge particle — repel, light damping (no jitter)
-                            cardInf = Math.max(cardInf, gatherStr);
-                            velX[i] *= 0.92;
-                            velY[i] *= 0.92;
-                            const repF = 18 * gatherStr * Math.pow(1 - mpd / 70, 1.5);
-                            cardAx += (mpdx / mpd) * repF;
-                            cardAy += (mpdy / mpd) * repF;
-                        } else if (ed < 8) {
-                            // Settled zone — damped micro-spring
-                            velX[i] *= 0.72;
-                            velY[i] *= 0.72;
-                            if (ed > 0.3) {
-                                cardAx += edx * 0.12;
-                                cardAy += edy * 0.12;
-                            }
-                            cardInf = Math.max(cardInf, gatherStr);
-                        } else if (sdf < GATHER_PAD) {
-                            // Inside card or very close — strong push to target
-                            cardInf = Math.max(cardInf, gatherStr);
-                            const f = 22 * gatherStr;
-                            cardAx += (edx / ed) * f;
-                            cardAy += (edy / ed) * f;
-                        } else if (ed < gatherCutoff) {
-                            // Outside — attract to perimeter slot
-                            cardInf = Math.max(cardInf, (1 - ed / gatherCutoff) * gatherStr);
-                            const ramp = 1 + Math.pow(1 - ed / gatherCutoff, 2) * 3;
-                            const f = 5 * gatherStr * ramp;
-                            cardAx += (edx / ed) * f;
-                            cardAy += (edy / ed) * f;
-                            if (ed < 35) {
-                                const brake = ed / 35;
-                                velX[i] *= 0.86 + 0.14 * brake;
-                                velY[i] *= 0.86 + 0.14 * brake;
+                        // Smooth weights (quadratic/pow falloff → 0 at edge)
+                        const settleW = ed < 12 ? (1 - ed / 12) * (1 - ed / 12) : 0;
+                        const mouseW = (mpd > 1 && mpd < 80 && sdf < 35)
+                            ? Math.pow(1 - mpd / 80, 1.5) * Math.min(1, (35 - Math.max(0, sdf)) / 35)
+                            : 0;
+
+                        // Force 1: Gather toward perimeter (fades near target & mouse)
+                        if (ed > 0.5) {
+                            const insideBoost = sdf < GATHER_PAD
+                                ? (1 - Math.max(0, sdf) / GATHER_PAD) * 17 : 0;
+                            const baseF = ed < gatherCutoff
+                                ? 5 * (1 + Math.pow(1 - ed / gatherCutoff, 2) * 3) : 0;
+                            const gf = (baseF + insideBoost) * gatherStr
+                                     * (1 - mouseW * 0.85) * (1 - settleW);
+                            if (gf > 0.01) {
+                                cardAx += (edx / ed) * gf;
+                                cardAy += (edy / ed) * gf;
                             }
                         }
+
+                        // Force 2: Settle micro-spring (near target, suppressed by mouse)
+                        if (settleW > 0.01 && ed > 0.3) {
+                            const sf = 0.12 * settleW * (1 - mouseW);
+                            cardAx += edx * sf;
+                            cardAy += edy * sf;
+                        }
+
+                        // Force 3: Mouse repulsion on edge particles
+                        if (mouseW > 0.01) {
+                            const repF = 18 * gatherStr * mouseW;
+                            cardAx += (mpdx / mpd) * repF;
+                            cardAy += (mpdy / mpd) * repF;
+                        }
+
+                        // Blended damping (continuous — never jumps between frames)
+                        let damp = ed < 40 ? 0.86 + 0.14 * Math.min(ed / 40, 1) : 1.0;
+                        damp += (0.72 - damp) * settleW;
+                        damp += (0.92 - damp) * mouseW;
+                        velX[i] *= damp;
+                        velY[i] *= damp;
+
+                        // Velocity snap: kill residual micro-oscillation
+                        if (ed < 3 && mouseW < 0.1) {
+                            if (Math.abs(velX[i]) + Math.abs(velY[i]) < 0.15) {
+                                velX[i] = 0; velY[i] = 0;
+                            }
+                        }
+
+                        // cardInf (weakens ring spring)
+                        cardInf = Math.max(cardInf, gatherStr * Math.max(
+                            settleW, mouseW,
+                            sdf < GATHER_PAD ? 1 : 0,
+                            ed < gatherCutoff ? 1 - ed / gatherCutoff : 0
+                        ));
                     }
                 }
 
@@ -842,7 +861,11 @@
         // ── Input: Touch ──
         window.addEventListener('touchmove', e => {
             const t = e.touches[0];
-            if (t) { mouseX = t.clientX; mouseY = t.clientY; }
+            if (t) {
+                // EMA smoothing — prevents sub-pixel finger jitter from propagating
+                mouseX = mouseX < -9000 ? t.clientX : mouseX * 0.6 + t.clientX * 0.4;
+                mouseY = mouseY < -9000 ? t.clientY : mouseY * 0.6 + t.clientY * 0.4;
+            }
             if (hoveredCard) cardLeave();
         }, { passive: true });
         window.addEventListener('touchend', () => { mouseX = -9999; mouseY = -9999; mouseVel = 0; });
@@ -889,8 +912,10 @@
 
         // ── Input: Gyroscope ──
         function onGyro(e) {
-            gyroX = Math.max(-1, Math.min(1, (e.gamma || 0) / 90));
-            gyroY = Math.max(-1, Math.min(1, (e.beta  || 0) / 90));
+            const tx = Math.max(-1, Math.min(1, (e.gamma || 0) / 90));
+            const ty = Math.max(-1, Math.min(1, (e.beta  || 0) / 90));
+            gyroX = gyroX * 0.8 + tx * 0.2; // EMA smooth — eliminates sensor noise jitter
+            gyroY = gyroY * 0.8 + ty * 0.2;
         }
         function initGyro() {
             if (!IS_MOBILE || typeof DeviceOrientationEvent === 'undefined') return;
