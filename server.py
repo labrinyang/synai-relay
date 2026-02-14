@@ -464,39 +464,60 @@ def _run_oracle(app, submission_id):
                         if wallet.is_connected():
                             job_obj.payout_status = 'pending'
                             db.session.flush()
-                            try:
-                                # G19: Use per-job fee_bps
-                                fee_bps = job_obj.fee_bps if job_obj.fee_bps is not None else Config.PLATFORM_FEE_BPS
-                                txs = wallet.payout(worker.wallet_address, job_obj.price, fee_bps=fee_bps)
-                                job_obj.payout_tx_hash = txs['payout_tx']
-                                job_obj.fee_tx_hash = txs.get('fee_tx')
+                            # G06-retry: Retry payout up to 3 times with exponential backoff
+                            # to handle transient RPC rate-limits / timeouts
+                            import time as _time
+                            max_attempts = 3
+                            last_error = None
+                            for attempt in range(1, max_attempts + 1):
+                                try:
+                                    # G19: Use per-job fee_bps
+                                    fee_bps = job_obj.fee_bps if job_obj.fee_bps is not None else Config.PLATFORM_FEE_BPS
+                                    txs = wallet.payout(worker.wallet_address, job_obj.price, fee_bps=fee_bps)
+                                    job_obj.payout_tx_hash = txs['payout_tx']
+                                    job_obj.fee_tx_hash = txs.get('fee_tx')
 
-                                # P0-1 fix (C-03): Check pending status
-                                if txs.get('pending'):
-                                    job_obj.payout_status = 'pending_confirmation'
-                                    logger.warning(
-                                        "Payout pending confirmation for job %s: %s",
-                                        sub.task_id, txs.get('error', 'receipt timeout')
-                                    )
-                                # P0-1 fix (C-02): Check fee_error
-                                elif txs.get('fee_error'):
-                                    job_obj.payout_status = 'partial'
-                                    logger.error(
-                                        "Partial settlement for job %s: worker paid, fee failed: %s",
-                                        sub.task_id, txs['fee_error']
-                                    )
-                                else:
-                                    job_obj.payout_status = 'success'
+                                    # P0-1 fix (C-03): Check pending status
+                                    if txs.get('pending'):
+                                        job_obj.payout_status = 'pending_confirmation'
+                                        logger.warning(
+                                            "Payout pending confirmation for job %s: %s",
+                                            sub.task_id, txs.get('error', 'receipt timeout')
+                                        )
+                                    # P0-1 fix (C-02): Check fee_error
+                                    elif txs.get('fee_error'):
+                                        job_obj.payout_status = 'partial'
+                                        logger.error(
+                                            "Partial settlement for job %s: worker paid, fee failed: %s",
+                                            sub.task_id, txs['fee_error']
+                                        )
+                                    else:
+                                        job_obj.payout_status = 'success'
 
-                                # Only count worker earnings when not pending
-                                if not txs.get('pending'):
-                                    worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
-                                    worker.total_earned = (
-                                        (worker.total_earned or 0) + job_obj.price * worker_share
-                                    )
-                            except Exception as e:
+                                    # Only count worker earnings when not pending
+                                    if not txs.get('pending'):
+                                        worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
+                                        worker.total_earned = (
+                                            (worker.total_earned or 0) + job_obj.price * worker_share
+                                        )
+                                    last_error = None
+                                    break  # success — exit retry loop
+                                except Exception as e:
+                                    last_error = e
+                                    if attempt < max_attempts:
+                                        backoff = 2 ** attempt  # 2s, 4s
+                                        logger.warning(
+                                            "Payout attempt %d/%d failed for job %s: %s — retrying in %ds",
+                                            attempt, max_attempts, sub.task_id, e, backoff,
+                                        )
+                                        _time.sleep(backoff)
+                                    else:
+                                        logger.error(
+                                            "Payout failed after %d attempts for submission %s: %s",
+                                            max_attempts, sub.id, e,
+                                        )
+                            if last_error:
                                 job_obj.payout_status = 'failed'
-                                logger.error("Payout failed for submission %s: %s", sub.id, e)
                         else:
                             job_obj.payout_status = 'skipped'
                     else:
@@ -1783,37 +1804,53 @@ def retry_payout(task_id):
     if not wallet.is_connected():
         return jsonify({"error": "Chain not connected"}), 503
 
-    try:
-        fee_bps = job.fee_bps if job.fee_bps is not None else Config.PLATFORM_FEE_BPS
-        txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
-        job.payout_tx_hash = txs['payout_tx']
-        job.fee_tx_hash = txs.get('fee_tx')
+    # G06-retry: Retry with exponential backoff for transient RPC failures
+    import time as _time
+    max_attempts = 3
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            fee_bps = job.fee_bps if job.fee_bps is not None else Config.PLATFORM_FEE_BPS
+            txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
+            job.payout_tx_hash = txs['payout_tx']
+            job.fee_tx_hash = txs.get('fee_tx')
 
-        # P0-1 fix (C-03): Check pending status
-        if txs.get('pending'):
-            job.payout_status = 'pending_confirmation'
-        # P0-1 fix (C-02): Check fee_error
-        elif txs.get('fee_error'):
-            job.payout_status = 'partial'
-        else:
-            job.payout_status = 'success'
+            # P0-1 fix (C-03): Check pending status
+            if txs.get('pending'):
+                job.payout_status = 'pending_confirmation'
+            # P0-1 fix (C-02): Check fee_error
+            elif txs.get('fee_error'):
+                job.payout_status = 'partial'
+            else:
+                job.payout_status = 'success'
 
-        # Only count worker earnings when not pending
-        if not txs.get('pending'):
-            worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
-            worker.total_earned = (worker.total_earned or 0) + job.price * worker_share
+            # Only count worker earnings when not pending
+            if not txs.get('pending'):
+                worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
+                worker.total_earned = (worker.total_earned or 0) + job.price * worker_share
 
-        db.session.commit()
-        return jsonify({
-            "status": "payout_retried",
-            "task_id": task_id,
-            "payout_tx_hash": job.payout_tx_hash,
-            "payout_status": job.payout_status,
-        }), 200
-    except Exception as e:
-        db.session.rollback()
-        logger.error("Payout retry failed for task %s: %s", task_id, e)
-        return jsonify({"error": "Payout retry failed"}), 500
+            db.session.commit()
+            return jsonify({
+                "status": "payout_retried",
+                "task_id": task_id,
+                "payout_tx_hash": job.payout_tx_hash,
+                "payout_status": job.payout_status,
+                "attempts": attempt,
+            }), 200
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts:
+                backoff = 2 ** attempt
+                logger.warning(
+                    "Payout retry attempt %d/%d failed for task %s: %s — retrying in %ds",
+                    attempt, max_attempts, task_id, e, backoff,
+                )
+                _time.sleep(backoff)
+            else:
+                logger.error("Payout retry failed after %d attempts for task %s: %s", max_attempts, task_id, e)
+
+    db.session.rollback()
+    return jsonify({"error": f"Payout retry failed after {max_attempts} attempts"}), 500
 
 
 # ===================================================================
