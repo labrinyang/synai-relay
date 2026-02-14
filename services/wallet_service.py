@@ -229,9 +229,17 @@ class WalletService:
             try:
                 tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
                 self._local_nonce += 1
-            except Exception:
-                # F03: Do NOT change nonce on failure — let the caller retry
-                # with the same nonce, or the stuck tx will eventually clear.
+            except Exception as e:
+                # F03-fix: Reset nonce on "nonce too low" so next call
+                # re-fetches from chain. This self-heals when a tx was
+                # accepted on-chain but the RPC response was lost.
+                err_msg = str(e).lower()
+                if 'nonce too low' in err_msg or 'already known' in err_msg:
+                    logger.warning(
+                        "Nonce desync detected (local=%d): %s — resetting",
+                        self._local_nonce, e,
+                    )
+                    self._local_nonce = None
                 raise
 
         # F07: Distinguish receipt-timeout (tx still pending on-chain) from a
