@@ -97,11 +97,20 @@ if not guard_url or not guard_key:
 with app.app_context():
     try:
         db.create_all()
-        # Ensure indexes exist on pre-existing databases (create_all only builds new tables)
+        # Ensure indexes and columns exist on pre-existing databases
+        # (create_all only builds new tables, not new columns)
         with db.engine.connect() as conn:
             conn.execute(db.text(
                 "CREATE INDEX IF NOT EXISTS ix_submissions_task_status ON submissions (task_id, status)"
             ))
+            # Add payout_error column if missing (added 2026-02-15)
+            try:
+                conn.execute(db.text("SELECT payout_error FROM jobs LIMIT 0"))
+            except Exception:
+                conn.rollback()
+                conn.execute(db.text(
+                    "ALTER TABLE jobs ADD COLUMN payout_error TEXT"
+                ))
             conn.commit()
         logger.info("Database tables created / verified")
     except Exception as e:
