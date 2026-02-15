@@ -234,10 +234,18 @@ def _auto_refund(job, wallet, label="auto"):
     if not wallet.is_connected():
         return None
 
-    # Set pending marker before sending — prevents concurrent refund from
-    # any other path (expiry, sweep, cancel, manual /refund endpoint)
-    job.refund_tx_hash = 'pending'
+    # Atomic pending marker — conditional UPDATE prevents concurrent refund
+    # from any other path (expiry, sweep, cancel, manual /refund endpoint).
+    # Only succeeds if refund_tx_hash is still NULL in the database.
+    updated = Job.query.filter_by(
+        task_id=job.task_id,
+    ).filter(
+        Job.refund_tx_hash.is_(None),
+    ).update({'refund_tx_hash': 'pending'}, synchronize_session='fetch')
     db.session.commit()
+    if not updated:
+        logger.info("%s refund skipped for job %s: another path claimed it", label, job.task_id)
+        return None
 
     for attempt in range(1, 4):
         try:
@@ -1556,7 +1564,7 @@ def cancel_job(task_id):
     if not cooldown_blocked:
         from services.wallet_service import get_wallet_service
         auto_refund_tx = _auto_refund(job, get_wallet_service(), label="cancel")
-    elif cooldown_blocked:
+    else:
         logger.warning("Auto-refund skipped for job %s: depositor cooldown active", task_id)
 
     # G04: Fire webhook
