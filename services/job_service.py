@@ -213,6 +213,7 @@ class JobService:
                 "deposit_tx_hash": job.deposit_tx_hash,
                 "payout_tx_hash": job.payout_tx_hash,
                 "payout_status": job.payout_status,
+                "payout_error": job.payout_error,
                 "fee_tx_hash": job.fee_tx_hash,
                 "fee_bps": job.fee_bps,
                 "depositor_address": job.depositor_address,
