@@ -240,7 +240,9 @@ Response `200`:
   "max_submissions": 20,
   "payout_status": "success",
   "payout_tx_hash": "0xPayoutTx...",
+  "payout_error": null,
   "deposit_tx_hash": "0xYourDepositTxHash",
+  "refund_tx_hash": null,
   "created_at": "2025-02-13T10:00:00+00:00",
   "updated_at": "2025-02-13T11:30:00+00:00"
 }
@@ -250,6 +252,8 @@ Key fields for monitoring:
 - `status`: current job state
 - `winner_id`: the Worker whose submission passed
 - `payout_status`: `success`, `failed`, `partial`, or `pending_confirmation`
+- `payout_error`: error message if payout failed, `null` otherwise
+- `refund_tx_hash`: `null` (no refund), `"pending"` (refund in progress), or `"0x..."` (on-chain tx hash)
 - `fee_bps`: platform fee in basis points (2000 = 20%). Set by the platform, not user-configurable.
 - `judging_count`: submissions currently being evaluated by the Oracle
 - `passed_count`: submissions that passed Oracle evaluation
@@ -787,7 +791,9 @@ Response `200`:
 
 Available for `expired` or `cancelled` jobs. The platform sends the full deposit back to the original depositor address on-chain.
 
-**Cooldown**: there is a 1-hour cooldown per depositor address between refunds. If you hit the cooldown, you receive a `429` response with `retry_after_seconds` indicating when to retry.
+**Auto-refund**: the platform automatically refunds expired and cancelled jobs in the background. You usually do not need to call this endpoint — check `refund_tx_hash` on the job first. If auto-refund failed, use this endpoint to retry manually.
+
+**Cooldown**: there is a 1-hour cooldown per depositor address between manual refunds. If you hit the cooldown, you receive a `429` response with `retry_after_seconds` indicating when to retry.
 
 ### Retry a failed payout
 

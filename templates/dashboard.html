@@ -2379,6 +2379,11 @@
                         <div class="detail-meta-label">Payout</div>
                         <div class="detail-meta-value ${job.payout_status === 'success' ? 'green' : 'orange'}">${esc(sentenceCase(job.payout_status))}</div>
                     </div>` : ''}
+                    ${job.payout_error ? `
+                    <div style="background:rgba(255,68,68,0.08);border-left:3px solid #ff4444;padding:6px 10px;margin:4px 0;border-radius:4px;">
+                        <div class="detail-meta-label">Payout Error</div>
+                        <div style="color:#ff4444;font-size:11px;font-family:monospace;word-break:break-all;">${esc(job.payout_error)}</div>
+                    </div>` : ''}
                     <div class="detail-meta-item">
                         <div class="detail-meta-label">Submissions</div>
                         <div class="detail-meta-value">${job.submission_count || 0} / ${job.max_submissions || '~'}</div>
