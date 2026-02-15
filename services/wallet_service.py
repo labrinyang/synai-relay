@@ -193,6 +193,8 @@ class WalletService:
         """Send USDC from operations wallet. Returns tx_hash."""
         if not self.is_connected() or not self.ops_key:
             raise RuntimeError("Chain not connected or ops key missing")
+        if amount <= 0:
+            raise ValueError(f"send_usdc amount must be positive, got {amount}")
 
         from web3 import Web3
         raw_amount = int(amount * Decimal(10 ** self.usdc_decimals))
@@ -301,9 +303,20 @@ class WalletService:
         return {"payout_tx": payout_tx, "fee_tx": fee_tx}
 
     def refund(self, depositor_address: str, amount: Decimal) -> str:
-        """Refund full amount to depositor. Returns tx_hash."""
+        """Refund full amount to depositor. Returns tx_hash.
+        If the tx is broadcast but receipt times out, returns the tx_hash
+        anyway (caller should treat as pending, NOT retry).
+        """
         logger.info("Refund initiated: depositor=%s amount=%s", depositor_address, amount)
-        return self.send_usdc(depositor_address, amount)
+        try:
+            return self.send_usdc(depositor_address, amount)
+        except TransactionPendingError as e:
+            logger.warning(
+                "Refund tx pending (receipt timeout): depositor=%s tx=%s — "
+                "recording hash, do NOT retry",
+                depositor_address, e.tx_hash,
+            )
+            return e.tx_hash
 
 
 # Singleton

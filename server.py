@@ -206,6 +206,68 @@ _pending_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
+# G12: Auto-refund helper (used by expiry checker, sweep, cancel)
+# ---------------------------------------------------------------------------
+
+def _auto_refund(job, wallet, label="auto"):
+    """Attempt on-chain refund with pending marker, per-job commit, 3 retries.
+
+    Safety guarantees:
+    - Sets refund_tx_hash='pending' + commit BEFORE sending (cross-path mutex)
+    - Commits immediately after each successful send (no batched commits)
+    - wallet_service.refund() handles TransactionPendingError internally
+    - Resets pending marker on final failure
+
+    Returns tx_hash on success, or None on failure.
+    """
+    import time as _time
+
+    if not (job.deposit_tx_hash and job.depositor_address):
+        return None
+    if job.refund_tx_hash:  # already refunded or in-progress
+        return None
+
+    refund_amount = job.deposit_amount if job.deposit_amount is not None else job.price
+    if not refund_amount or refund_amount <= 0:
+        return None
+
+    if not wallet.is_connected():
+        return None
+
+    # Set pending marker before sending — prevents concurrent refund from
+    # any other path (expiry, sweep, cancel, manual /refund endpoint)
+    job.refund_tx_hash = 'pending'
+    db.session.commit()
+
+    for attempt in range(1, 4):
+        try:
+            tx = wallet.refund(job.depositor_address, refund_amount)
+            job.refund_tx_hash = tx
+            db.session.commit()
+            logger.info(
+                "%s refund for job %s: tx=%s amount=%s",
+                label, job.task_id, tx, refund_amount,
+            )
+            return tx
+        except Exception as e:
+            if attempt < 3:
+                logger.warning(
+                    "%s refund attempt %d/3 failed for job %s: %s",
+                    label, attempt, job.task_id, e,
+                )
+                _time.sleep(2 ** attempt)
+            else:
+                logger.error(
+                    "%s refund failed after 3 attempts for job %s: %s",
+                    label, job.task_id, e,
+                )
+                # Reset pending marker so sweep can retry later
+                job.refund_tx_hash = None
+                db.session.commit()
+    return None
+
+
+# ---------------------------------------------------------------------------
 # G12: Proactive expiry checker (background loop)
 # ---------------------------------------------------------------------------
 
@@ -233,8 +295,25 @@ def _expiry_checker_loop():
                             logger.info("Proactively expired job %s", job.task_id)
                             from services.webhook_service import fire_event
                             fire_event('job.expired', job.task_id, {"status": "expired"})
+
+                            # G12-refund: Auto-refund expired funded jobs
+                            from services.wallet_service import get_wallet_service
+                            _auto_refund(job, get_wallet_service(), label="expiry")
                     if expired_jobs:
-                        db.session.commit()
+                        db.session.commit()  # persist status changes
+
+                    # G12-refund-sweep: Catch expired/cancelled jobs that missed auto-refund
+                    unrefunded = Job.query.filter(
+                        Job.status.in_(('expired', 'cancelled')),
+                        Job.deposit_tx_hash.isnot(None),
+                        Job.depositor_address.isnot(None),
+                        Job.refund_tx_hash.is_(None),
+                    ).all()
+                    if unrefunded:
+                        from services.wallet_service import get_wallet_service
+                        sweep_wallet = get_wallet_service()
+                        for job in unrefunded:
+                            _auto_refund(job, sweep_wallet, label="sweep")
 
                     # Clean up expired idempotency keys (24h TTL)
                     from models import IdempotencyKey
@@ -494,6 +573,8 @@ def _run_oracle(app, submission_id):
                                     else:
                                         job_obj.payout_status = 'success'
 
+                                    job_obj.payout_error = None  # Clear on success
+
                                     # Only count worker earnings when not pending
                                     if not txs.get('pending'):
                                         worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
@@ -518,6 +599,7 @@ def _run_oracle(app, submission_id):
                                         )
                             if last_error:
                                 job_obj.payout_status = 'failed'
+                                job_obj.payout_error = str(last_error)
                         else:
                             job_obj.payout_status = 'skipped'
                     else:
@@ -1466,23 +1548,16 @@ def cancel_job(task_id):
     job.status = 'cancelled'
 
     # P2-7 fix (m-S01): Auto-refund for cancelled funded jobs
+    # Must commit status='cancelled' first so _auto_refund's commit doesn't lose it
+    db.session.commit()
+
     auto_refund_tx = None
     cooldown_blocked, _ = _check_refund_cooldown(job.depositor_address)
-    if job.deposit_tx_hash and job.depositor_address and not job.refund_tx_hash and not cooldown_blocked:
+    if not cooldown_blocked:
         from services.wallet_service import get_wallet_service
-        wallet = get_wallet_service()
-        if wallet.is_connected():
-            try:
-                refund_amount = job.deposit_amount if job.deposit_amount is not None else job.price
-                auto_refund_tx = wallet.refund(job.depositor_address, refund_amount)
-                job.refund_tx_hash = auto_refund_tx
-                logger.info("Auto-refund for cancelled job %s: tx=%s", task_id, auto_refund_tx)
-            except Exception as e:
-                logger.error("Auto-refund failed for job %s: %s (manual refund required)", task_id, e)
+        auto_refund_tx = _auto_refund(job, get_wallet_service(), label="cancel")
     elif cooldown_blocked:
         logger.warning("Auto-refund skipped for job %s: depositor cooldown active", task_id)
-
-    db.session.commit()
 
     # G04: Fire webhook
     from services.webhook_service import fire_event
@@ -1824,6 +1899,8 @@ def retry_payout(task_id):
             else:
                 job.payout_status = 'success'
 
+            job.payout_error = None  # Clear previous error on success
+
             # Only count worker earnings when not pending
             if not txs.get('pending'):
                 worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
@@ -1849,7 +1926,8 @@ def retry_payout(task_id):
             else:
                 logger.error("Payout retry failed after %d attempts for task %s: %s", max_attempts, task_id, e)
 
-    db.session.rollback()
+    job.payout_error = str(last_error)
+    db.session.commit()
     return jsonify({"error": f"Payout retry failed after {max_attempts} attempts"}), 500
 
 
