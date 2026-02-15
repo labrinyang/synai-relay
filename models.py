@@ -74,6 +74,7 @@ class Job(db.Model):
     # Payout/refund
     payout_tx_hash = db.Column(db.String(100), nullable=True)
     payout_status = db.Column(db.String(20), nullable=True)  # G06: pending|success|failed|skipped
+    payout_error = db.Column(db.Text, nullable=True)  # Exception message on payout failure
     fee_tx_hash = db.Column(db.String(100), nullable=True)
     refund_tx_hash = db.Column(db.String(100), nullable=True)
     winner_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=True)
