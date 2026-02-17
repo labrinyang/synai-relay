@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "a3aad6b8aa7a",
+  "session_id": "3ecc68ec-9725-4525-bae4-d7e693b085bb",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-17T07:29:16.099991Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    ".claude/settings.local.json",
+    ".claude/skills/push/SKILL.md",
+    ".env",
+    "atp_dev.db-shm",
+    "atp_dev.db-wal",
+    "scripts/sim/config.py",
+    "scripts/sim/prompts.py",
+    "scripts/sim/sim.py",
+    "static/logo-original.png"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 524,
+    "cache_creation_tokens": 888062,
+    "cache_read_tokens": 36483124,
+    "output_tokens": 54413,
+    "api_call_count": 345
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-17T07:29:11.884066Z",
+    "agent_lines": 0,
+    "human_added": 0,
+    "human_modified": 565,
+    "human_removed": 15,
+    "total_committed": 22,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-labrinyang-projects-future-boy/3ecc68ec-9725-4525-bae4-d7e693b085bb.jsonl"
+}
