@@ -702,17 +702,18 @@ class TestSubmissionFlow:
         assert '50KB' in resp.get_json()['error']
 
     def test_submit_max_retries(self, client):
-        """Worker should be blocked after max_retries submissions."""
+        """Worker should be blocked after max_retries submissions.
+        max_retries=2 means initial + 2 retries = 3 total attempts allowed."""
         task_id, buyer_key, worker_key = self._setup_claimed(client)
-        # Submit twice (max_retries=2 from _setup_claimed)
-        for i in range(2):
+        # Submit 3 times (max_retries=2 → 1 initial + 2 retries = 3 total)
+        for i in range(3):
             resp = client.post(f'/jobs/{task_id}/submit',
                                json={'content': f'attempt {i+1}'},
                                headers=_auth_headers(worker_key))
             assert resp.status_code == 202
-        # Third should fail
+        # Fourth should fail — retries exhausted
         resp = client.post(f'/jobs/{task_id}/submit',
-                           json={'content': 'attempt 3'},
+                           json={'content': 'attempt 4'},
                            headers=_auth_headers(worker_key))
         assert resp.status_code == 400
         assert 'retries' in resp.get_json()['error'].lower()

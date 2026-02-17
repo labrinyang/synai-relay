@@ -983,9 +983,22 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
         job.failure_count = 2
         db.session.commit()
 
-        # Attempt 3 → should be rejected (max_retries=2 means 3 total attempts: 1 + 2 retries)
+        # Attempt 3 → allowed (max_retries=2 means 2 retries after initial = 3 total)
         resp = c.post(f'/jobs/{task_id}/submit',
                        json={'content': 'attempt 3'},
+                       headers=_auth_headers(worker_key))
+        self.assertEqual(resp.status_code, 202)
+        sub3_id = resp.get_json()['submission_id']
+        sub3 = db.session.get(Submission, sub3_id)
+        sub3.status = 'failed'
+        sub3.oracle_score = 40
+        job = db.session.get(Job, task_id)
+        job.failure_count = 3
+        db.session.commit()
+
+        # Attempt 4 → should be rejected (max_retries exhausted)
+        resp = c.post(f'/jobs/{task_id}/submit',
+                       json={'content': 'attempt 4'},
                        headers=_auth_headers(worker_key))
         self.assertEqual(resp.status_code, 400)
         self.assertIn('retr', resp.get_json()['error'].lower())
