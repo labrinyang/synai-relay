@@ -1399,10 +1399,11 @@ def submit_result(task_id):
         return jsonify({"error": "Task has reached maximum submissions"}), 400
 
     # Check max_retries per worker
+    # max_retries means "N retries after the initial attempt" → total = max_retries + 1
     worker_submissions = Submission.query.filter_by(
         task_id=task_id, worker_id=worker_id
     ).count()
-    if worker_submissions >= (job.max_retries or 3):
+    if worker_submissions > (job.max_retries or 3):
         return jsonify({"error": "Maximum retries reached for this worker"}), 400
 
     # Create submission with status 'judging' before starting thread
