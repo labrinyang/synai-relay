@@ -2030,8 +2030,8 @@
                         return diff !== 0 ? diff : (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0);
                     });
             }
-            // "new" view: show ALL tasks (including resolved, expired, cancelled)
-            return allJobs.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            // "new" view: show all tasks except expired
+            return allJobs.filter(j => j.status !== 'expired').sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         }
 
         function renderJobs() {
@@ -2041,7 +2041,8 @@
             // Update tab counts
             const allActive = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
             const hotCount = allActive.filter(j => j.status === 'funded' && (j.participants?.length || 0) > 0).length;
-            document.getElementById('count-new').textContent = allJobs.length ? ' (' + allJobs.length + ')' : '';
+            const nonExpiredCount = allJobs.filter(j => j.status !== 'expired').length;
+            document.getElementById('count-new').textContent = nonExpiredCount ? ' (' + nonExpiredCount + ')' : '';
             document.getElementById('count-hot').textContent = hotCount ? ' (' + hotCount + ')' : '';
 
             if (jobs.length === 0) {
