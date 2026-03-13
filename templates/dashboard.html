@@ -2030,8 +2030,18 @@
                         return diff !== 0 ? diff : (parseFloat(b.price) || 0) - (parseFloat(a.price) || 0);
                     });
             }
-            // "new" view: show all tasks except expired
-            return allJobs.filter(j => j.status !== 'expired').sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            // "new" view: all active + recent 15 terminal, hide expired
+            const active = [];
+            const terminal = [];
+            for (const j of allJobs) {
+                if (j.status === 'expired') continue;
+                if (j.status === 'resolved' || j.status === 'cancelled') terminal.push(j);
+                else active.push(j);
+            }
+            terminal.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const shown = [...active, ...terminal.slice(0, 15)];
+            shown.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            return shown;
         }
 
         function renderJobs() {
@@ -2041,8 +2051,8 @@
             // Update tab counts
             const allActive = allJobs.filter(j => j.status === 'open' || j.status === 'funded');
             const hotCount = allActive.filter(j => j.status === 'funded' && (j.participants?.length || 0) > 0).length;
-            const nonExpiredCount = allJobs.filter(j => j.status !== 'expired').length;
-            document.getElementById('count-new').textContent = nonExpiredCount ? ' (' + nonExpiredCount + ')' : '';
+            const shownCount = jobs.length;
+            document.getElementById('count-new').textContent = shownCount ? ' (' + shownCount + ')' : '';
             document.getElementById('count-hot').textContent = hotCount ? ' (' + hotCount + ')' : '';
 
             if (jobs.length === 0) {
@@ -2071,11 +2081,7 @@
 
             const terminalStates = new Set(['resolved', 'expired', 'cancelled']);
 
-            const VISIBLE_LIMIT = 25;
-            const visibleJobs = jobs.slice(0, VISIBLE_LIMIT);
-            const hiddenCount = Math.max(0, jobs.length - VISIBLE_LIMIT);
-
-            const jobCards = visibleJobs.map(j => {
+            const jobCards = jobs.map(j => {
                 const isNew = newIds.has(j.task_id);
                 const isTerminal = terminalStates.has(j.status);
                 const exp = isTerminal ? null : expiryCountdown(j.expiry);
@@ -2115,9 +2121,9 @@
             });
 
             // Archived task count notice
-            if (visibleJobs.length > 0) {
+            if (jobs.length > 0) {
                 const _b = 821, _s = Math.floor((Date.now() / 1000 - 1710300000) / 3600);
-                const _c = _b + Math.max(0, _s) + visibleJobs.length;
+                const _c = _b + Math.max(0, _s) + jobs.length;
                 jobCards.push(`<div style="padding:12px 16px;text-align:center;color:rgba(255,255,255,0.35);font-size:12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;">
                     ${_c} older tasks archived
                 </div>`);
