@@ -41,6 +41,8 @@ def client():
     """Create a test client with fresh in-memory DB and reset rate limiters."""
     app.config['TESTING'] = True
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+    # Disable x402 for legacy tests — x402 tests enable explicitly
+    app.config['X402_ENABLED'] = False
     # Set operator address for require_operator tests
     from config import Config
     Config.OPERATOR_ADDRESS = _get_operator_address()
@@ -760,12 +762,14 @@ class TestSubmissionPrivacy:
         data = resp.get_json()['submissions']
         assert data[0]['content'] == {'secret': 'my secret solution'}
 
-    def test_buyer_sees_content(self, client):
+    def test_buyer_sees_redacted_during_funded(self, client):
+        """With x402 paywall, buyer sees redacted content during funded status
+        (must pay via x402 to view submissions)."""
         task_id, sub_id, buyer_key, _ = self._setup_with_submission(client)
         resp = client.get(f'/jobs/{task_id}/submissions',
                           headers=_auth_headers(buyer_key))
         data = resp.get_json()['submissions']
-        assert data[0]['content'] == {'secret': 'my secret solution'}
+        assert data[0]['content'] == '[redacted]'
 
     def test_third_party_sees_redacted(self, client):
         task_id, sub_id, _, _ = self._setup_with_submission(client)
@@ -1184,12 +1188,13 @@ class TestE2ELifecycle:
         assert sub_data['worker_id'] == 'e2e-worker'
         assert sub_data['content'] == {'result': 'done'}
 
-        # List submissions for job
+        # List submissions for job (buyer sees redacted during funded status
+        # with x402 paywall — must pay to view content)
         resp = client.get(f'/jobs/{task_id}/submissions',
                           headers=_auth_headers(buyer_key))
         subs = resp.get_json()['submissions']
         assert len(subs) == 1
-        assert subs[0]['content'] == {'result': 'done'}
+        assert subs[0]['content'] == '[redacted]'
 
     def test_cancel_and_refund_flow(self, client):
         """E2E: create -> fund -> cancel -> refund."""

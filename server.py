@@ -23,6 +23,22 @@ import datetime
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
 
+# x402 imports (conditional — graceful when SDK not installed)
+try:
+    from x402 import x402ResourceServerSync, PaymentRequired, PaymentRequirements
+    from x402.mechanisms.evm.exact import ExactEvmServerScheme
+    from x402.http.facilitator_client import HTTPFacilitatorClientSync
+    from x402.http import (encode_payment_required_header,
+                           decode_payment_signature_header,
+                           encode_payment_response_header,
+                           PAYMENT_SIGNATURE_HEADER, X_PAYMENT_HEADER)
+    from x402.facilitator import SettleResponse, VerifyResponse
+    _X402_SDK_AVAILABLE = True
+except ImportError:
+    _X402_SDK_AVAILABLE = False
+
+from services.x402_service import parse_chain_id, build_requirements
+
 # ---------------------------------------------------------------------------
 # Structured logging setup (G14, M7 fix: proper JSON escaping)
 # ---------------------------------------------------------------------------
@@ -132,6 +148,128 @@ with app.app_context():
     # P2-2: Provide app reference for webhook failure tracking in background threads
     from services.webhook_service import set_app_ref
     set_app_ref(app)
+
+# ---------------------------------------------------------------------------
+# x402 facilitator setup
+# ---------------------------------------------------------------------------
+
+_x402_servers: dict = {}  # chain_id -> x402ResourceServerSync
+_chain_registry = None  # Set in _init_x402()
+
+
+def _init_x402():
+    """Initialize x402 facilitators and chain registry at startup."""
+    global _x402_servers, _chain_registry
+    from services.chain_registry import ChainRegistry
+    from services.base_adapter import BaseAdapter
+
+    _chain_registry = ChainRegistry(default_chain_id=Config.DEFAULT_CHAIN_ID)
+
+    # Base L2 adapter (always available)
+    try:
+        from services.wallet_service import get_wallet_service
+        ws = get_wallet_service()
+        base_adapter = BaseAdapter(ws)
+        _chain_registry.register(base_adapter)
+    except Exception as e:
+        logger.warning("Failed to init Base adapter: %s", e)
+
+    if not (_X402_SDK_AVAILABLE and app.config.get('X402_ENABLED', False)):
+        logger.info("x402 disabled or SDK not available")
+        return
+
+    # Coinbase facilitator (Base)
+    try:
+        coinbase_fac = HTTPFacilitatorClientSync(
+            {"url": Config.X402_COINBASE_FACILITATOR_URL})
+        coinbase_server = x402ResourceServerSync(coinbase_fac)
+        coinbase_server.register("eip155:8453", ExactEvmServerScheme())
+        _x402_servers[8453] = coinbase_server
+        logger.info("x402: Coinbase facilitator registered for Base (8453)")
+    except Exception as e:
+        logger.warning("x402: Failed to init Coinbase facilitator: %s", e)
+
+    # OKX facilitator (X Layer) — only if OnchainOS credentials configured
+    if Config.ONCHAINOS_API_KEY:
+        try:
+            from services.okx_facilitator import OKXFacilitatorClient
+            okx_fac = OKXFacilitatorClient(
+                api_key=Config.ONCHAINOS_API_KEY,
+                secret_key=Config.ONCHAINOS_SECRET_KEY,
+                passphrase=Config.ONCHAINOS_PASSPHRASE,
+                project_id=Config.ONCHAINOS_PROJECT_ID,
+            )
+            okx_server = x402ResourceServerSync(okx_fac)
+            okx_server.register("eip155:196", ExactEvmServerScheme())
+            _x402_servers[196] = okx_server
+            logger.info("x402: OKX facilitator registered for X Layer (196)")
+
+            from services.xlayer_adapter import XLayerAdapter
+            from services.onchainos_client import OnchainOSClient
+            onchainos = OnchainOSClient(
+                Config.ONCHAINOS_API_KEY,
+                Config.ONCHAINOS_SECRET_KEY,
+                Config.ONCHAINOS_PASSPHRASE,
+                Config.ONCHAINOS_PROJECT_ID,
+            )
+            _chain_registry.register(XLayerAdapter(onchainos,
+                usdc_addr=Config.XLAYER_USDC_CONTRACT))
+        except Exception as e:
+            logger.warning("x402: Failed to init OKX facilitator: %s", e)
+
+
+def _get_x402_server(network: str):
+    """Route to correct facilitator based on CAIP-2 network string."""
+    chain_id = parse_chain_id(network)
+    server = _x402_servers.get(chain_id)
+    if not server:
+        raise ValueError(f"No x402 facilitator for chain {chain_id}")
+    return server
+
+
+def _validate_job_fields(data: dict):
+    """Validate job request fields. Returns (parsed_fields_dict, None) on success,
+    or (None, error_response_tuple) on failure. Call this BEFORE x402 settlement."""
+    title = data.get('title')
+    description = data.get('description')
+
+    if not title:
+        return None, (jsonify({"error": "title is required"}), 400)
+    if len(title) > 500:
+        return None, (jsonify({"error": "title must be <= 500 characters"}), 400)
+    if not description:
+        return None, (jsonify({"error": "description is required"}), 400)
+    if len(description) > 50000:
+        return None, (jsonify({"error": "description must be <= 50000 characters"}), 400)
+
+    raw_price = data.get('price')
+    if raw_price is None:
+        return None, (jsonify({"error": "price is required"}), 400)
+    try:
+        price = Decimal(str(raw_price))
+        if not price.is_finite() or price < Decimal(str(Config.MIN_TASK_AMOUNT)):
+            return None, (jsonify({"error": f"price must be >= {Config.MIN_TASK_AMOUNT}"}), 400)
+    except (InvalidOperation, ValueError, TypeError):
+        return None, (jsonify({"error": "Invalid price value"}), 400)
+
+    rubric = data.get('rubric')
+    if rubric and len(rubric) > 10000:
+        return None, (jsonify({"error": "rubric must be <= 10000 characters"}), 400)
+
+    return {"title": title, "description": description, "price": price, "rubric": rubric}, None
+
+
+# Initialize on first request (lazy — avoids import-time side effects in tests)
+_x402_initialized = False
+
+
+@app.before_request
+def _ensure_x402_init():
+    global _x402_initialized
+    if not _x402_initialized:
+        _init_x402()
+        _x402_initialized = True
+
 
 # G14: Correlation ID — attach unique request ID to every request
 @app.before_request
@@ -797,26 +935,36 @@ def _sanitize_oracle_steps(steps):
     return sanitized
 
 
-def _submission_to_dict(sub: Submission, viewer_id: str = None, public_content: bool = False) -> dict:
-    """Serialize submission. Content is only shown to the submitting worker or the job buyer (G16),
-    plus the winning submission is public once the task is resolved."""
-    # Determine if viewer is allowed to see content
-    show_content = public_content
-    job = None
-    if not show_content and viewer_id:
-        if viewer_id == sub.worker_id:
+def _check_submission_access(sub, job, viewer_id):
+    """Determine if viewer can see submission content.
+    Returns:
+        True  -- show content
+        False -- hide content (task not funded)
+        None  -- payment required (x402)
+    """
+    if viewer_id and viewer_id == sub.worker_id:
+        return True
+    if job.status in ('resolved', 'expired', 'cancelled'):
+        return True
+    if viewer_id and SubmissionAccess.query.filter_by(
+            submission_id=sub.id, viewer_agent_id=viewer_id).first():
+        return True
+    if job.status == 'funded':
+        return None
+    return False
+
+
+def _submission_to_dict(sub: Submission, viewer_id: str = None,
+                        public_content: bool = False,
+                        show_content: bool = None) -> dict:
+    """Serialize submission. Uses _check_submission_access for visibility."""
+    if show_content is None:
+        if public_content:
             show_content = True
         else:
             job = db.session.get(Job, sub.task_id)
-            if job and viewer_id == job.buyer_id:
-                show_content = True
-
-    # Winning submission is public after task resolution
-    if not show_content:
-        if job is None:
-            job = db.session.get(Job, sub.task_id)
-        if job and job.status == 'resolved' and job.winner_id == sub.worker_id:
-            show_content = True
+            access = _check_submission_access(sub, job, viewer_id)
+            show_content = (access is True)
 
     result = {
         "submission_id": sub.id,
@@ -881,6 +1029,21 @@ def deposit_info():
             }
 
     return jsonify(resp), 200
+
+
+# ===================================================================
+# 2b. GET /platform/chains — list supported chains
+# ===================================================================
+
+
+@app.route('/platform/chains', methods=['GET'])
+def platform_chains():
+    if _chain_registry:
+        return jsonify({
+            "chains": _chain_registry.supported_chains(),
+            "default_chain_id": Config.DEFAULT_CHAIN_ID,
+        }), 200
+    return jsonify({"chains": [], "default_chain_id": Config.DEFAULT_CHAIN_ID}), 200
 
 
 # ===================================================================
@@ -1018,10 +1181,81 @@ def list_jobs_endpoint():
 @require_auth
 @rate_limit()
 def create_job_endpoint():
-    return _create_job()
+    if not (app.config.get('X402_ENABLED', False) and _X402_SDK_AVAILABLE):
+        return _create_job()
+
+    data = request.get_json(silent=True) or {}
+
+    # CRITICAL: Validate ALL fields BEFORE x402 settlement to avoid orphaned payments
+    fields, err = _validate_job_fields(data)
+    if err:
+        return err
+    price = fields["price"]
+
+    # Check for x402 payment header
+    payment_header = (request.headers.get('PAYMENT-SIGNATURE')
+                      or request.headers.get('X-PAYMENT'))
+
+    if not payment_header:
+        # No payment: return 402 with requirements
+        requirements = build_requirements(
+            price,
+            Config.OPERATIONS_WALLET_ADDRESS or '',
+            _chain_registry.adapters() if _chain_registry else [],
+        )
+        payment_required = PaymentRequired(accepts=requirements)
+        resp = jsonify({
+            "error": "Payment required",
+            "description": f"Task escrow: {price} USDC",
+        })
+        resp.status_code = 402
+        resp.headers['PAYMENT-REQUIRED'] = encode_payment_required_header(
+            payment_required)
+        return resp
+
+    # Has payment header: validate -> verify -> settle -> create funded job
+    try:
+        payload = decode_payment_signature_header(payment_header)
+    except Exception as e:
+        return jsonify({"error": f"Invalid payment header: {e}"}), 400
+
+    network = payload.accepted.network
+    try:
+        server = _get_x402_server(network)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    verify_result = server.verify_payment(payload, payload.accepted)
+    if not verify_result.is_valid:
+        return jsonify({
+            "error": "Payment verification failed",
+            "reason": verify_result.invalid_reason,
+        }), 402
+
+    settle_result = server.settle_payment(payload, payload.accepted)
+    if not settle_result.success:
+        return jsonify({
+            "error": "x402 settlement failed",
+            "reason": settle_result.error_reason,
+        }), 402
+
+    # Settlement succeeded — create job as funded
+    chain_id = parse_chain_id(settle_result.network)
+    sol_price = price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
+
+    return _create_job(
+        override_status='funded',
+        deposit_tx_hash=settle_result.transaction,
+        depositor_address=settle_result.payer,
+        chain_id=chain_id,
+        deposit_amount=price,
+        solution_price=sol_price,
+    )
 
 
-def _create_job():
+def _create_job(override_status=None, deposit_tx_hash=None,
+                depositor_address=None, chain_id=None,
+                deposit_amount=None, solution_price=None):
     data = request.get_json(silent=True) or {}
 
     # buyer_id is the authenticated agent
@@ -1076,33 +1310,52 @@ def _create_job():
     if not isinstance(max_retries, int) or max_retries < 1:
         max_retries = 3
 
+    status = override_status or 'open'
+
     job = Job(
         title=title,
         description=description,
         rubric=rubric,
         price=price,
         buyer_id=buyer_id,
-        status='open',
+        status=status,
         artifact_type=artifact_type,
         expiry=expiry,
         max_submissions=max_submissions,
         max_retries=max_retries,
         fee_bps=Config.PLATFORM_FEE_BPS,
+        chain_id=chain_id,
+        deposit_tx_hash=deposit_tx_hash,
+        depositor_address=depositor_address,
+        deposit_amount=deposit_amount,
     )
+
+    if solution_price is not None:
+        job.solution_price = solution_price
 
     db.session.add(job)
     db.session.flush()  # materialise task_id before commit expires attrs
     task_id = job.task_id
-    price = float(job.price)
+    price_float = float(job.price)
     db.session.commit()
-    logger.info("Job created: task_id=%s buyer=%s price=%.2f",
-                task_id, buyer_id, price)
+    logger.info("Job created: task_id=%s buyer=%s price=%.2f status=%s",
+                task_id, buyer_id, price_float, status)
 
-    return jsonify({
-        "status": "open",
+    resp_data = {
+        "status": status,
         "task_id": task_id,
-        "price": price,
-    }), 201
+        "price": price_float,
+    }
+
+    if deposit_tx_hash:
+        resp_data["x402_settlement"] = {
+            "tx_hash": deposit_tx_hash,
+            "chain_id": chain_id,
+            "depositor": depositor_address,
+            "amount": float(deposit_amount) if deposit_amount else None,
+        }
+
+    return jsonify(resp_data), 201
 
 
 def _list_jobs():
@@ -1478,8 +1731,93 @@ def get_submission(submission_id):
     sub = db.session.get(Submission, submission_id)
     if not sub:
         return jsonify({"error": "Submission not found"}), 404
+
     viewer_id = _get_viewer_id()
-    return jsonify(_submission_to_dict(sub, viewer_id=viewer_id)), 200
+    job = db.session.get(Job, sub.task_id)
+    access = _check_submission_access(sub, job, viewer_id)
+
+    if access is None and app.config.get('X402_ENABLED', False) and _X402_SDK_AVAILABLE:
+        payment_header = (request.headers.get('PAYMENT-SIGNATURE')
+                          or request.headers.get('X-PAYMENT'))
+
+        if payment_header:
+            if not viewer_id:
+                return jsonify({"error": "Authentication required for x402 payment"}), 401
+
+            try:
+                payload = decode_payment_signature_header(payment_header)
+            except Exception as e:
+                return jsonify({"error": f"Invalid payment header: {e}"}), 400
+
+            sol_price = job.solution_price or Decimal(0)
+            expected_atomic = str(int(sol_price * Decimal(10 ** 6)))
+            if payload.accepted.amount != expected_atomic:
+                return jsonify({
+                    "error": "Payment amount mismatch",
+                    "expected": expected_atomic,
+                    "actual": payload.accepted.amount,
+                }), 402
+
+            try:
+                server = _get_x402_server(payload.accepted.network)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+            verify = server.verify_payment(payload, payload.accepted)
+            if not verify.is_valid:
+                return jsonify({
+                    "error": "Payment verification failed",
+                    "reason": verify.invalid_reason,
+                }), 402
+
+            settle = server.settle_payment(payload, payload.accepted)
+            if settle.success:
+                try:
+                    sa = SubmissionAccess(
+                        submission_id=sub.id,
+                        viewer_agent_id=viewer_id,
+                        tx_hash=settle.transaction,
+                        amount=sol_price,
+                        chain_id=parse_chain_id(settle.network),
+                    )
+                    db.session.add(sa)
+                    db.session.commit()
+                except IntegrityError:
+                    db.session.rollback()
+                access = True
+            else:
+                return jsonify({
+                    "error": "Payment settlement failed",
+                    "reason": settle.error_reason,
+                }), 402
+
+        else:
+            # No payment header — return 402 with requirements
+            author = db.session.get(Agent, sub.worker_id)
+            if not author or not author.wallet_address:
+                return jsonify({
+                    "error": "Solution author has no wallet configured; viewing unavailable",
+                }), 409
+
+            sol_price = job.solution_price or Decimal(0)
+            if sol_price <= 0:
+                sol_price = job.price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
+
+            requirements = build_requirements(
+                sol_price,
+                author.wallet_address,
+                _chain_registry.adapters() if _chain_registry else [],
+            )
+            payment_required = PaymentRequired(accepts=requirements)
+            resp_data = _submission_to_dict(sub, viewer_id, show_content=False)
+            resp = jsonify(resp_data)
+            resp.status_code = 402
+            resp.headers['PAYMENT-REQUIRED'] = encode_payment_required_header(
+                payment_required)
+            return resp
+
+    return jsonify(_submission_to_dict(sub, viewer_id,
+                                       show_content=(access is True)))
 
 
 # ===================================================================
