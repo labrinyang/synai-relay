@@ -274,3 +274,47 @@ class TestOKXFacilitator:
         assert result.success is True
         assert result.transaction == "0xTX123"
         assert result.network == "eip155:196"
+
+
+from services.xlayer_adapter import XLayerAdapter
+
+
+class TestXLayerAdapter:
+    def test_chain_metadata(self):
+        mock_client = MagicMock()
+        adapter = XLayerAdapter(mock_client)
+        assert adapter.chain_id() == 196
+        assert adapter.chain_name() == "X Layer"
+        assert adapter.caip2() == "eip155:196"
+
+    def test_is_connected_delegates(self):
+        mock_client = MagicMock()
+        adapter = XLayerAdapter(mock_client)
+        assert adapter.is_connected() is True
+
+    def test_usdc_address(self):
+        mock_client = MagicMock()
+        adapter = XLayerAdapter(mock_client, usdc_addr='0xXLAYER_USDC')
+        assert adapter.usdc_address() == '0xXLAYER_USDC'
+
+    def test_verify_deposit_not_implemented(self):
+        from decimal import Decimal
+        mock_client = MagicMock()
+        adapter = XLayerAdapter(mock_client)
+        result = adapter.verify_deposit("0xtx", Decimal("50"))
+        assert result.valid is False
+        assert "not yet implemented" in result.error
+
+    def test_payout_not_implemented(self):
+        from decimal import Decimal
+        mock_client = MagicMock()
+        adapter = XLayerAdapter(mock_client)
+        result = adapter.payout("0xWORKER", Decimal("50"), 2000)
+        assert "not yet implemented" in result.error
+
+    def test_refund_not_implemented(self):
+        from decimal import Decimal
+        mock_client = MagicMock()
+        adapter = XLayerAdapter(mock_client)
+        result = adapter.refund("0xBUYER", Decimal("50"))
+        assert "not yet implemented" in result.error
