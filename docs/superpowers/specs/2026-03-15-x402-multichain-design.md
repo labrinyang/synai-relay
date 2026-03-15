@@ -355,7 +355,7 @@ def create_job():
                       or request.headers.get(X_PAYMENT_HEADER))
 
     if payment_header and Config.X402_ENABLED:
-        # Verify and settle
+        # Verify → settle → THEN create job (avoid orphaned 'funded' jobs on crash)
         payload = decode_payment_signature_header(payment_header)
         network = payload.accepted.network
         server = _get_x402_server(network)  # Route to correct facilitator
@@ -364,22 +364,19 @@ def create_job():
         if not verify_result.is_valid:
             return jsonify({"error": verify_result.invalid_reason}), 402
 
-        # Create job as funded
-        job = _create_job(data, status='funded')
-
         settle_result = server.settle_payment(payload, payload.accepted)
-        if settle_result.success:
-            job.deposit_tx_hash = settle_result.transaction
-            job.depositor_address = settle_result.payer
-            job.chain_id = _parse_chain_id(settle_result.network)
-            job.deposit_amount = price
-            db.session.commit()
-        else:
-            # Settlement failed — rollback to open
-            job.status = 'open'
-            db.session.commit()
+        if not settle_result.success:
             return jsonify({"error": "x402 settlement failed",
                            "reason": settle_result.error_reason}), 402
+
+        # Settlement succeeded — now create job as funded
+        job = _create_job(data, status='funded')
+        job.deposit_tx_hash = settle_result.transaction
+        job.depositor_address = settle_result.payer
+        job.chain_id = _parse_chain_id(settle_result.network)
+        job.deposit_amount = price
+        job.solution_price = price * Config.SOLUTION_VIEW_FEE_PERCENT / 100
+        db.session.commit()
 
         return jsonify({..., "x402_settlement": {
             "tx_hash": settle_result.transaction,
@@ -419,6 +416,10 @@ class OKXFacilitatorClient:
     def __init__(self, api_key, secret_key, passphrase):
         self._client = OnchainOSClient(api_key, secret_key, passphrase)
 
+    # NOTE: OKX API uses x402Version "1" (string). The SDK's PaymentRequired
+    # defaults to version 2. This is a known discrepancy — OKX may update
+    # to v2 later. Verify during implementation and adjust if needed.
+
     def verify(self, payload, requirements) -> VerifyResponse:
         resp = self._client.post("/api/v6/x402/verify", {
             "x402Version": "1",
@@ -437,6 +438,7 @@ class OKXFacilitatorClient:
             is_valid=data["isValid"],
             payer=data.get("payer"),
             invalid_reason=data.get("invalidReason"),
+            invalid_message=data.get("invalidMessage"),
         )
 
     def settle(self, payload, requirements) -> SettleResponse:
@@ -458,6 +460,7 @@ class OKXFacilitatorClient:
             network=f"eip155:{data.get('chainIndex', '196')}",
             payer=data.get("payer"),
             error_reason=data.get("errorReason"),
+            error_message=data.get("errorMessage"),
         )
 ```
 
@@ -483,12 +486,20 @@ def get_submission(submission_id):
         if payment_header:
             # Verify and settle payment to author
             payload = decode_payment_signature_header(payment_header)
+
+            # Validate payment amount matches expected price
+            expected_atomic = str(int(job.solution_price * 10**6))
+            if payload.accepted.amount != expected_atomic:
+                return jsonify({"error": "Payment amount mismatch",
+                               "expected": expected_atomic}), 402
+
             server = _get_x402_server(payload.accepted.network)
             verify = server.verify_payment(payload, payload.accepted)
             if verify.is_valid:
                 settle = server.settle_payment(payload, payload.accepted)
                 if settle.success:
-                    _record_submission_access(sub, viewer_id, settle)
+                    _record_submission_access(
+                        sub, viewer_id, settle, job.solution_price)
                     show_content = True
             if not show_content:
                 return jsonify({"error": "Payment verification failed"}), 402
@@ -529,7 +540,7 @@ def _check_submission_access(sub, job, viewer_id):
         return True                              # Already paid via x402
     if job.status == 'funded':
         return None                              # Payment required
-    return False                                 # Task not active, no content
+    return False                                 # Task not funded, content unavailable
 ```
 
 **Breaking change from existing behavior:**
@@ -541,9 +552,10 @@ def _check_submission_access(sub, job, viewer_id):
 ```python
 def _build_requirements(amount_usdc, pay_to):
     """Build PaymentRequirements for all supported chains."""
+    # USDC is 6 decimals on all supported chains (Base, X Layer)
     amount_atomic = str(int(amount_usdc * 10**6))
     requirements = []
-    for adapter in chain_registry.all():
+    for adapter in chain_registry.adapters():
         requirements.append(PaymentRequirements(
             scheme="exact",
             network=adapter.caip2(),
@@ -554,24 +566,32 @@ def _build_requirements(amount_usdc, pay_to):
         ))
     return requirements
 
+# x402 server registry — maps chain_id to facilitator-backed server
+_x402_servers: dict[int, x402ResourceServerSync] = {}
+# Populated at startup: _x402_servers[8453] = coinbase_server, _x402_servers[196] = okx_server
+
 def _get_x402_server(network: str) -> x402ResourceServerSync:
-    """Route to correct facilitator based on payment network."""
-    if "196" in network:
-        return okx_server
-    return coinbase_server
+    """Route to correct facilitator based on CAIP-2 network string."""
+    chain_id = _parse_chain_id(network)
+    server = _x402_servers.get(chain_id)
+    if not server:
+        raise ValueError(f"No x402 facilitator registered for chain {chain_id}")
+    return server
 
 def _parse_chain_id(network: str) -> int:
-    """Extract chain ID from CAIP-2 network string."""
-    # "eip155:196" → 196
-    return int(network.split(":")[-1])
+    """Extract chain ID from CAIP-2 network string. e.g. 'eip155:196' → 196."""
+    try:
+        return int(network.split(":")[-1])
+    except (ValueError, IndexError):
+        raise ValueError(f"Invalid CAIP-2 network: {network}")
 
-def _record_submission_access(sub, viewer_id, settle_result):
+def _record_submission_access(sub, viewer_id, settle_result, solution_price):
     """Record that viewer paid to access this submission."""
     access = SubmissionAccess(
         submission_id=sub.id,
         viewer_agent_id=viewer_id,
         tx_hash=settle_result.transaction,
-        amount=Decimal(sub.job.solution_price),
+        amount=Decimal(solution_price),
         chain_id=_parse_chain_id(settle_result.network),
     )
     db.session.add(access)
@@ -732,6 +752,10 @@ class ChainRegistry:
                 f"Available: {list(self._adapters.keys())}")
         return self._adapters[self._default_chain_id]
 
+    def adapters(self) -> list[ChainAdapter]:
+        """All registered adapters (for building multi-chain x402 requirements)."""
+        return list(self._adapters.values())
+
     def supported_chains(self) -> list[dict]:
         return [{"chain_id": a.chain_id(), "name": a.chain_name(),
                  "caip2": a.caip2(), "usdc": a.usdc_address()}
@@ -890,11 +914,10 @@ class SubmissionAccess(db.Model):
 | With x402 payment | Without x402 payment |
 |---|---|
 | 1. Parse body, extract price | 1. Parse body, extract price |
-| 2. Verify x402 payment (amount = price) | 2. Create job (status: 'open') |
-| 3. Create job (status: 'funded') | 3. Return 201 |
-| 4. Set deposit_tx_hash from settlement | |
-| 5. Set chain_id from payment network | |
-| 6. Return 201 | |
+| 2. Verify x402 payment | 2. Create job (status: 'open') |
+| 3. Settle x402 payment (get tx_hash) | 3. Return 201 |
+| 4. Create job (status: 'funded') + set deposit_tx_hash, chain_id, solution_price | |
+| 5. Return 201 | |
 
 Response adds: `x402_settlement: {tx_hash, chain_id}` when funded via x402.
 
