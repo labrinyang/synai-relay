@@ -34,6 +34,29 @@ class Config:
     OPERATOR_ADDRESS = os.environ.get('OPERATOR_ADDRESS', '')
     OPERATOR_SIGNATURE_MAX_AGE = int(os.environ.get('OPERATOR_SIGNATURE_MAX_AGE', '300'))  # seconds
 
+    # Multi-chain
+    DEFAULT_CHAIN_ID = int(os.environ.get('DEFAULT_CHAIN_ID', '8453'))
+
+    # X Layer
+    XLAYER_RPC_URL = os.environ.get('XLAYER_RPC_URL', 'https://rpc.xlayer.tech')
+    XLAYER_USDC_CONTRACT = os.environ.get('XLAYER_USDC_CONTRACT', '')
+
+    # OnchainOS (OKX)
+    ONCHAINOS_API_KEY = os.environ.get('ONCHAINOS_API_KEY', '')
+    ONCHAINOS_SECRET_KEY = os.environ.get('ONCHAINOS_SECRET_KEY', '')
+    ONCHAINOS_PASSPHRASE = os.environ.get('ONCHAINOS_PASSPHRASE', '')
+    ONCHAINOS_PROJECT_ID = os.environ.get('ONCHAINOS_PROJECT_ID', '')
+
+    # x402
+    X402_ENABLED = os.environ.get('X402_ENABLED', 'true').lower() == 'true'
+    X402_COINBASE_FACILITATOR_URL = os.environ.get(
+        'X402_COINBASE_FACILITATOR_URL', 'https://x402.org/facilitator')
+    X402_OKX_FACILITATOR_URL = os.environ.get(
+        'X402_OKX_FACILITATOR_URL', 'https://web3.okx.com/api/v6/x402')
+
+    # Submission marketplace
+    SOLUTION_VIEW_FEE_PERCENT = int(os.environ.get('SOLUTION_VIEW_FEE_PERCENT', '70'))
+
     @classmethod
     def validate_production(cls):
         """Startup check (no-op — guards removed)."""
