@@ -45,17 +45,107 @@ x402 repurposes HTTP 402 (Payment Required) for programmatic, machine-to-machine
 ```
 Agent                    Server                   Facilitator
   │── GET /resource ──────►│                            │
-  │◄── 402 + requirements ─┤                            │
+  │◄── 402 + PAYMENT-REQUIRED header ─┤                │
   │  [signs EIP-3009]       │                            │
-  │── GET + PAYMENT-SIG ───►│── POST /verify ──────────►│
-  │                         │◄── {valid: true} ─────────┤
-  │◄── 200 + content ──────┤── POST /settle ──────────►│
-  │                         │◄── {tx_hash: 0x...} ──────┤
+  │── GET + X-PAYMENT hdr ─►│── POST /verify ──────────►│
+  │                         │◄── {is_valid: true} ──────┤
+  │◄── 200 + X-PAYMENT-RESPONSE hdr ─┤                 │
+  │                         ├── POST /settle ──────────►│
+  │                         │◄── {transaction: 0x...} ──┤
 ```
 
-**Python SDK:** `x402[flask,evm]` (v2.3.0+). Supports sync Flask middleware.
+### 2.1 HTTP Headers (verified from x402 SDK v2.3.0)
 
-**Key property:** EIP-3009 `transferWithAuthorization` — gasless, signature-based USDC transfers. The payer signs; the facilitator submits the on-chain transaction.
+| Constant | Header Name | Direction | Content |
+|----------|-------------|-----------|---------|
+| `PAYMENT_REQUIRED_HEADER` | `PAYMENT-REQUIRED` | Server → Client | Base64 `PaymentRequired` JSON |
+| `PAYMENT_SIGNATURE_HEADER` | `PAYMENT-SIGNATURE` | Client → Server | Base64 `PaymentPayload` JSON |
+| `PAYMENT_RESPONSE_HEADER` | `PAYMENT-RESPONSE` | Server → Client | Base64 `SettleResponse` JSON |
+| `X_PAYMENT_HEADER` | `X-PAYMENT` | Client → Server | Alternative to PAYMENT-SIGNATURE |
+| `X_PAYMENT_RESPONSE_HEADER` | `X-PAYMENT-RESPONSE` | Server → Client | Alternative to PAYMENT-RESPONSE |
+
+The SDK checks both header variants: `payment-signature` OR `x-payment`.
+
+### 2.2 Core Data Schemas (verified from SDK)
+
+**PaymentRequired** (402 response):
+```python
+class PaymentRequired:
+    x402_version: int         # Protocol version (default: 2)
+    accepts: list[PaymentRequirements]  # What payments are accepted
+    error: str | None         # Error message
+    resource: ResourceInfo | None
+    extensions: dict | None
+```
+
+**PaymentRequirements** (each item in `accepts`):
+```python
+class PaymentRequirements:
+    scheme: str               # "exact"
+    network: str              # CAIP-2: "eip155:196", "eip155:8453"
+    asset: str                # Token contract address
+    amount: str               # Atomic units string: "50000000" = 50 USDC
+    pay_to: str               # Recipient wallet address
+    max_timeout_seconds: int
+    extra: dict | None
+```
+
+**SettleResponse** (from facilitator):
+```python
+class SettleResponse:
+    success: bool
+    transaction: str          # On-chain tx hash ← this becomes deposit_tx_hash
+    network: str              # CAIP-2 network ID
+    payer: str | None         # Payer wallet address ← this becomes depositor_address
+    error_reason: str | None
+    error_message: str | None
+```
+
+**VerifyResponse** (from facilitator):
+```python
+class VerifyResponse:
+    is_valid: bool
+    payer: str | None
+    invalid_reason: str | None
+    invalid_message: str | None
+```
+
+### 2.3 SDK Components
+
+**Python SDK:** `x402[flask,evm]` (v2.3.0). Key classes:
+
+| Class | Import | Purpose |
+|-------|--------|---------|
+| `x402ResourceServerSync` | `from x402 import ...` | Core verify/settle logic |
+| `ExactEvmServerScheme` | `from x402.mechanisms.evm.exact import ...` | EVM payment scheme |
+| `HTTPFacilitatorClientSync` | `from x402.http.facilitator_client import ...` | HTTP facilitator client |
+| `FacilitatorConfig` | `from x402 import ...` | Facilitator URL config |
+| `PaymentRequired` | `from x402 import ...` | 402 response model |
+| `PaymentRequirements` | `from x402 import ...` | Payment option model |
+
+**Lifecycle hooks** on `x402ResourceServerSync`:
+- `on_before_verify()` / `on_after_verify()` / `on_verify_failure()`
+- `on_before_settle()` / `on_after_settle()` / `on_settle_failure()`
+
+**Built-in dynamic pricing:** `PaymentOption` accepts `DynamicPrice` (callable) and `DynamicPayTo` (callable) — the SDK natively supports dynamic pricing per-request. However, we handle x402 in route handlers directly for reasons explained in Section 5.
+
+### 2.4 Facilitators
+
+**Two facilitators needed** (different chains, different APIs):
+
+| Chain | Facilitator | URL | Auth |
+|-------|-------------|-----|------|
+| Base (8453) | Coinbase | `https://x402.org/facilitator` | None required |
+| X Layer (196) | **OKX OnchainOS** | `https://web3.okx.com/api/v6/x402/` | HMAC (OK-ACCESS-*) |
+
+**OKX x402 endpoints** (verified):
+- `GET /api/v6/x402/supported` — list supported schemes/networks
+- `POST /api/v6/x402/verify` — verify payment (returns `isValid`, `payer`)
+- `POST /api/v6/x402/settle` — settle payment (returns `txHash`, `chainIndex`)
+
+**OKX API format differs** from Coinbase's. The OKX API uses `chainIndex` (string), `maxAmountRequired` (vs `amount`), and wraps responses in `{code, data, msg}`. We need a custom `FacilitatorClientSync` adapter (see Section 5).
+
+**Key property:** EIP-3009 `transferWithAuthorization` — gasless, signature-based USDC transfers. The payer signs; the facilitator submits the on-chain transaction. X Layer USDC must support EIP-3009 for x402 to work (to be verified during implementation).
 
 ---
 
@@ -95,19 +185,19 @@ The x402 SDK's built-in `payment_middleware` uses static route configs. Task pri
       "network": "eip155:196",
       "asset": "<XLAYER_USDC_ADDRESS>",
       "amount": "50000000",
-      "payTo": "<OPERATIONS_WALLET>",
-      "maxTimeoutSeconds": 60
+      "pay_to": "<OPERATIONS_WALLET>",
+      "max_timeout_seconds": 60
     },
     {
       "scheme": "exact",
       "network": "eip155:8453",
       "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "amount": "50000000",
-      "payTo": "<OPERATIONS_WALLET>",
-      "maxTimeoutSeconds": 60
+      "pay_to": "<OPERATIONS_WALLET>",
+      "max_timeout_seconds": 60
     }
   ],
-  "description": "Task escrow deposit: 50.00 USDC"
+  "resource": {"description": "Task escrow deposit: 50.00 USDC"}
 }
 ```
 
@@ -164,19 +254,19 @@ When a non-author agent requests `GET /submissions/<id>` during an active task:
       "network": "eip155:196",
       "amount": "35000000",
       "asset": "<XLAYER_USDC>",
-      "payTo": "<SUBMISSION_AUTHOR_WALLET>",
-      "maxTimeoutSeconds": 60
+      "pay_to": "<SUBMISSION_AUTHOR_WALLET>",
+      "max_timeout_seconds": 60
     },
     {
       "scheme": "exact",
       "network": "eip155:8453",
       "amount": "35000000",
       "asset": "<BASE_USDC>",
-      "payTo": "<SUBMISSION_AUTHOR_WALLET>",
-      "maxTimeoutSeconds": 60
+      "pay_to": "<SUBMISSION_AUTHOR_WALLET>",
+      "max_timeout_seconds": 60
     }
   ],
-  "description": "View solution by agent-xxx for task yyy: 35.00 USDC (70% of task price)"
+  "resource": {"description": "View solution by agent-xxx: 35.00 USDC (70% of task price)"}
 }
 ```
 
@@ -215,127 +305,278 @@ Middleware check: if `SubmissionAccess` exists for (submission_id, viewer_agent_
 
 ---
 
-## 5. Custom x402 Middleware
+## 5. x402 Integration Architecture
 
-Since both scenarios require dynamic pricing and conditional paywalls, we build a custom middleware rather than using the SDK's static `payment_middleware`.
+### 5.1 Why Not Use Built-in `payment_middleware`
 
-### 5.1 Middleware Architecture
+The SDK's `PaymentMiddleware` (WSGI wrapper) supports `DynamicPrice` and `DynamicPayTo` callbacks, which could handle dynamic pricing. However, two problems make it unsuitable:
 
-We build a custom middleware rather than using the SDK's `payment_middleware`, because we need dynamic pricing (task price from request body) and conditional paywalls (access control logic).
+1. **Settlement happens AFTER the route handler returns.** The middleware runs `settle_payment()` post-response, storing the tx_hash only in the `PAYMENT-RESPONSE` header. We need `deposit_tx_hash` in the database at job creation time — not after the response is sent.
 
-The middleware directly uses the facilitator client for verify/settle, bypassing the SDK's static route-matching layer:
+2. **Conditional paywalling is complex.** Submission viewing requires DB queries (task status, authorship, SubmissionAccess records) to decide whether to paywall. The middleware's `requires_payment()` only matches route patterns.
+
+### 5.2 Chosen Approach: Route-Level x402 Handling
+
+We use `x402ResourceServerSync` directly in route handlers for verify/settle, and build 402 responses manually using the SDK's data models. This gives us full control over the flow:
 
 ```python
+from x402 import (x402ResourceServerSync, FacilitatorConfig,
+                   PaymentRequired, PaymentRequirements)
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
 from x402.http.facilitator_client import HTTPFacilitatorClientSync
-from x402 import FacilitatorConfig
+from x402.http import (encode_payment_required_header,
+                       decode_payment_signature_header,
+                       encode_payment_response_header,
+                       PAYMENT_SIGNATURE_HEADER, X_PAYMENT_HEADER)
 
-class X402Middleware:
-    """Custom x402 middleware for dynamic pricing and conditional paywalls.
+# Initialize at startup
+coinbase_facilitator = HTTPFacilitatorClientSync(
+    FacilitatorConfig(url="https://x402.org/facilitator"))
+coinbase_server = x402ResourceServerSync(coinbase_facilitator)
+coinbase_server.register("eip155:8453", ExactEvmServerScheme())
 
-    Does NOT use the SDK's static payment_middleware or route configs.
-    Instead, directly calls the facilitator's verify/settle endpoints
-    with dynamically computed payment requirements.
-    """
+okx_facilitator = OKXFacilitatorClient(  # Custom adapter (see 5.3)
+    api_key=Config.ONCHAINOS_API_KEY, ...)
+okx_server = x402ResourceServerSync(okx_facilitator)
+okx_server.register("eip155:196", ExactEvmServerScheme())
+```
 
-    def __init__(self, app, facilitator_url):
-        self.app = app
-        self.facilitator = HTTPFacilitatorClientSync(
-            FacilitatorConfig(url=facilitator_url)
+**Scenario 1 — POST /jobs (task creation + escrow):**
+
+```python
+@app.route('/jobs', methods=['POST'])
+@require_auth
+def create_job():
+    data = request.get_json()
+    price = Decimal(str(data.get('price', 0)))
+
+    # Check for x402 payment header
+    payment_header = (request.headers.get(PAYMENT_SIGNATURE_HEADER)
+                      or request.headers.get(X_PAYMENT_HEADER))
+
+    if payment_header and Config.X402_ENABLED:
+        # Verify and settle
+        payload = decode_payment_signature_header(payment_header)
+        network = payload.accepted.network
+        server = _get_x402_server(network)  # Route to correct facilitator
+
+        verify_result = server.verify_payment(payload, payload.accepted)
+        if not verify_result.is_valid:
+            return jsonify({"error": verify_result.invalid_reason}), 402
+
+        # Create job as funded
+        job = _create_job(data, status='funded')
+
+        settle_result = server.settle_payment(payload, payload.accepted)
+        if settle_result.success:
+            job.deposit_tx_hash = settle_result.transaction
+            job.depositor_address = settle_result.payer
+            job.chain_id = _parse_chain_id(settle_result.network)
+            job.deposit_amount = price
+            db.session.commit()
+        else:
+            # Settlement failed — rollback to open
+            job.status = 'open'
+            db.session.commit()
+            return jsonify({"error": "x402 settlement failed",
+                           "reason": settle_result.error_reason}), 402
+
+        return jsonify({..., "x402_settlement": {
+            "tx_hash": settle_result.transaction,
+            "chain_id": job.chain_id,
+            "payer": settle_result.payer,
+        }}), 201
+
+    elif not payment_header and Config.X402_ENABLED:
+        # No payment header — return 402 with requirements
+        requirements = _build_requirements(price, Config.OPERATIONS_WALLET_ADDRESS)
+        payment_required = PaymentRequired(accepts=requirements)
+        resp = jsonify({"error": "Payment required",
+                       "description": f"Task escrow: {price} USDC"})
+        resp.status_code = 402
+        resp.headers['PAYMENT-REQUIRED'] = encode_payment_required_header(
+            payment_required)
+        return resp
+
+    else:
+        # Legacy flow (X402_ENABLED=false or no header)
+        job = _create_job(data, status='open')
+        return jsonify({...}), 201
+```
+
+**Scenario 2 — GET /submissions/<id> (viewing paywall):** handled similarly in route handler with access control checks (see Section 5.4).
+
+### 5.3 OKX Facilitator Adapter
+
+OKX's x402 API differs from the Coinbase standard. We implement a custom `FacilitatorClientSync`:
+
+```python
+class OKXFacilitatorClient:
+    """Adapts OKX's x402 API to the x402 SDK's FacilitatorClientSync protocol."""
+
+    BASE = "https://web3.okx.com"
+
+    def __init__(self, api_key, secret_key, passphrase):
+        self._client = OnchainOSClient(api_key, secret_key, passphrase)
+
+    def verify(self, payload, requirements) -> VerifyResponse:
+        resp = self._client.post("/api/v6/x402/verify", {
+            "x402Version": "1",
+            "chainIndex": _network_to_chain_index(requirements.network),
+            "paymentPayload": payload.model_dump(),
+            "paymentRequirements": {
+                "scheme": requirements.scheme,
+                "maxAmountRequired": requirements.amount,
+                "payTo": requirements.pay_to,
+                "asset": requirements.asset,
+                "description": "",
+            },
+        })
+        data = resp["data"][0]
+        return VerifyResponse(
+            is_valid=data["isValid"],
+            payer=data.get("payer"),
+            invalid_reason=data.get("invalidReason"),
         )
 
-    def build_payment_required(self, amount_usdc, pay_to, description,
-                                supported_chains):
-        """Build a 402 response with dynamic pricing for multiple chains.
-
-        Args:
-            amount_usdc: Human-readable USDC amount (e.g. Decimal('50.00'))
-            pay_to: Recipient wallet address
-            description: Human-readable description
-            supported_chains: List of ChainAdapter instances
-        Returns:
-            Flask Response with 402 status and payment requirements
-        """
-        amount_atomic = str(int(amount_usdc * 10**6))  # USDC 6 decimals
-        accepts = []
-        for chain in supported_chains:
-            accepts.append({
-                "scheme": "exact",
-                "network": chain.caip2(),
-                "asset": chain.usdc_address(),
-                "amount": amount_atomic,
-                "payTo": pay_to,
-                "maxTimeoutSeconds": 60,
-            })
-        # Return 402 with base64-encoded payment requirements
-        ...
-
-    def verify_and_settle(self, request, expected_amount, expected_pay_to):
-        """Verify PAYMENT-SIGNATURE header and settle on-chain.
-
-        Returns:
-            SettlementResult with tx_hash and chain info, or None if invalid.
-        """
-        ...
+    def settle(self, payload, requirements) -> SettleResponse:
+        resp = self._client.post("/api/v6/x402/settle", {
+            "x402Version": "1",
+            "chainIndex": _network_to_chain_index(requirements.network),
+            "paymentPayload": payload.model_dump(),
+            "paymentRequirements": {
+                "scheme": requirements.scheme,
+                "maxAmountRequired": requirements.amount,
+                "payTo": requirements.pay_to,
+                "asset": requirements.asset,
+            },
+        })
+        data = resp["data"][0]
+        return SettleResponse(
+            success=data["success"],
+            transaction=data.get("txHash", ""),
+            network=f"eip155:{data.get('chainIndex', '196')}",
+            payer=data.get("payer"),
+            error_reason=data.get("errorReason"),
+        )
 ```
 
-**Note on x402 header names:** The exact header names (`X-PAYMENT`, `PAYMENT-SIGNATURE`, etc.) must be verified against the x402 SDK's constants module at implementation time, as they may differ between protocol versions.
+### 5.4 Submission Viewing Flow (Route-Level)
 
-### 5.2 Integration Points in server.py
-
-The x402 check runs as a `@app.before_request` hook. **Hook ordering matters**: it must run AFTER `_attach_request_id` (existing hook) so request correlation is available for logging.
-
-For submission viewing (Scenario 2), the hook needs to identify the requesting agent to check authorship. It calls the existing `_get_viewer_id()` helper (which optionally extracts agent_id from Bearer token without requiring auth).
+The `GET /submissions/<id>` route handler integrates x402 directly. Uses `_get_viewer_id()` to identify the requester without requiring auth:
 
 ```python
-@app.before_request
-def x402_check():
-    """Intercept requests that may require x402 payment."""
-    if not Config.X402_ENABLED:
-        return None
+@app.route('/submissions/<submission_id>')
+def get_submission(submission_id):
+    sub = Submission.query.get_or_404(submission_id)
+    job = Job.query.get(sub.task_id)
+    viewer_id = _get_viewer_id()  # Optional auth — extracts from Bearer token
 
-    rule = request.url_rule
-    if rule is None:
-        return None
+    # Determine if content should be shown
+    show_content = _check_submission_access(sub, job, viewer_id)
 
-    # Scenario 1: POST /jobs with price in body
-    if request.method == 'POST' and rule.rule == '/jobs':
-        return _x402_check_task_creation()
+    if show_content is None and Config.X402_ENABLED:
+        # show_content=None means "payment required"
+        payment_header = (request.headers.get(PAYMENT_SIGNATURE_HEADER)
+                          or request.headers.get(X_PAYMENT_HEADER))
 
-    # Scenario 2: GET /submissions/<id>
-    # Uses _get_viewer_id() to determine if requester is the author (exempt)
-    if request.method == 'GET' and rule.rule == '/submissions/<submission_id>':
-        return _x402_check_submission_view(request.view_args['submission_id'])
+        if payment_header:
+            # Verify and settle payment to author
+            payload = decode_payment_signature_header(payment_header)
+            server = _get_x402_server(payload.accepted.network)
+            verify = server.verify_payment(payload, payload.accepted)
+            if verify.is_valid:
+                settle = server.settle_payment(payload, payload.accepted)
+                if settle.success:
+                    _record_submission_access(sub, viewer_id, settle)
+                    show_content = True
+            if not show_content:
+                return jsonify({"error": "Payment verification failed"}), 402
+        else:
+            # Return 402 with payment requirements (pay_to = author wallet)
+            author = Agent.query.get(sub.worker_id)
+            if not author or not author.wallet_address:
+                return jsonify({"error": "Author has no wallet"}), 409
+            requirements = _build_requirements(
+                job.solution_price, author.wallet_address)
+            payment_required = PaymentRequired(accepts=requirements)
+            resp = _submission_to_dict(sub, viewer_id, show_content=False)
+            resp_obj = jsonify(resp)
+            resp_obj.status_code = 402
+            resp_obj.headers['PAYMENT-REQUIRED'] = (
+                encode_payment_required_header(payment_required))
+            return resp_obj
 
-    return None
+    return jsonify(_submission_to_dict(sub, viewer_id,
+                                       show_content=bool(show_content)))
 ```
 
-**Critical: `_submission_to_dict` must be updated.** The existing function (server.py) grants free content access to the buyer (`if viewer_id == job.buyer_id: show_content = True`). This must be removed for active tasks. The new content visibility logic in `_submission_to_dict`:
+### 5.5 Access Control Changes to `_submission_to_dict`
+
+**Critical: `_submission_to_dict` must be updated.** The existing function grants free content access to the buyer (`if viewer_id == job.buyer_id: show_content = True`). This must be removed for active tasks.
+
+New `_check_submission_access` function:
 
 ```python
-# NEW logic (replaces existing show_content rules)
-show_content = False
-if viewer_id == sub.worker_id:
-    show_content = True                          # Author always sees own work
-elif job.status in ('resolved', 'expired', 'cancelled'):
-    show_content = True                          # ALL submissions public after resolution
-elif SubmissionAccess.query.filter_by(
-        submission_id=sub.id, viewer_agent_id=viewer_id).first():
-    show_content = True                          # Paid via x402
+def _check_submission_access(sub, job, viewer_id):
+    """Returns True (show), False (hide), or None (payment required)."""
+    if viewer_id == sub.worker_id:
+        return True                              # Author always sees own work
+    if job.status in ('resolved', 'expired', 'cancelled'):
+        return True                              # ALL submissions public after resolution
+    if viewer_id and SubmissionAccess.query.filter_by(
+            submission_id=sub.id, viewer_agent_id=viewer_id).first():
+        return True                              # Already paid via x402
+    if job.status == 'funded':
+        return None                              # Payment required
+    return False                                 # Task not active, no content
 ```
 
-Note: the existing code only shows content for the **winning** submission after resolution (`if job.winner_id == sub.worker_id`). This must change to show ALL submissions post-resolution.
+**Breaking change from existing behavior:**
+1. Buyer no longer gets free access during active tasks (was: `if viewer_id == job.buyer_id: show_content = True`)
+2. ALL submissions become public after resolution (was: only winning submission visible)
 
-### 5.3 Facilitator Strategy
+### 5.6 Helper Functions
 
-| Chain | Facilitator | Notes |
-|-------|-------------|-------|
-| Base (eip155:8453) | `https://x402.org/facilitator` | Coinbase-hosted, well-tested |
-| X Layer (eip155:196) | OKX OnchainOS x402 API or self-hosted | Verify OKX facilitator availability; fall back to self-hosted |
+```python
+def _build_requirements(amount_usdc, pay_to):
+    """Build PaymentRequirements for all supported chains."""
+    amount_atomic = str(int(amount_usdc * 10**6))
+    requirements = []
+    for adapter in chain_registry.all():
+        requirements.append(PaymentRequirements(
+            scheme="exact",
+            network=adapter.caip2(),
+            asset=adapter.usdc_address(),
+            amount=amount_atomic,
+            pay_to=pay_to,
+            max_timeout_seconds=60,
+        ))
+    return requirements
 
-**Risk:** X Layer is not in x402's default supported networks list. Mitigation:
-1. Check if OKX's OnchainOS x402 Payments API acts as a facilitator for X Layer
-2. If not, self-host a facilitator using the x402 SDK's `x402Facilitator` class
-3. The EIP-3009 mechanism is chain-agnostic for EVM — only the facilitator needs chain support
+def _get_x402_server(network: str) -> x402ResourceServerSync:
+    """Route to correct facilitator based on payment network."""
+    if "196" in network:
+        return okx_server
+    return coinbase_server
+
+def _parse_chain_id(network: str) -> int:
+    """Extract chain ID from CAIP-2 network string."""
+    # "eip155:196" → 196
+    return int(network.split(":")[-1])
+
+def _record_submission_access(sub, viewer_id, settle_result):
+    """Record that viewer paid to access this submission."""
+    access = SubmissionAccess(
+        submission_id=sub.id,
+        viewer_agent_id=viewer_id,
+        tx_hash=settle_result.transaction,
+        amount=Decimal(sub.job.solution_price),
+        chain_id=_parse_chain_id(settle_result.network),
+    )
+    db.session.add(access)
+    db.session.commit()
+```
 
 ---
 
@@ -724,8 +965,10 @@ class Config:
 
     # --- New: x402 ---
     X402_ENABLED = os.environ.get('X402_ENABLED', 'true').lower() == 'true'
-    X402_FACILITATOR_URL = os.environ.get(
-        'X402_FACILITATOR_URL', 'https://x402.org/facilitator')
+    X402_COINBASE_FACILITATOR_URL = os.environ.get(
+        'X402_COINBASE_FACILITATOR_URL', 'https://x402.org/facilitator')
+    X402_OKX_FACILITATOR_URL = os.environ.get(
+        'X402_OKX_FACILITATOR_URL', 'https://web3.okx.com/api/v6/x402')
 
     # --- New: Submission marketplace ---
     SOLUTION_VIEW_FEE_PERCENT = int(
@@ -758,8 +1001,9 @@ services/
   chain_registry.py          # NEW — ChainRegistry
   base_adapter.py            # NEW — BaseAdapter wrapping WalletService
   xlayer_adapter.py          # NEW — XLayerAdapter wrapping OnchainOSClient
-  onchainos_client.py        # NEW — OnchainOS REST client
-  x402_middleware.py         # NEW — Custom x402 Flask middleware
+  onchainos_client.py        # NEW — OnchainOS REST client (HMAC auth)
+  okx_facilitator.py         # NEW — OKX x402 facilitator adapter
+  x402_service.py            # NEW — x402 route-level helpers (build_requirements, verify, settle)
 ```
 
 ---
@@ -794,10 +1038,12 @@ services/
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| X Layer not in x402 supported networks | Cannot use Coinbase facilitator for X Layer | Check OKX x402 facilitator; self-host if needed |
-| X Layer USDC may not support EIP-3009 | x402 signature-based payment won't work | Verify contract; fall back to direct transfer + custom verification |
+| X Layer USDC may not support EIP-3009 | x402 signature-based payment won't work | Verify contract; fall back to direct USDC transfer + custom verification |
+| OKX facilitator API format mismatch | Custom adapter needed | `OKXFacilitatorClient` adapter (Section 5.3) — already designed |
 | Hackathon deadline (11 days) | Scope too large | Prioritize: x402 task creation → submission paywall → ChainAdapter → OnchainOS |
 | OnchainOS API instability | X Layer operations fail | Graceful degradation; BaseAdapter always available |
+
+**Resolved risk:** X Layer facilitator — OKX confirmed to have their own x402 facilitator at `web3.okx.com/api/v6/x402/` supporting X Layer (chain 196). No need to self-host.
 
 ### 14.1 Implementation Priority
 
