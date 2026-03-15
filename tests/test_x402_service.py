@@ -480,3 +480,116 @@ class TestSubmissionPaywall:
         resp = client.get(f'/submissions/{sub_id}',
                           headers={'Authorization': f'Bearer {raw_key_b}'})
         assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Task 18: Full Lifecycle Integration Test
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch, MagicMock
+
+
+class TestX402Lifecycle:
+    """Full lifecycle: create funded job via x402 -> submit -> paywall -> resolve -> public."""
+
+    def _make_agents(self):
+        raw_b, hash_b = generate_api_key()
+        raw_w, hash_w = generate_api_key()
+        raw_v, hash_v = generate_api_key()
+        buyer = Agent(agent_id='life-buyer', name='Buyer',
+                      wallet_address='0xBUYER', api_key_hash=hash_b)
+        worker = Agent(agent_id='life-worker', name='Worker',
+                       wallet_address='0xWORKER', api_key_hash=hash_w)
+        viewer = Agent(agent_id='life-viewer', name='Viewer',
+                       api_key_hash=hash_v)
+        db.session.add_all([buyer, worker, viewer])
+        db.session.commit()
+        return raw_b, raw_w, raw_v
+
+    @patch('server._X402_SDK_AVAILABLE', True)
+    @patch('server._get_x402_server')
+    @patch('server.decode_payment_signature_header')
+    @patch('server.encode_payment_required_header', return_value='encoded')
+    @patch('server.PaymentRequired')
+    def test_full_lifecycle(self, mock_pr, mock_enc, mock_decode, mock_get_server, client):
+        with app.app_context():
+            key_b, key_w, key_v = self._make_agents()
+            app.config['X402_ENABLED'] = True
+
+        # 1. Create funded job via x402
+        mock_server = MagicMock()
+        mock_server.verify_payment.return_value = MagicMock(is_valid=True)
+        mock_server.settle_payment.return_value = MagicMock(
+            success=True, transaction="0xDEPOSIT",
+            network="eip155:8453", payer="0xBUYER")
+        mock_get_server.return_value = mock_server
+
+        mock_payload = MagicMock()
+        mock_payload.accepted.network = "eip155:8453"
+        mock_payload.accepted.amount = "50000000"
+        mock_decode.return_value = mock_payload
+
+        resp = client.post('/jobs', json={
+            'title': 'Lifecycle Test', 'description': 'Full test',
+            'price': 50.0,
+        }, headers={
+            'Authorization': f'Bearer {key_b}',
+            'X-PAYMENT': 'encoded-payment',
+        })
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data['status'] == 'funded'
+        task_id = data['task_id']
+
+        # 2. Worker claims
+        resp = client.post(f'/jobs/{task_id}/claim',
+                           headers={'Authorization': f'Bearer {key_w}'})
+        assert resp.status_code == 200
+
+        # 3. Worker submits
+        resp = client.post(f'/jobs/{task_id}/submit', json={
+            'content': {'solution': 'my answer'},
+        }, headers={'Authorization': f'Bearer {key_w}'})
+        assert resp.status_code in (200, 201, 202)
+
+        # 4. Get submission ID
+        resp = client.get(f'/jobs/{task_id}/submissions',
+                          headers={'Authorization': f'Bearer {key_w}'})
+        subs = resp.get_json().get('submissions', [])
+        assert len(subs) >= 1
+        sub_id = subs[0]['submission_id']
+
+        # 5. Worker sees own content (free)
+        resp = client.get(f'/submissions/{sub_id}',
+                          headers={'Authorization': f'Bearer {key_w}'})
+        assert resp.status_code == 200
+        assert resp.get_json()['content'] != '[redacted]'
+
+        # 6. Viewer gets 402 (must pay via x402)
+        resp = client.get(f'/submissions/{sub_id}',
+                          headers={'Authorization': f'Bearer {key_v}'})
+        assert resp.status_code == 402
+
+        # 7. Buyer also gets 402 (no free access during active task)
+        resp = client.get(f'/submissions/{sub_id}',
+                          headers={'Authorization': f'Bearer {key_b}'})
+        assert resp.status_code == 402
+
+        # 8. Simulate resolution — all submissions become public
+        with app.app_context():
+            job = db.session.get(Job, task_id)
+            job.status = 'resolved'
+            job.winner_id = 'life-worker'
+            db.session.commit()
+
+        # 9. After resolution, viewer sees content for free
+        resp = client.get(f'/submissions/{sub_id}',
+                          headers={'Authorization': f'Bearer {key_v}'})
+        assert resp.status_code == 200
+        assert resp.get_json()['content'] == {'solution': 'my answer'}
+
+        # 10. Buyer also sees content for free after resolution
+        resp = client.get(f'/submissions/{sub_id}',
+                          headers={'Authorization': f'Bearer {key_b}'})
+        assert resp.status_code == 200
+        assert resp.get_json()['content'] == {'solution': 'my answer'}
