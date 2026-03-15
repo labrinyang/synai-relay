@@ -98,6 +98,7 @@ class Job(db.Model):
     result_data = db.Column(db.JSON)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+    chain_id = db.Column(db.Integer, nullable=True)  # Set at funding; NULL = legacy (Base)
     # Relationships
     submissions = db.relationship('Submission', backref='job', lazy=True,
                                   foreign_keys='Submission.task_id')
@@ -194,3 +195,21 @@ class Dispute(db.Model):
     status = db.Column(db.String(20), default='open')  # open, resolved
     resolution = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
+
+
+class SubmissionAccess(db.Model):
+    """Tracks x402 payments for viewing submissions (prevents double-charging)."""
+    __tablename__ = 'submission_accesses'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    submission_id = db.Column(db.String(36), db.ForeignKey('submissions.id'), nullable=False)
+    viewer_agent_id = db.Column(db.String(100), db.ForeignKey('agents.agent_id'), nullable=False)
+    tx_hash = db.Column(db.String(100), nullable=False)
+    amount = db.Column(db.Numeric(20, 6), nullable=False)
+    chain_id = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('submission_id', 'viewer_agent_id',
+                            name='uq_submission_access'),
+        db.Index('ix_submission_access_viewer', 'viewer_agent_id'),
+    )

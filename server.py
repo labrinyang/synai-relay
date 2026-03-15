@@ -7,7 +7,7 @@ Submission statuses: pending -> judging -> passed | failed
 """
 
 from flask import Flask, request, jsonify, g, render_template, send_from_directory
-from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant, utc_iso
+from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant, utc_iso, SubmissionAccess
 from config import Config
 from sqlalchemy.exc import IntegrityError
 from services.auth_service import generate_api_key, require_auth, require_operator, require_buyer, verify_api_key
