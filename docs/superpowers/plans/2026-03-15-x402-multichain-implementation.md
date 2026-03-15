@@ -1018,13 +1018,15 @@ class OKXFacilitatorClient:
             },
         })
         data = resp["data"][0]
+        # PLAN FIX: OKX settle response uses "errorMsg" not "errorReason"
+        # (verified via Context7 OKX docs: POST /api/v6/x402/settle)
         return SettleResponse(
             success=data.get("success", False),
             transaction=data.get("txHash", ""),
             network=f"eip155:{data.get('chainIndex', _network_to_chain_index(requirements.network))}",
             payer=data.get("payer"),
-            error_reason=data.get("errorReason"),
-            error_message=data.get("errorMessage"),
+            error_reason=data.get("errorMsg"),
+            error_message=data.get("errorMsg"),
         )
 
     def get_supported(self):

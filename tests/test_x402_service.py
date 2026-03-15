@@ -16,6 +16,12 @@ def client():
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
     # Default: disable x402 so legacy tests work; x402 tests re-enable explicitly
     app.config['X402_ENABLED'] = False
+    # Reset x402 init flag so it re-initializes cleanly (prevents cross-test pollution)
+    import server as _srv
+    _srv._x402_initialized = False
+    # Reset wallet service singleton (may be polluted by prior test files)
+    import services.wallet_service as _ws
+    _ws._wallet_service = None
     with app.app_context():
         db.create_all()
         yield app.test_client()

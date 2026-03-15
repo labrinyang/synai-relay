@@ -46,6 +46,7 @@ class TestScenarioA_HappyPath(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -185,6 +186,7 @@ class TestScenarioB_TaskTimeout(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -282,6 +284,7 @@ class TestScenarioC_RejectionRetryPass(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -434,6 +437,7 @@ class TestScenarioD_DisputeFlow(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -578,6 +582,7 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -808,6 +813,7 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -1016,6 +1022,7 @@ class TestScenarioG_PayoutPartialFailure(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -1120,6 +1127,7 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -1339,6 +1347,7 @@ class TestScenarioI_DepositWrongTarget(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -1425,6 +1434,7 @@ class TestScenarioJ_ReplayAttack(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -1516,6 +1526,7 @@ class TestScenarioK_ConcurrentPayout(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
@@ -1639,6 +1650,7 @@ class TestScenarioL_OracleTimeout(unittest.TestCase):
 
     def setUp(self):
         app.config['TESTING'] = True
+        app.config['X402_ENABLED'] = False
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
         # Provide mock wallet service so fund/payout work without a real chain
         import services.wallet_service as ws_mod
