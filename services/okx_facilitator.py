@@ -3,6 +3,7 @@ import logging
 
 # Verified import path: x402.facilitator re-exports from x402.schemas.responses
 from x402.facilitator import VerifyResponse, SettleResponse
+from x402.schemas import SupportedResponse, SupportedKind
 
 from services.onchainos_client import OnchainOSClient
 
@@ -55,18 +56,34 @@ class OKXFacilitatorClient:
             },
         })
         data = resp["data"][0]
-        # OKX settle response uses "errorMsg" not "errorReason"
+        # OKX settle response uses "errorCode"/"failReason" for machine-readable
+        # codes and "errorMsg" for human-readable text.
         return SettleResponse(
             success=data.get("success", False),
             transaction=data.get("txHash", ""),
             network=f"eip155:{data.get('chainIndex', _network_to_chain_index(requirements.network))}",
             payer=data.get("payer"),
-            error_reason=data.get("errorMsg"),
-            error_message=data.get("errorMsg"),
+            error_reason=data.get("errorCode", data.get("failReason", "")),
+            error_message=data.get("errorMsg", ""),
         )
 
-    def get_supported(self):
-        return self._client.get("/api/v6/x402/supported")
+    def get_supported(self) -> SupportedResponse:
+        resp = self._client.get("/api/v6/x402/supported")
+        data = resp["data"][0]
+        kinds = [
+            SupportedKind(
+                x402_version=int(k.get("x402Version", 1)),
+                scheme=k["scheme"],
+                network=k["network"],
+                extra=k.get("extra"),
+            )
+            for k in data.get("kinds", [])
+        ]
+        return SupportedResponse(
+            kinds=kinds,
+            extensions=data.get("extensions", []),
+            signers=data.get("signers", {}),
+        )
 
     def close(self):
         pass

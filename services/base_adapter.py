@@ -47,5 +47,8 @@ class BaseAdapter(ChainAdapter):
         )
 
     def refund(self, to_address: str, amount: Decimal) -> RefundResult:
-        tx_hash = self._ws.refund(to_address, amount)
-        return RefundResult(tx_hash=tx_hash or '')
+        try:
+            tx_hash = self._ws.refund(to_address, amount)
+            return RefundResult(tx_hash=tx_hash or '')
+        except Exception as e:
+            return RefundResult(error=str(e))

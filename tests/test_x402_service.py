@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 from server import app
 from models import db, Agent, Job, Submission, SubmissionAccess
 from services.auth_service import generate_api_key
+from config import Config
 
 
 @pytest.fixture
@@ -242,10 +243,12 @@ class TestX402CreateJob:
         assert resp.get_json()['status'] == 'open'
 
     @patch('server._X402_SDK_AVAILABLE', True)
+    @patch('server.encode_payment_response_header', return_value='receipt')
     @patch('server._get_x402_server')
     @patch('server.decode_payment_signature_header')
     def test_valid_x402_payment_creates_funded_job(self, mock_decode,
-                                                    mock_get_server, client):
+                                                    mock_get_server,
+                                                    mock_enc_resp, client):
         with app.app_context():
             _, api_key = self._make_agent('buyer-funded')
             app.config['X402_ENABLED'] = True
@@ -260,6 +263,7 @@ class TestX402CreateJob:
         mock_payload = MagicMock()
         mock_payload.accepted.network = "eip155:8453"
         mock_payload.accepted.amount = "50000000"
+        mock_payload.accepted.pay_to = Config.OPERATIONS_WALLET_ADDRESS or ''
         mock_decode.return_value = mock_payload
 
         resp = client.post('/jobs', json={
@@ -513,11 +517,13 @@ class TestX402Lifecycle:
         return raw_b, raw_w, raw_v
 
     @patch('server._X402_SDK_AVAILABLE', True)
+    @patch('server.encode_payment_response_header', return_value='receipt')
     @patch('server._get_x402_server')
     @patch('server.decode_payment_signature_header')
     @patch('server.encode_payment_required_header', return_value='encoded')
     @patch('server.PaymentRequired')
-    def test_full_lifecycle(self, mock_pr, mock_enc, mock_decode, mock_get_server, client):
+    def test_full_lifecycle(self, mock_pr, mock_enc, mock_decode, mock_get_server,
+                            mock_enc_resp, client):
         with app.app_context():
             key_b, key_w, key_v = self._make_agents()
             app.config['X402_ENABLED'] = True
@@ -533,6 +539,7 @@ class TestX402Lifecycle:
         mock_payload = MagicMock()
         mock_payload.accepted.network = "eip155:8453"
         mock_payload.accepted.amount = "50000000"
+        mock_payload.accepted.pay_to = Config.OPERATIONS_WALLET_ADDRESS or ''
         mock_decode.return_value = mock_payload
 
         resp = client.post('/jobs', json={

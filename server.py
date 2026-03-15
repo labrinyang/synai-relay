@@ -261,14 +261,17 @@ def _validate_job_fields(data: dict):
 
 # Initialize on first request (lazy — avoids import-time side effects in tests)
 _x402_initialized = False
+_x402_init_lock = threading.Lock()
 
 
 @app.before_request
 def _ensure_x402_init():
     global _x402_initialized
     if not _x402_initialized:
-        _init_x402()
-        _x402_initialized = True
+        with _x402_init_lock:
+            if not _x402_initialized:
+                _init_x402()
+                _x402_initialized = True
 
 
 # G14: Correlation ID — attach unique request ID to every request
@@ -356,13 +359,15 @@ _pending_lock = threading.Lock()
 # G12: Auto-refund helper (used by expiry checker, sweep, cancel)
 # ---------------------------------------------------------------------------
 
-def _auto_refund(job, wallet, label="auto"):
+def _auto_refund(job, label="auto"):
     """Attempt on-chain refund with pending marker, per-job commit, 3 retries.
+
+    Uses ChainRegistry to resolve the appropriate adapter for the job's chain.
 
     Safety guarantees:
     - Sets refund_tx_hash='pending' + commit BEFORE sending (cross-path mutex)
     - Commits immediately after each successful send (no batched commits)
-    - wallet_service.refund() handles TransactionPendingError internally
+    - adapter.refund() returns RefundResult with .tx_hash and .error
     - Resets pending marker on final failure
 
     Returns tx_hash on success, or None on failure.
@@ -378,7 +383,13 @@ def _auto_refund(job, wallet, label="auto"):
     if not refund_amount or refund_amount <= 0:
         return None
 
-    if not wallet.is_connected():
+    adapter = None
+    if _chain_registry:
+        try:
+            adapter = _chain_registry.get_or_default(job.chain_id)
+        except (ValueError, RuntimeError):
+            adapter = None
+    if not adapter or not adapter.is_connected():
         return None
 
     # Atomic pending marker — conditional UPDATE prevents concurrent refund
@@ -396,7 +407,10 @@ def _auto_refund(job, wallet, label="auto"):
 
     for attempt in range(1, 4):
         try:
-            tx = wallet.refund(job.depositor_address, refund_amount)
+            result = adapter.refund(job.depositor_address, refund_amount)
+            if result.error:
+                raise RuntimeError(result.error)
+            tx = result.tx_hash
             job.refund_tx_hash = tx
             db.session.commit()
             logger.info(
@@ -452,8 +466,7 @@ def _expiry_checker_loop():
                             fire_event('job.expired', job.task_id, {"status": "expired"})
 
                             # G12-refund: Auto-refund expired funded jobs
-                            from services.wallet_service import get_wallet_service
-                            _auto_refund(job, get_wallet_service(), label="expiry")
+                            _auto_refund(job, label="expiry")
                     if expired_jobs:
                         db.session.commit()  # persist status changes
 
@@ -465,10 +478,8 @@ def _expiry_checker_loop():
                         Job.refund_tx_hash.is_(None),
                     ).all()
                     if unrefunded:
-                        from services.wallet_service import get_wallet_service
-                        sweep_wallet = get_wallet_service()
                         for job in unrefunded:
-                            _auto_refund(job, sweep_wallet, label="sweep")
+                            _auto_refund(job, label="sweep")
 
                     # Clean up expired idempotency keys (24h TTL)
                     from models import IdempotencyKey
@@ -1197,8 +1208,8 @@ def create_job_endpoint():
     price = fields["price"]
 
     # Check for x402 payment header
-    payment_header = (request.headers.get('PAYMENT-SIGNATURE')
-                      or request.headers.get('X-PAYMENT'))
+    payment_header = (request.headers.get(PAYMENT_SIGNATURE_HEADER)
+                      or request.headers.get(X_PAYMENT_HEADER))
 
     if not payment_header:
         # No payment: return 402 with requirements
@@ -1223,6 +1234,20 @@ def create_job_endpoint():
     except Exception as e:
         return jsonify({"error": f"Invalid payment header: {e}"}), 400
 
+    # Server-side validation: amount and payTo must match expectations
+    expected_atomic = str(int(price * Decimal(10 ** 6)))
+    expected_pay_to = Config.OPERATIONS_WALLET_ADDRESS or ''
+    if payload.accepted.amount != expected_atomic:
+        return jsonify({
+            "error": "Payment amount mismatch",
+            "expected": expected_atomic,
+            "actual": payload.accepted.amount,
+        }), 402
+    if payload.accepted.pay_to != expected_pay_to:
+        return jsonify({
+            "error": "Payment recipient mismatch",
+        }), 402
+
     network = payload.accepted.network
     try:
         server = _get_x402_server(network)
@@ -1243,11 +1268,15 @@ def create_job_endpoint():
             "reason": settle_result.error_reason,
         }), 402
 
+    if not settle_result.payer:
+        logger.error("x402 settlement succeeded but payer address missing — cannot track depositor")
+        return jsonify({"error": "Settlement missing payer address"}), 500
+
     # Settlement succeeded — create job as funded
     chain_id = parse_chain_id(settle_result.network)
     sol_price = price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
 
-    return _create_job(
+    resp = _create_job(
         override_status='funded',
         deposit_tx_hash=settle_result.transaction,
         depositor_address=settle_result.payer,
@@ -1255,6 +1284,13 @@ def create_job_endpoint():
         deposit_amount=price,
         solution_price=sol_price,
     )
+    # x402 spec: include settlement receipt in response
+    if isinstance(resp, tuple):
+        response_obj = resp[0]
+    else:
+        response_obj = resp
+    response_obj.headers['PAYMENT-RESPONSE'] = encode_payment_response_header(settle_result)
+    return resp
 
 
 def _create_job(override_status=None, deposit_tx_hash=None,
@@ -1751,10 +1787,11 @@ def get_submission(submission_id):
     viewer_id = _get_viewer_id()
     job = db.session.get(Job, sub.task_id)
     access = _check_submission_access(sub, job, viewer_id)
+    settle_receipt = None
 
     if access is None and app.config.get('X402_ENABLED', False) and _X402_SDK_AVAILABLE:
-        payment_header = (request.headers.get('PAYMENT-SIGNATURE')
-                          or request.headers.get('X-PAYMENT'))
+        payment_header = (request.headers.get(PAYMENT_SIGNATURE_HEADER)
+                          or request.headers.get(X_PAYMENT_HEADER))
 
         if payment_header:
             if not viewer_id:
@@ -1801,6 +1838,7 @@ def get_submission(submission_id):
                 except IntegrityError:
                     db.session.rollback()
                 access = True
+                settle_receipt = encode_payment_response_header(settle)
             else:
                 return jsonify({
                     "error": "Payment settlement failed",
@@ -1832,8 +1870,11 @@ def get_submission(submission_id):
                 payment_required)
             return resp
 
-    return jsonify(_submission_to_dict(sub, viewer_id,
-                                       show_content=(access is True)))
+    resp_data = _submission_to_dict(sub, viewer_id, show_content=(access is True))
+    resp = jsonify(resp_data)
+    if settle_receipt:
+        resp.headers['PAYMENT-RESPONSE'] = settle_receipt
+    return resp
 
 
 # ===================================================================
@@ -1926,8 +1967,7 @@ def cancel_job(task_id):
     auto_refund_tx = None
     cooldown_blocked, _ = _check_refund_cooldown(job.depositor_address)
     if not cooldown_blocked:
-        from services.wallet_service import get_wallet_service
-        auto_refund_tx = _auto_refund(job, get_wallet_service(), label="cancel")
+        auto_refund_tx = _auto_refund(job, label="cancel")
     else:
         logger.warning("Auto-refund skipped for job %s: depositor cooldown active", task_id)
 

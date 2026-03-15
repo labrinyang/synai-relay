@@ -4,7 +4,8 @@ import hashlib
 import hmac
 import json
 import logging
-import time
+import urllib.parse
+from datetime import datetime, timezone
 
 import requests
 
@@ -12,14 +13,14 @@ logger = logging.getLogger('relay.onchainos')
 
 
 class OnchainOSClient:
-    BASE_URL = "https://web3.okx.com"
 
     def __init__(self, api_key: str, secret_key: str, passphrase: str,
-                 project_id: str = ""):
+                 project_id: str = "", base_url: str = "https://web3.okx.com"):
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
         self.project_id = project_id
+        self._base_url = base_url
 
     def _sign(self, timestamp: str, method: str, path: str,
               body: str = "") -> str:
@@ -30,7 +31,8 @@ class OnchainOSClient:
         return base64.b64encode(sig).decode()
 
     def _headers(self, method: str, path: str, body: str = "") -> dict:
-        ts = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+        now = datetime.now(timezone.utc)
+        ts = now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
         return {
             "OK-ACCESS-KEY": self.api_key,
             "OK-ACCESS-SIGN": self._sign(ts, method, path, body),
@@ -43,7 +45,7 @@ class OnchainOSClient:
     def post(self, path: str, data: dict) -> dict:
         body = json.dumps(data)
         headers = self._headers("POST", path, body)
-        url = self.BASE_URL + path
+        url = self._base_url + path
         resp = requests.post(url, headers=headers, data=body, timeout=30)
         resp.raise_for_status()
         result = resp.json()
@@ -55,10 +57,10 @@ class OnchainOSClient:
     def get(self, path: str, params: dict = None) -> dict:
         query = ""
         if params:
-            query = "?" + "&".join(f"{k}={v}" for k, v in params.items())
+            query = "?" + urllib.parse.urlencode(params)
         full_path = path + query
         headers = self._headers("GET", full_path)
-        url = self.BASE_URL + full_path
+        url = self._base_url + full_path
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         result = resp.json()

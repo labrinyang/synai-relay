@@ -2747,12 +2747,15 @@ class TestCancelAutoRefund:
         job.deposit_amount = 1.0
         db.session.commit()
 
-        # Now mock wallet service only for the cancel call (auto-refund path)
-        mock_wallet = MagicMock()
-        mock_wallet.is_connected.return_value = True
-        mock_wallet.refund.return_value = '0xrefund-tx-hash'
+        # Now mock chain registry for the cancel call (auto-refund path)
+        from services.chain_adapter import RefundResult
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected.return_value = True
+        mock_adapter.refund.return_value = RefundResult(tx_hash='0xrefund-tx-hash')
+        mock_registry = MagicMock()
+        mock_registry.get_or_default.return_value = mock_adapter
 
-        with _patch('services.wallet_service.get_wallet_service', return_value=mock_wallet):
+        with _patch('server._chain_registry', mock_registry):
             resp = client.post(f'/jobs/{task_id}/cancel',
                                headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
@@ -2761,8 +2764,8 @@ class TestCancelAutoRefund:
         assert data.get('refund_tx_hash') == '0xrefund-tx-hash'
         assert data.get('refund_status') == 'success'
 
-        # Verify wallet.refund was called
-        mock_wallet.refund.assert_called_once()
+        # Verify adapter.refund was called
+        mock_adapter.refund.assert_called_once()
 
     def test_cancel_no_refund_for_open_job(self, client):
         """Cancel an open (unfunded) job -> no refund logic triggered."""
