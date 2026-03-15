@@ -1310,6 +1310,18 @@ def _create_job(override_status=None, deposit_tx_hash=None,
     if not isinstance(max_retries, int) or max_retries < 1:
         max_retries = 3
 
+    # G19: Per-job fee_bps from request body (with validation)
+    raw_fee_bps = data.get('fee_bps')
+    if raw_fee_bps is not None:
+        try:
+            custom_fee_bps = int(raw_fee_bps)
+            if custom_fee_bps < 0 or custom_fee_bps > 10000:
+                return jsonify({"error": "fee_bps must be 0-10000"}), 400
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid fee_bps value"}), 400
+    else:
+        custom_fee_bps = Config.PLATFORM_FEE_BPS
+
     status = override_status or 'open'
 
     job = Job(
@@ -1323,7 +1335,7 @@ def _create_job(override_status=None, deposit_tx_hash=None,
         expiry=expiry,
         max_submissions=max_submissions,
         max_retries=max_retries,
-        fee_bps=Config.PLATFORM_FEE_BPS,
+        fee_bps=custom_fee_bps,
         chain_id=chain_id,
         deposit_tx_hash=deposit_tx_hash,
         depositor_address=depositor_address,
