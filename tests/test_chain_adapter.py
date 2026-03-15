@@ -213,3 +213,64 @@ class TestOnchainOSClient:
         assert headers["OK-ACCESS-PROJECT"] == "proj-1"
         assert "OK-ACCESS-SIGN" in headers
         assert "OK-ACCESS-TIMESTAMP" in headers
+
+
+from services.okx_facilitator import OKXFacilitatorClient, _network_to_chain_index
+
+
+class TestOKXFacilitator:
+    def test_network_to_chain_index(self):
+        assert _network_to_chain_index("eip155:196") == "196"
+        assert _network_to_chain_index("eip155:8453") == "8453"
+
+    def test_verify_translates_response(self):
+        """Mock OnchainOS client and verify response translation."""
+        mock_client = MagicMock()
+        mock_client.post.return_value = {
+            "code": "0",
+            "data": [{"isValid": True, "payer": "0xPAYER"}],
+        }
+        fac = OKXFacilitatorClient.__new__(OKXFacilitatorClient)
+        fac._client = mock_client
+
+        # Create mock payload and requirements
+        payload = MagicMock()
+        payload.model_dump.return_value = {"test": "payload"}
+        requirements = MagicMock()
+        requirements.scheme = "exact"
+        requirements.network = "eip155:196"
+        requirements.amount = "50000000"
+        requirements.pay_to = "0xOPS"
+        requirements.asset = "0xUSDC"
+
+        result = fac.verify(payload, requirements)
+        assert result.is_valid is True
+        assert result.payer == "0xPAYER"
+
+    def test_settle_translates_response(self):
+        mock_client = MagicMock()
+        mock_client.post.return_value = {
+            "code": "0",
+            "data": [{
+                "success": True,
+                "txHash": "0xTX123",
+                "chainIndex": "196",
+                "payer": "0xPAYER",
+            }],
+        }
+        fac = OKXFacilitatorClient.__new__(OKXFacilitatorClient)
+        fac._client = mock_client
+
+        payload = MagicMock()
+        payload.model_dump.return_value = {}
+        requirements = MagicMock()
+        requirements.scheme = "exact"
+        requirements.network = "eip155:196"
+        requirements.amount = "50000000"
+        requirements.pay_to = "0xOPS"
+        requirements.asset = "0xUSDC"
+
+        result = fac.settle(payload, requirements)
+        assert result.success is True
+        assert result.transaction == "0xTX123"
+        assert result.network == "eip155:196"
