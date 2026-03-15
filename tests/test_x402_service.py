@@ -100,3 +100,63 @@ class TestJobChainId:
             db.session.commit()
 
             assert job.chain_id is None
+
+
+from services.x402_service import parse_chain_id, build_requirements
+
+
+class TestParseChainId:
+    def test_base(self):
+        assert parse_chain_id("eip155:8453") == 8453
+
+    def test_xlayer(self):
+        assert parse_chain_id("eip155:196") == 196
+
+    def test_invalid(self):
+        with pytest.raises(ValueError, match="Invalid CAIP-2"):
+            parse_chain_id("not-a-network")
+
+    def test_empty(self):
+        with pytest.raises(ValueError):
+            parse_chain_id("")
+
+
+class TestBuildRequirements:
+    def test_single_chain(self):
+        from unittest.mock import MagicMock
+        adapter = MagicMock()
+        adapter.caip2.return_value = "eip155:8453"
+        adapter.usdc_address.return_value = "0xUSDC"
+
+        reqs = build_requirements(
+            Decimal("50"), "0xPAYTO", [adapter])
+        assert len(reqs) == 1
+        assert reqs[0].scheme == "exact"
+        assert reqs[0].network == "eip155:8453"
+        assert reqs[0].amount == "50000000"
+        assert reqs[0].pay_to == "0xPAYTO"
+        assert reqs[0].asset == "0xUSDC"
+
+    def test_multi_chain(self):
+        from unittest.mock import MagicMock
+        a1 = MagicMock()
+        a1.caip2.return_value = "eip155:8453"
+        a1.usdc_address.return_value = "0xBASE_USDC"
+        a2 = MagicMock()
+        a2.caip2.return_value = "eip155:196"
+        a2.usdc_address.return_value = "0xXLAYER_USDC"
+
+        reqs = build_requirements(Decimal("50"), "0xPAYTO", [a1, a2])
+        assert len(reqs) == 2
+        assert reqs[0].network == "eip155:8453"
+        assert reqs[1].network == "eip155:196"
+
+    def test_uses_decimal_precision(self):
+        """Ensure amount conversion uses Decimal, not float."""
+        from unittest.mock import MagicMock
+        adapter = MagicMock()
+        adapter.caip2.return_value = "eip155:8453"
+        adapter.usdc_address.return_value = "0xUSDC"
+
+        reqs = build_requirements(Decimal("0.1"), "0xPAYTO", [adapter])
+        assert reqs[0].amount == "100000"  # 0.1 * 10^6
