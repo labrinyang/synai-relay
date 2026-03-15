@@ -113,3 +113,103 @@ class TestBaseAdapter:
         result = adapter.refund("0xBUYER", Decimal("50.0"))
         assert result.tx_hash == "0xREFUND"
         assert result.error == ""
+
+
+import pytest
+from services.chain_registry import ChainRegistry
+
+
+class TestChainRegistry:
+    def _make_adapter(self, cid=8453, name="Base"):
+        a = MagicMock()
+        a.chain_id.return_value = cid
+        a.chain_name.return_value = name
+        a.caip2.return_value = f"eip155:{cid}"
+        a.usdc_address.return_value = "0xUSDC"
+        return a
+
+    def test_register_and_get(self):
+        reg = ChainRegistry()
+        adapter = self._make_adapter(8453, "Base")
+        reg.register(adapter)
+        assert reg.get(8453) is adapter
+
+    def test_get_unknown_raises(self):
+        reg = ChainRegistry()
+        with pytest.raises(ValueError, match="Unsupported chain"):
+            reg.get(999)
+
+    def test_default(self):
+        reg = ChainRegistry(default_chain_id=8453)
+        adapter = self._make_adapter(8453)
+        reg.register(adapter)
+        assert reg.default() is adapter
+
+    def test_default_not_registered_raises(self):
+        reg = ChainRegistry(default_chain_id=8453)
+        with pytest.raises(RuntimeError, match="Default chain"):
+            reg.default()
+
+    def test_adapters_list(self):
+        reg = ChainRegistry()
+        a1 = self._make_adapter(8453, "Base")
+        a2 = self._make_adapter(196, "X Layer")
+        reg.register(a1)
+        reg.register(a2)
+        adapters = reg.adapters()
+        assert len(adapters) == 2
+
+    def test_supported_chains(self):
+        reg = ChainRegistry()
+        a = self._make_adapter(8453, "Base")
+        reg.register(a)
+        chains = reg.supported_chains()
+        assert len(chains) == 1
+        assert chains[0]["chain_id"] == 8453
+        assert chains[0]["name"] == "Base"
+
+    def test_get_or_default_with_none(self):
+        """NULL chain_id should return default adapter (Base)."""
+        reg = ChainRegistry(default_chain_id=8453)
+        adapter = self._make_adapter(8453)
+        reg.register(adapter)
+        assert reg.get_or_default(None) is adapter
+
+    def test_get_or_default_with_valid_id(self):
+        reg = ChainRegistry(default_chain_id=8453)
+        a1 = self._make_adapter(8453)
+        a2 = self._make_adapter(196, "X Layer")
+        reg.register(a1)
+        reg.register(a2)
+        assert reg.get_or_default(196) is a2
+
+
+from services.onchainos_client import OnchainOSClient
+
+
+class TestOnchainOSClient:
+    def test_sign(self):
+        """HMAC signature must be deterministic for same input."""
+        client = OnchainOSClient(
+            api_key="test-key",
+            secret_key="test-secret",
+            passphrase="test-pass",
+        )
+        sig1 = client._sign("2026-03-15T00:00:00.000Z", "POST", "/api/v6/x402/verify", '{"foo":"bar"}')
+        sig2 = client._sign("2026-03-15T00:00:00.000Z", "POST", "/api/v6/x402/verify", '{"foo":"bar"}')
+        assert sig1 == sig2
+        assert len(sig1) > 0
+
+    def test_headers(self):
+        client = OnchainOSClient(
+            api_key="test-key",
+            secret_key="test-secret",
+            passphrase="test-pass",
+            project_id="proj-1",
+        )
+        headers = client._headers("POST", "/api/test", "body")
+        assert headers["OK-ACCESS-KEY"] == "test-key"
+        assert headers["OK-ACCESS-PASSPHRASE"] == "test-pass"
+        assert headers["OK-ACCESS-PROJECT"] == "proj-1"
+        assert "OK-ACCESS-SIGN" in headers
+        assert "OK-ACCESS-TIMESTAMP" in headers
