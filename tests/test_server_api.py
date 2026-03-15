@@ -7,7 +7,7 @@ import os
 import json
 import unittest
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 # Force test DB before importing app
 os.environ['DATABASE_URL'] = 'sqlite://'  # in-memory
@@ -1996,21 +1996,24 @@ class TestPayoutStatusDetection:
 
         return task_id, buyer_key, worker_key
 
-    @patch('services.wallet_service.get_wallet_service')
-    def test_payout_partial_on_fee_error(self, mock_get_wallet, client):
-        """C-02: When wallet.payout returns fee_error, payout_status should be 'partial'."""
+    def test_payout_partial_on_fee_error(self, client):
+        """C-02: When adapter.payout returns fee_error, payout_status should be 'partial'."""
+        from services.chain_adapter import PayoutResult
         task_id, buyer_key, _ = self._setup_resolved_job_with_failed_payout(client)
 
-        # Mock wallet service
-        mock_wallet = mock_get_wallet.return_value
-        mock_wallet.is_connected.return_value = True
-        mock_wallet.payout.return_value = {
-            'payout_tx': '0xpayout_partial',
-            'fee_error': 'insufficient gas for fee transfer',
-        }
+        # Mock chain adapter
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected.return_value = True
+        mock_adapter.payout.return_value = PayoutResult(
+            payout_tx='0xpayout_partial',
+            fee_error='insufficient gas for fee transfer',
+        )
+        mock_registry = MagicMock()
+        mock_registry.get_or_default.return_value = mock_adapter
 
-        resp = client.post(f'/admin/jobs/{task_id}/retry-payout',
-                           headers=_auth_headers(buyer_key))
+        with patch('server._chain_registry', mock_registry):
+            resp = client.post(f'/admin/jobs/{task_id}/retry-payout',
+                               headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['payout_status'] == 'partial'
@@ -2025,22 +2028,24 @@ class TestPayoutStatusDetection:
         assert worker.total_earned is not None
         assert float(worker.total_earned) > 0
 
-    @patch('services.wallet_service.get_wallet_service')
-    def test_payout_pending_on_receipt_timeout(self, mock_get_wallet, client):
-        """C-03: When wallet.payout returns pending=True, payout_status should be 'pending_confirmation'."""
+    def test_payout_pending_on_receipt_timeout(self, client):
+        """C-03: When adapter.payout returns pending=True, payout_status should be 'pending_confirmation'."""
+        from services.chain_adapter import PayoutResult
         task_id, buyer_key, _ = self._setup_resolved_job_with_failed_payout(client)
 
-        # Mock wallet service
-        mock_wallet = mock_get_wallet.return_value
-        mock_wallet.is_connected.return_value = True
-        mock_wallet.payout.return_value = {
-            'payout_tx': '0xpayout_pending',
-            'pending': True,
-            'error': 'receipt timeout',
-        }
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected.return_value = True
+        mock_adapter.payout.return_value = PayoutResult(
+            payout_tx='0xpayout_pending',
+            pending=True,
+            error='receipt timeout',
+        )
+        mock_registry = MagicMock()
+        mock_registry.get_or_default.return_value = mock_adapter
 
-        resp = client.post(f'/admin/jobs/{task_id}/retry-payout',
-                           headers=_auth_headers(buyer_key))
+        with patch('server._chain_registry', mock_registry):
+            resp = client.post(f'/admin/jobs/{task_id}/retry-payout',
+                               headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['payout_status'] == 'pending_confirmation'
@@ -2053,21 +2058,23 @@ class TestPayoutStatusDetection:
         worker = Agent.query.filter_by(agent_id='ps-worker').first()
         assert worker.total_earned is None or float(worker.total_earned) == 0
 
-    @patch('services.wallet_service.get_wallet_service')
-    def test_payout_success_normal(self, mock_get_wallet, client):
+    def test_payout_success_normal(self, client):
         """Normal payout without errors should set payout_status='success'."""
+        from services.chain_adapter import PayoutResult
         task_id, buyer_key, _ = self._setup_resolved_job_with_failed_payout(client)
 
-        # Mock wallet service
-        mock_wallet = mock_get_wallet.return_value
-        mock_wallet.is_connected.return_value = True
-        mock_wallet.payout.return_value = {
-            'payout_tx': '0xpayout_success',
-            'fee_tx': '0xfee_success',
-        }
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected.return_value = True
+        mock_adapter.payout.return_value = PayoutResult(
+            payout_tx='0xpayout_success',
+            fee_tx='0xfee_success',
+        )
+        mock_registry = MagicMock()
+        mock_registry.get_or_default.return_value = mock_adapter
 
-        resp = client.post(f'/admin/jobs/{task_id}/retry-payout',
-                           headers=_auth_headers(buyer_key))
+        with patch('server._chain_registry', mock_registry):
+            resp = client.post(f'/admin/jobs/{task_id}/retry-payout',
+                               headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['payout_status'] == 'success'
@@ -2096,6 +2103,7 @@ class TestPayoutRaceCancel(unittest.TestCase):
         self.ctx = app.app_context()
         self.ctx.push()
         db.create_all()
+        app.config['X402_ENABLED'] = False  # Avoid x402 path for job creation
         import services.wallet_service as ws_mod
         ws_mod._wallet_service = _make_mock_wallet()
         self.client = app.test_client()
@@ -2208,8 +2216,17 @@ class TestPayoutRaceCancel(unittest.TestCase):
         sub.status = 'judging'
         db.session.commit()
 
-        # Mock oracle + wallet: job stays funded, oracle resolves, payout succeeds
+        # Mock oracle + chain adapter: job stays funded, oracle resolves, payout succeeds
         from server import _run_oracle
+        from services.chain_adapter import PayoutResult
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected.return_value = True
+        mock_adapter.payout.return_value = PayoutResult(
+            payout_tx='0xok-payout',
+            fee_tx='0xok-fee',
+        )
+        mock_registry = MagicMock()
+        mock_registry.get_or_default.return_value = mock_adapter
         with patch('services.oracle_guard.OracleGuard.check', return_value={'blocked': False}), \
              patch('services.oracle_service.OracleService.evaluate', return_value={
                  'verdict': 'RESOLVED',
@@ -2217,13 +2234,7 @@ class TestPayoutRaceCancel(unittest.TestCase):
                  'reason': 'Excellent',
                  'steps': [{'step': 2, 'name': 'eval', 'output': {'verdict': 'PASS'}}],
              }), \
-             patch('services.wallet_service.get_wallet_service') as mock_get_wallet:
-            mock_wallet = mock_get_wallet.return_value
-            mock_wallet.is_connected.return_value = True
-            mock_wallet.payout.return_value = {
-                'payout_tx': '0xok-payout',
-                'fee_tx': '0xok-fee',
-            }
+             patch('server._chain_registry', mock_registry):
             _run_oracle(app, sub_id)
 
         # Verify submission passed and payout succeeded
@@ -2476,12 +2487,15 @@ class TestRefundActualDeposit(unittest.TestCase):
         ws_mod._wallet_service.refund.side_effect = None
         ws_mod._wallet_service.refund.return_value = '0xrefund-tx'
 
-        # Mock wallet for the refund call
-        with patch('services.wallet_service.get_wallet_service') as mock_get_wallet:
-            mock_wallet = mock_get_wallet.return_value
-            mock_wallet.is_connected.return_value = True
-            mock_wallet.refund.return_value = '0xrefund-tx'
+        # Mock chain adapter for the refund call
+        from services.chain_adapter import RefundResult
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected.return_value = True
+        mock_adapter.refund.return_value = RefundResult(tx_hash='0xrefund-tx')
+        mock_registry = MagicMock()
+        mock_registry.get_or_default.return_value = mock_adapter
 
+        with patch('server._chain_registry', mock_registry):
             resp = self.client.post(f'/jobs/{task_id}/refund',
                                     headers=_auth_headers(buyer_key))
             assert resp.status_code == 200
@@ -2489,8 +2503,8 @@ class TestRefundActualDeposit(unittest.TestCase):
             assert data['status'] == 'refunded'
             assert data['amount'] == 1.5  # Should be deposit_amount, not price
 
-            # Verify wallet.refund was called with 1.5, not 1.0
-            mock_wallet.refund.assert_called_once_with('0x' + 'bb' * 20, Decimal('1.5'))
+            # Verify adapter.refund was called with 1.5, not 1.0
+            mock_adapter.refund.assert_called_once_with('0x' + 'bb' * 20, Decimal('1.5'))
 
 
 # ===================================================================

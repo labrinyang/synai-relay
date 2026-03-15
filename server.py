@@ -693,9 +693,13 @@ def _run_oracle(app, submission_id):
 
                     worker = db.session.get(Agent, sub.worker_id)
                     if worker and worker.wallet_address:
-                        from services.wallet_service import get_wallet_service
-                        wallet = get_wallet_service()
-                        if wallet.is_connected():
+                        adapter = None
+                        if _chain_registry:
+                            try:
+                                adapter = _chain_registry.get_or_default(job_obj.chain_id)
+                            except (ValueError, RuntimeError):
+                                adapter = None
+                        if adapter and adapter.is_connected():
                             job_obj.payout_status = 'pending'
                             db.session.flush()
                             # G06-retry: Retry payout up to 3 times with exponential backoff
@@ -707,23 +711,23 @@ def _run_oracle(app, submission_id):
                                 try:
                                     # G19: Use per-job fee_bps
                                     fee_bps = job_obj.fee_bps if job_obj.fee_bps is not None else Config.PLATFORM_FEE_BPS
-                                    txs = wallet.payout(worker.wallet_address, job_obj.price, fee_bps=fee_bps)
-                                    job_obj.payout_tx_hash = txs['payout_tx']
-                                    job_obj.fee_tx_hash = txs.get('fee_tx')
+                                    payout_result = adapter.payout(worker.wallet_address, job_obj.price, fee_bps)
+                                    job_obj.payout_tx_hash = payout_result.payout_tx
+                                    job_obj.fee_tx_hash = payout_result.fee_tx or None
 
                                     # P0-1 fix (C-03): Check pending status
-                                    if txs.get('pending'):
+                                    if payout_result.pending:
                                         job_obj.payout_status = 'pending_confirmation'
                                         logger.warning(
                                             "Payout pending confirmation for job %s: %s",
-                                            sub.task_id, txs.get('error', 'receipt timeout')
+                                            sub.task_id, payout_result.error or 'receipt timeout'
                                         )
                                     # P0-1 fix (C-02): Check fee_error
-                                    elif txs.get('fee_error'):
+                                    elif payout_result.fee_error:
                                         job_obj.payout_status = 'partial'
                                         logger.error(
                                             "Partial settlement for job %s: worker paid, fee failed: %s",
-                                            sub.task_id, txs['fee_error']
+                                            sub.task_id, payout_result.fee_error
                                         )
                                     else:
                                         job_obj.payout_status = 'success'
@@ -731,7 +735,7 @@ def _run_oracle(app, submission_id):
                                     job_obj.payout_error = None  # Clear on success
 
                                     # Only count worker earnings when not pending
-                                    if not txs.get('pending'):
+                                    if not payout_result.pending:
                                         worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
                                         worker.total_earned = (
                                             (worker.total_earned or 0) + job_obj.price * worker_share
@@ -1973,7 +1977,6 @@ def _check_refund_cooldown(depositor_address):
 @require_auth
 def refund_job(task_id):
     from services.job_service import JobService
-    from services.wallet_service import get_wallet_service
 
     job = JobService.get_job(task_id)
     if not job:
@@ -2009,14 +2012,20 @@ def refund_job(task_id):
     job.refund_tx_hash = 'pending'
     db.session.flush()
 
-    # Attempt on-chain refund if wallet is connected and deposit info exists
-    wallet = get_wallet_service()
+    # Attempt on-chain refund via chain adapter
+    adapter = None
+    if _chain_registry:
+        try:
+            adapter = _chain_registry.get_or_default(job.chain_id)
+        except (ValueError, RuntimeError):
+            adapter = None
     # P1-5 fix (M-F02): Refund actual deposit amount (may include overpayment)
     refund_amount = job.deposit_amount if job.deposit_amount is not None else job.price
     refund_tx = None
-    if wallet.is_connected() and job.depositor_address and job.deposit_tx_hash:
+    if adapter and adapter.is_connected() and job.depositor_address and job.deposit_tx_hash:
         try:
-            refund_tx = wallet.refund(job.depositor_address, refund_amount)
+            refund_result = adapter.refund(job.depositor_address, refund_amount)
+            refund_tx = refund_result.tx_hash
             job.refund_tx_hash = refund_tx
         except Exception as e:
             # Rollback the 'pending' marker on failure
@@ -2242,9 +2251,13 @@ def retry_payout(task_id):
     if not worker or not worker.wallet_address:
         return jsonify({"error": "Winner has no wallet address"}), 400
 
-    from services.wallet_service import get_wallet_service
-    wallet = get_wallet_service()
-    if not wallet.is_connected():
+    adapter = None
+    if _chain_registry:
+        try:
+            adapter = _chain_registry.get_or_default(job.chain_id)
+        except (ValueError, RuntimeError):
+            adapter = None
+    if not adapter or not adapter.is_connected():
         return jsonify({"error": "Chain not connected"}), 503
 
     # G06-retry: Retry with exponential backoff for transient RPC failures
@@ -2254,15 +2267,15 @@ def retry_payout(task_id):
     for attempt in range(1, max_attempts + 1):
         try:
             fee_bps = job.fee_bps if job.fee_bps is not None else Config.PLATFORM_FEE_BPS
-            txs = wallet.payout(worker.wallet_address, job.price, fee_bps=fee_bps)
-            job.payout_tx_hash = txs['payout_tx']
-            job.fee_tx_hash = txs.get('fee_tx')
+            result = adapter.payout(worker.wallet_address, job.price, fee_bps)
+            job.payout_tx_hash = result.payout_tx
+            job.fee_tx_hash = result.fee_tx or None
 
             # P0-1 fix (C-03): Check pending status
-            if txs.get('pending'):
+            if result.pending:
                 job.payout_status = 'pending_confirmation'
             # P0-1 fix (C-02): Check fee_error
-            elif txs.get('fee_error'):
+            elif result.fee_error:
                 job.payout_status = 'partial'
             else:
                 job.payout_status = 'success'
@@ -2270,7 +2283,7 @@ def retry_payout(task_id):
             job.payout_error = None  # Clear previous error on success
 
             # Only count worker earnings when not pending
-            if not txs.get('pending'):
+            if not result.pending:
                 worker_share = Decimal(10000 - fee_bps) / Decimal(10000)
                 worker.total_earned = (worker.total_earned or 0) + job.price * worker_share
 
