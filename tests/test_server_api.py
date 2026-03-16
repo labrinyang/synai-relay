@@ -104,6 +104,12 @@ def _auth_headers(api_key):
     return {'Authorization': f'Bearer {api_key}'}
 
 
+def _valid_tx(label: str) -> str:
+    """Generate a valid 66-char tx_hash from a human-readable label."""
+    import hashlib
+    return '0x' + hashlib.sha256(label.encode()).hexdigest()
+
+
 # Operator test keypair (deterministic for tests)
 _OPERATOR_PRIVATE_KEY = '0x' + 'ab' * 32  # test-only private key
 def _get_operator_address():
@@ -325,7 +331,7 @@ class TestJobLifecycle:
         task_id = resp.get_json()['task_id']
 
         resp = client.post(f'/jobs/{task_id}/fund',
-                           json={'tx_hash': '0xabc123'},
+                           json={'tx_hash': _valid_tx('abc123')},
                            headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         return task_id, buyer_key, worker_key
@@ -337,7 +343,7 @@ class TestJobLifecycle:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         resp = client.post(f'/jobs/{task_id}/fund',
-                           json={'tx_hash': '0xfund1'},
+                           json={'tx_hash': _valid_tx('fund1')},
                            headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         assert resp.get_json()['status'] == 'funded'
@@ -350,7 +356,7 @@ class TestJobLifecycle:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         resp = client.post(f'/jobs/{task_id}/fund',
-                           json={'tx_hash': '0xhack'},
+                           json={'tx_hash': _valid_tx('hack')},
                            headers=_auth_headers(other_key))
         assert resp.status_code == 403
 
@@ -370,7 +376,7 @@ class TestJobLifecycle:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xsd1'},
+                    json={'tx_hash': _valid_tx('sd1')},
                     headers=_auth_headers(buyer_key))
         resp = client.post(f'/jobs/{task_id}/claim',
                            json={},
@@ -626,7 +632,7 @@ class TestSubmissionFlow:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xsub-fund'},
+                    json={'tx_hash': _valid_tx('sub-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -667,7 +673,7 @@ class TestSubmissionFlow:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xnp-fund'},
+                    json={'tx_hash': _valid_tx('np-fund')},
                     headers=_auth_headers(buyer_key))
         resp = client.post(f'/jobs/{task_id}/submit',
                            json={'content': 'result'},
@@ -737,7 +743,7 @@ class TestSubmissionPrivacy:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xpriv-fund'},
+                    json={'tx_hash': _valid_tx('priv-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -860,7 +866,7 @@ class TestRefundFlow:
         task_id = resp.get_json()['task_id']
         # Fund then cancel
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xref-fund'},
+                    json={'tx_hash': _valid_tx('ref-fund')},
                     headers=_auth_headers(key))
         client.post(f'/jobs/{task_id}/cancel',
                     headers=_auth_headers(key))
@@ -880,7 +886,7 @@ class TestRefundFlow:
                            headers=_auth_headers(key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xdbl-fund'},
+                    json={'tx_hash': _valid_tx('dbl-fund')},
                     headers=_auth_headers(key))
         client.post(f'/jobs/{task_id}/cancel',
                     headers=_auth_headers(key))
@@ -902,7 +908,7 @@ class TestRefundFlow:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xrb-fund'},
+                    json={'tx_hash': _valid_tx('rb-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/cancel',
                     headers=_auth_headers(buyer_key))
@@ -923,7 +929,7 @@ class TestCancelFundedJob:
                            headers=_auth_headers(key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xcfund'},
+                    json={'tx_hash': _valid_tx('cfund')},
                     headers=_auth_headers(key))
         resp = client.post(f'/jobs/{task_id}/cancel',
                            headers=_auth_headers(key))
@@ -972,7 +978,7 @@ class TestClaimValidation:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xclaim-dup'},
+                    json={'tx_hash': _valid_tx('claim-dup')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -993,7 +999,7 @@ class TestClaimValidation:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xreclaim'},
+                    json={'tx_hash': _valid_tx('reclaim')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1082,13 +1088,13 @@ class TestIdempotencyKey:
         # Fund with idempotency key
         headers = {**_auth_headers(key), 'Idempotency-Key': 'unique-fund-1'}
         resp1 = client.post(f'/jobs/{task_id}/fund',
-                            json={'tx_hash': '0xidem-fund'},
+                            json={'tx_hash': _valid_tx('idem-fund')},
                             headers=headers)
         assert resp1.status_code == 200
 
         # Same key should return cached response
         resp2 = client.post(f'/jobs/{task_id}/fund',
-                            json={'tx_hash': '0xidem-fund'},
+                            json={'tx_hash': _valid_tx('idem-fund')},
                             headers=headers)
         assert resp2.status_code == 200
         assert resp2.get_json()['task_id'] == task_id
@@ -1103,14 +1109,14 @@ class TestIdempotencyKey:
 
         headers1 = {**_auth_headers(key), 'Idempotency-Key': 'key-a'}
         resp = client.post(f'/jobs/{task_id}/fund',
-                           json={'tx_hash': '0xidem-a'},
+                           json={'tx_hash': _valid_tx('idem-a')},
                            headers=headers1)
         assert resp.status_code == 200
 
         # Different idempotency key, same fund -> should fail (already funded)
         headers2 = {**_auth_headers(key), 'Idempotency-Key': 'key-b'}
         resp = client.post(f'/jobs/{task_id}/fund',
-                           json={'tx_hash': '0xidem-b'},
+                           json={'tx_hash': _valid_tx('idem-b')},
                            headers=headers2)
         assert resp.status_code == 400  # already funded
 
@@ -1161,7 +1167,7 @@ class TestE2ELifecycle:
 
         # Fund
         resp = client.post(f'/jobs/{task_id}/fund',
-                           json={'tx_hash': '0xe2e-fund'},
+                           json={'tx_hash': _valid_tx('e2e-fund')},
                            headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         assert resp.get_json()['status'] == 'funded'
@@ -1206,7 +1212,7 @@ class TestE2ELifecycle:
         task_id = resp.get_json()['task_id']
 
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xe2e-cr-fund'},
+                    json={'tx_hash': _valid_tx('e2e-cr-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/cancel',
                     headers=_auth_headers(buyer_key))
@@ -1239,7 +1245,7 @@ class TestOracleTimeout:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xot-fund'},
+                    json={'tx_hash': _valid_tx('ot-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1261,7 +1267,7 @@ class TestOracleTimeout:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xot-fund2'},
+                    json={'tx_hash': _valid_tx('ot-fund2')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1294,7 +1300,7 @@ class TestOracleTimeout:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xot-fund3'},
+                    json={'tx_hash': _valid_tx('ot-fund3')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1335,7 +1341,7 @@ class TestUnclaimEdgeCases:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xuc-fund'},
+                    json={'tx_hash': _valid_tx('uc-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1362,7 +1368,7 @@ class TestUnclaimEdgeCases:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xuc-fund2'},
+                    json={'tx_hash': _valid_tx('uc-fund2')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1383,7 +1389,7 @@ class TestUnclaimEdgeCases:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xuc-fund3'},
+                    json={'tx_hash': _valid_tx('uc-fund3')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1505,7 +1511,7 @@ class TestRetryPayout:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xrp-fund2'},
+                    json={'tx_hash': _valid_tx('rp-fund2')},
                     headers=_auth_headers(buyer_key))
         # Manually set to resolved with payout_status=success
         job = db.session.get(Job, task_id)
@@ -1545,7 +1551,7 @@ class TestCrossJobSubmissions:
             tid = resp.get_json()['task_id']
             task_ids.append(tid)
             client.post(f'/jobs/{tid}/fund',
-                        json={'tx_hash': f'0xcj-fund-{i}'},
+                        json={'tx_hash': _valid_tx(f'cj-fund-{i}')},
                         headers=_auth_headers(buyer_key))
             client.post(f'/jobs/{tid}/claim',
                         json={},
@@ -1571,7 +1577,7 @@ class TestCrossJobSubmissions:
                            headers=_auth_headers(buyer_key))
         tid = resp.get_json()['task_id']
         client.post(f'/jobs/{tid}/fund',
-                    json={'tx_hash': '0xcj2-fund'},
+                    json={'tx_hash': _valid_tx('cj2-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{tid}/claim', json={}, headers=_auth_headers(w1_key))
         client.post(f'/jobs/{tid}/submit',
@@ -1601,7 +1607,7 @@ class TestSubmissionsPagination:
                            headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xsp-fund'},
+                    json={'tx_hash': _valid_tx('sp-fund')},
                     headers=_auth_headers(buyer_key))
         client.post(f'/jobs/{task_id}/claim',
                     json={},
@@ -1736,7 +1742,7 @@ class TestReclaimAfterUnclaim(unittest.TestCase):
         resp = self.client.post('/jobs', json={'title': 'T', 'description': 'D', 'price': 1.0},
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
-        self.client.post(f'/jobs/{task_id}/fund', json={'tx_hash': '0xabc123'},
+        self.client.post(f'/jobs/{task_id}/fund', json={'tx_hash': _valid_tx('reclaim-abc123')},
                          headers=_auth_headers(buyer_key))
 
         # Claim, unclaim, re-claim
@@ -1758,7 +1764,7 @@ class TestReclaimAfterUnclaim(unittest.TestCase):
         resp = self.client.post('/jobs', json={'title': 'T', 'description': 'D', 'price': 1.0},
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
-        self.client.post(f'/jobs/{task_id}/fund', json={'tx_hash': '0xabc456'},
+        self.client.post(f'/jobs/{task_id}/fund', json={'tx_hash': _valid_tx('reclaim-abc456')},
                          headers=_auth_headers(buyer_key))
 
         self.client.post(f'/jobs/{task_id}/claim', headers=_auth_headers(worker_key))
@@ -1860,7 +1866,7 @@ class TestWebhookParticipants(unittest.TestCase):
         resp = self.client.post('/jobs', json={'title': 'T', 'description': 'D', 'price': 1.0},
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
-        self.client.post(f'/jobs/{task_id}/fund', json={'tx_hash': '0xtest1'},
+        self.client.post(f'/jobs/{task_id}/fund', json={'tx_hash': _valid_tx('test1')},
                          headers=_auth_headers(buyer_key))
 
         # Worker claims (creates JobParticipant, NOT JSON array entry)
@@ -1911,16 +1917,17 @@ class TestExpiryDoesNotFailJudging(unittest.TestCase):
         _, buyer_key = _register_agent(self.client, 'buyer-1', 'Buyer')
         _, worker_key = _register_agent(self.client, 'worker-1', 'Worker')
 
-        # Create job with past expiry
-        past = int((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).timestamp())
-        resp = self.client.post('/jobs', json={'title': 'T', 'description': 'D', 'price': 1.0, 'expiry': past},
+        # Create job with future expiry, then backdate to simulate timeout
+        future = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).timestamp())
+        resp = self.client.post('/jobs', json={'title': 'T', 'description': 'D', 'price': 1.0, 'expiry': future},
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
 
-        # Manually set to funded with submissions
+        # Manually set to funded with past expiry
         job = db.session.get(Job, task_id)
         job.status = 'funded'
         job.deposit_tx_hash = '0xtest_expiry'
+        job.expiry = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
 
         # Create a pending and a judging submission
         pending_sub = Submission(task_id=task_id, worker_id='worker-1', content={'a': 1}, status='pending', attempt=1)
@@ -2128,7 +2135,7 @@ class TestPayoutRaceCancel(unittest.TestCase):
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         self.client.post(f'/jobs/{task_id}/fund',
-                         json={'tx_hash': '0xrace-fund'},
+                         json={'tx_hash': _valid_tx('race-fund')},
                          headers=_auth_headers(buyer_key))
 
         # 3. Worker claims and submits
@@ -2201,7 +2208,7 @@ class TestPayoutRaceCancel(unittest.TestCase):
                                 headers=_auth_headers(buyer_key))
         task_id = resp.get_json()['task_id']
         self.client.post(f'/jobs/{task_id}/fund',
-                         json={'tx_hash': '0xok-fund'},
+                         json={'tx_hash': _valid_tx('ok-fund')},
                          headers=_auth_headers(buyer_key))
         self.client.post(f'/jobs/{task_id}/claim',
                          json={},
@@ -2289,7 +2296,7 @@ class TestGuardRubricInjection(unittest.TestCase):
 
         # Fund, claim, submit
         self.client.post(f'/jobs/{task_id}/fund',
-                         json={'tx_hash': '0xrub-fund'},
+                         json={'tx_hash': _valid_tx('rub-fund')},
                          headers=_auth_headers(buyer_key))
         self.client.post(f'/jobs/{task_id}/claim',
                          json={},
@@ -2330,7 +2337,7 @@ class TestGuardRubricInjection(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         self.client.post(f'/jobs/{task_id}/fund',
-                         json={'tx_hash': '0xdesc-fund'},
+                         json={'tx_hash': _valid_tx('desc-fund')},
                          headers=_auth_headers(buyer_key))
         self.client.post(f'/jobs/{task_id}/claim',
                          json={},
@@ -2397,7 +2404,7 @@ class TestFundDepositorMismatch(unittest.TestCase):
         }
 
         resp = self.client.post(f'/jobs/{task_id}/fund',
-                                json={'tx_hash': '0xmismatch'},
+                                json={'tx_hash': _valid_tx('mismatch')},
                                 headers=_auth_headers(buyer_key))
         assert resp.status_code == 400
         data = resp.get_json()
@@ -2425,7 +2432,7 @@ class TestFundDepositorMismatch(unittest.TestCase):
         }
 
         resp = self.client.post(f'/jobs/{task_id}/fund',
-                                json={'tx_hash': '0xmatch'},
+                                json={'tx_hash': _valid_tx('match')},
                                 headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         assert resp.get_json()['status'] == 'funded'
@@ -2441,6 +2448,7 @@ class TestRefundActualDeposit(unittest.TestCase):
     def setUp(self):
         self.ctx = app.app_context()
         self.ctx.push()
+        app.config['X402_ENABLED'] = False
         db.create_all()
         import services.wallet_service as ws_mod
         ws_mod._wallet_service = _make_mock_wallet()
@@ -2466,7 +2474,7 @@ class TestRefundActualDeposit(unittest.TestCase):
 
         # Fund the job (mock wallet service accepts any tx_hash)
         self.client.post(f'/jobs/{task_id}/fund',
-                         json={'tx_hash': '0xdep-fund'},
+                         json={'tx_hash': _valid_tx('dep-fund')},
                          headers=_auth_headers(buyer_key))
 
         # Make auto-refund fail during cancel so we can test manual refund
@@ -2550,7 +2558,7 @@ class TestOverpaymentWarningNoCredit(unittest.TestCase):
         }
 
         resp = self.client.post(f'/jobs/{task_id}/fund',
-                                json={'tx_hash': '0xovp-fund'},
+                                json={'tx_hash': _valid_tx('ovp-fund')},
                                 headers=_auth_headers(buyer_key))
         assert resp.status_code == 200
         data = resp.get_json()
@@ -2638,7 +2646,7 @@ class TestOracleTimeoutFutureCancel:
                                headers=_auth_headers(buyer_key))
             task_id = resp.get_json()['task_id']
             client.post(f'/jobs/{task_id}/fund',
-                        json={'tx_hash': '0xotfc-fund'},
+                        json={'tx_hash': _valid_tx('otfc-fund')},
                         headers=_auth_headers(buyer_key))
             client.post(f'/jobs/{task_id}/claim',
                         json={},
@@ -2738,7 +2746,7 @@ class TestCancelAutoRefund:
 
         # Fund the job (mock wallet service accepts any tx_hash)
         client.post(f'/jobs/{task_id}/fund',
-                    json={'tx_hash': '0xcar-fund'},
+                    json={'tx_hash': _valid_tx('car-fund')},
                     headers=_auth_headers(buyer_key))
 
         # Manually set deposit info that would normally come from chain verification

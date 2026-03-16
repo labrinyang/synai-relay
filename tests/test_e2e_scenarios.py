@@ -19,6 +19,12 @@ from server import app
 from models import db, Agent, Job, Submission, JobParticipant, Dispute
 
 
+def _valid_tx(label: str) -> str:
+    """Generate a valid 66-char tx_hash from a human-readable label."""
+    import hashlib
+    return '0x' + hashlib.sha256(label.encode()).hexdigest()
+
+
 def _register_agent(client, agent_id, name='Test Agent', wallet=None):
     """Helper: register an agent and return (agent_id, api_key)."""
     payload = {'agent_id': agent_id, 'name': name}
@@ -110,7 +116,7 @@ class TestScenarioA_HappyPath(unittest.TestCase):
 
         # 4. Buyer funds job
         resp = c.post(f'/jobs/{task_id}/fund',
-                       json={'tx_hash': '0xhappy-fund'},
+                       json={'tx_hash': _valid_tx('happy-fund')},
                        headers=_auth_headers(buyer_key))
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json()['status'], 'funded')
@@ -233,27 +239,29 @@ class TestScenarioB_TaskTimeout(unittest.TestCase):
         buyer_id, buyer_key = _register_agent(c, 'b-buyer', 'Buyer B',
                                                wallet='0x' + 'aa' * 20)
 
-        # 2. Create job with past expiry
-        past = int((datetime.datetime.now(datetime.timezone.utc)
-                     - datetime.timedelta(hours=1)).timestamp())
+        # 2. Create job with future expiry, then backdate to simulate timeout
+        future = int((datetime.datetime.now(datetime.timezone.utc)
+                       + datetime.timedelta(hours=1)).timestamp())
         resp = c.post('/jobs', json={
             'title': 'Timeout Task',
             'description': 'This will expire',
             'price': 2.0,
-            'expiry': past,
+            'expiry': future,
         }, headers=_auth_headers(buyer_key))
         self.assertEqual(resp.status_code, 201)
         task_id = resp.get_json()['task_id']
 
         # 3. Fund the job
         resp = c.post(f'/jobs/{task_id}/fund',
-                       json={'tx_hash': '0xtimeout-fund'},
+                       json={'tx_hash': _valid_tx('timeout-fund')},
                        headers=_auth_headers(buyer_key))
         self.assertEqual(resp.status_code, 200)
 
-        # 4. Trigger expiry via JobService.check_expiry
+        # 4. Backdate expiry to past, then trigger expiry check
         from services.job_service import JobService
         job = db.session.get(Job, task_id)
+        job.expiry = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        db.session.commit()
         expired = JobService.check_expiry(job)
         db.session.commit()
         self.assertTrue(expired)
@@ -346,7 +354,7 @@ class TestScenarioC_RejectionRetryPass(unittest.TestCase):
 
         # 3. Fund job
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xstrict-fund'},
+               json={'tx_hash': _valid_tx('strict-fund')},
                headers=_auth_headers(buyer_key))
 
         # 4. Worker claims
@@ -495,7 +503,7 @@ class TestScenarioD_DisputeFlow(unittest.TestCase):
 
         # Fund
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xdispute-fund'},
+               json={'tx_hash': _valid_tx('dispute-fund')},
                headers=_auth_headers(buyer_key))
 
         # Claim
@@ -645,7 +653,7 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xconcurrent-fund'},
+               json={'tx_hash': _valid_tx('concurrent-fund')},
                headers=_auth_headers(buyer_key))
 
         # 3. All three workers claim
@@ -733,7 +741,7 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xdup-claim-fund'},
+               json={'tx_hash': _valid_tx('dup-claim-fund')},
                headers=_auth_headers(buyer_key))
 
         # First claim succeeds
@@ -766,7 +774,7 @@ class TestScenarioE_ConcurrentClaims(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xresolved-block-fund'},
+               json={'tx_hash': _valid_tx('resolved-block-fund')},
                headers=_auth_headers(buyer_key))
 
         # Both workers claim
@@ -875,7 +883,7 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
 
         # Fund
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xf-fund'},
+               json={'tx_hash': _valid_tx('f-fund')},
                headers=_auth_headers(buyer_key))
 
         # Worker claims
@@ -959,7 +967,7 @@ class TestScenarioF_OracleLowScore(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xf2-fund'},
+               json={'tx_hash': _valid_tx('f2-fund')},
                headers=_auth_headers(buyer_key))
 
         c.post(f'/jobs/{task_id}/claim', json={},
@@ -1079,7 +1087,7 @@ class TestScenarioG_PayoutPartialFailure(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xg-fund'},
+               json={'tx_hash': _valid_tx('g-fund')},
                headers=_auth_headers(buyer_key))
 
         # Worker claims + submits
@@ -1190,10 +1198,10 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
 
         # Fund both with different tx hashes
         c.post(f'/jobs/{task_id_1}/fund',
-               json={'tx_hash': '0xh-fund-1'},
+               json={'tx_hash': _valid_tx('h-fund-1')},
                headers=_auth_headers(buyer_key))
         c.post(f'/jobs/{task_id_2}/fund',
-               json={'tx_hash': '0xh-fund-2'},
+               json={'tx_hash': _valid_tx('h-fund-2')},
                headers=_auth_headers(buyer_key))
 
         # Set depositor_address on both (no chain connected in test)
@@ -1248,10 +1256,10 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
 
         # Fund
         c.post(f'/jobs/{task_id_1}/fund',
-               json={'tx_hash': '0xh2-fund-1'},
+               json={'tx_hash': _valid_tx('h2-fund-1')},
                headers=_auth_headers(buyer1_key))
         c.post(f'/jobs/{task_id_2}/fund',
-               json={'tx_hash': '0xh2-fund-2'},
+               json={'tx_hash': _valid_tx('h2-fund-2')},
                headers=_auth_headers(buyer2_key))
 
         # Set different depositor addresses
@@ -1302,10 +1310,10 @@ class TestScenarioH_RefundCooldown(unittest.TestCase):
         # Fund both
         depositor = '0x' + 'aa' * 20
         c.post(f'/jobs/{task_id_1}/fund',
-               json={'tx_hash': '0xh3-fund-1'},
+               json={'tx_hash': _valid_tx('h3-fund-1')},
                headers=_auth_headers(buyer_key))
         c.post(f'/jobs/{task_id_2}/fund',
-               json={'tx_hash': '0xh3-fund-2'},
+               json={'tx_hash': _valid_tx('h3-fund-2')},
                headers=_auth_headers(buyer_key))
 
         job1 = db.session.get(Job, task_id_1)
@@ -1412,7 +1420,7 @@ class TestScenarioI_DepositWrongTarget(unittest.TestCase):
 
         # Try to fund with bad deposit
         resp = c.post(f'/jobs/{task_id}/fund',
-                       json={'tx_hash': '0xwrong-target'},
+                       json={'tx_hash': _valid_tx('wrong-target')},
                        headers=_auth_headers(buyer_key))
         self.assertEqual(resp.status_code, 400)
         self.assertIn('verification failed', resp.get_json()['error'].lower())
@@ -1497,13 +1505,13 @@ class TestScenarioJ_ReplayAttack(unittest.TestCase):
 
         # Fund job A with tx_hash
         resp = c.post(f'/jobs/{task_id_a}/fund',
-                       json={'tx_hash': '0xreplay123'},
+                       json={'tx_hash': _valid_tx('replay123')},
                        headers=_auth_headers(buyer_key))
         self.assertEqual(resp.status_code, 200)
 
         # Fund job B with SAME tx_hash → expect 409
         resp = c.post(f'/jobs/{task_id_b}/fund',
-                       json={'tx_hash': '0xreplay123'},
+                       json={'tx_hash': _valid_tx('replay123')},
                        headers=_auth_headers(buyer_key))
         self.assertEqual(resp.status_code, 409)
         self.assertIn('already been used', resp.get_json()['error'].lower())
@@ -1585,7 +1593,7 @@ class TestScenarioK_ConcurrentPayout(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xk-fund'},
+               json={'tx_hash': _valid_tx('k-fund')},
                headers=_auth_headers(buyer_key))
 
         # Both workers claim
@@ -1708,7 +1716,7 @@ class TestScenarioL_OracleTimeout(unittest.TestCase):
         task_id = resp.get_json()['task_id']
 
         c.post(f'/jobs/{task_id}/fund',
-               json={'tx_hash': '0xl-fund'},
+               json={'tx_hash': _valid_tx('l-fund')},
                headers=_auth_headers(buyer_key))
 
         # Worker claims + submits

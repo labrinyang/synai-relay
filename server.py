@@ -131,6 +131,7 @@ with app.app_context():
         logger.info("Database tables created / verified")
     except Exception as e:
         logger.critical("Database init failed: %s", e)
+        raise
 
     # L11: Recover stuck judging submissions from previous crash
     try:
@@ -251,6 +252,8 @@ def _validate_job_fields(data: dict):
             return None, (jsonify({"error": f"price must be >= {Config.MIN_TASK_AMOUNT}"}), 400)
     except (InvalidOperation, ValueError, TypeError):
         return None, (jsonify({"error": "Invalid price value"}), 400)
+    if price > Decimal('1000000'):
+        return None, (jsonify({"error": "price must be <= 1,000,000 USDC"}), 400)
 
     rubric = data.get('rubric')
     if rubric and len(rubric) > 10000:
@@ -289,6 +292,13 @@ def _add_request_id_header(response):
     return response
 
 @app.after_request
+def _add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    return response
+
+@app.after_request
 def _invalidate_dashboard_cache(response):
     """Invalidate dashboard caches after successful mutating requests."""
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and response.status_code < 400:
@@ -297,6 +307,12 @@ def _invalidate_dashboard_cache(response):
         logger.info("dashboard cache invalidated: %s %s → %d",
                      request.method, request.path, response.status_code)
     return response
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    logger.exception("Unhandled exception: %s", e)
+    db.session.rollback()
+    return jsonify({"error": "Internal server error"}), 500
 
 # Thread pool for oracle evaluations with timeout support (G07)
 class _ScheduledExecutor:
@@ -1083,6 +1099,9 @@ def register_agent():
     if not re.match(r'^[a-zA-Z0-9_-]{3,100}$', agent_id):
         return jsonify({"error": "agent_id must be 3-100 alphanumeric/hyphen/underscore characters"}), 400
 
+    if name and (not isinstance(name, str) or len(name) > 100):
+        return jsonify({"error": "name must be a string of 100 characters or less"}), 400
+
     # M6: Validate wallet before calling service
     if wallet_address and not re.match(r'^0x[0-9a-fA-F]{40}$', wallet_address):
         return jsonify({"error": "Invalid wallet address format"}), 400
@@ -1341,6 +1360,8 @@ def _create_job(override_status=None, deposit_tx_hash=None,
             expiry = datetime.datetime.fromtimestamp(int(raw_expiry), tz=datetime.timezone.utc)
         except (ValueError, TypeError, OSError):
             return jsonify({"error": "Invalid expiry timestamp"}), 400
+        if expiry <= datetime.datetime.now(datetime.timezone.utc):
+            return jsonify({"error": "expiry must be in the future"}), 400
 
     max_submissions = data.get('max_submissions', 20)
     if not isinstance(max_submissions, int) or max_submissions < 1:
@@ -1349,6 +1370,11 @@ def _create_job(override_status=None, deposit_tx_hash=None,
     max_retries = data.get('max_retries', 3)
     if not isinstance(max_retries, int) or max_retries < 1:
         max_retries = 3
+
+    for key, val in [('max_submissions', max_submissions), ('max_retries', max_retries)]:
+        caps = {'max_submissions': 100, 'max_retries': 10}
+        if val > caps.get(key, 100):
+            return jsonify({"error": f"{key} must be <= {caps[key]}"}), 400
 
     # G19: Per-job fee_bps from request body (with validation)
     raw_fee_bps = data.get('fee_bps')
@@ -1499,6 +1525,8 @@ def fund_job(task_id):
     tx_hash = data.get('tx_hash')
     if not tx_hash:
         return jsonify({"error": "tx_hash is required"}), 400
+    if not re.match(r'^0x[0-9a-fA-F]{64}$', tx_hash):
+        return jsonify({"error": "tx_hash must be a 66-character hex string (0x + 64 hex chars)"}), 400
 
     wallet = get_wallet_service()
     overpayment = None
@@ -1699,6 +1727,8 @@ def submit_result(task_id):
 
     # H10: Check submission limits within a locked read
     job_for_submit = db.session.query(Job).filter_by(task_id=task_id).with_for_update().first()
+    if not job_for_submit or job_for_submit.status != 'funded':
+        return jsonify({"error": "Job is no longer accepting submissions"}), 409
     total_submissions = Submission.query.filter_by(task_id=task_id).count()
     if total_submissions >= (job_for_submit.max_submissions or 20):
         return jsonify({"error": "Task has reached maximum submissions"}), 400
@@ -1857,6 +1887,8 @@ def get_submission(submission_id):
             if sol_price <= 0:
                 sol_price = job.price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
 
+            # Solution view payments go 100% to worker — platform earns from
+            # the 20% job escrow fee instead. This incentivizes quality submissions.
             requirements = build_requirements(
                 sol_price,
                 author.wallet_address,
@@ -2179,13 +2211,16 @@ def update_job(task_id):
     data = request.get_json(silent=True) or {}
 
     if job.status == 'open':
-        # P2-5 fix (m-S07): Rubric length limit on update
-        if 'rubric' in data and data['rubric'] and len(data['rubric']) > 10000:
-            return jsonify({"error": "rubric must be <= 10000 characters"}), 400
         # Mutable when open: title, description, rubric, expiry, max_submissions, max_retries
         for field in ('title', 'description', 'rubric'):
             if field in data:
-                setattr(job, field, data[field])
+                val = data[field]
+                if not isinstance(val, str):
+                    return jsonify({"error": f"{field} must be a string"}), 400
+                limits = {'title': 500, 'description': 50000, 'rubric': 10000}
+                if len(val) > limits.get(field, 50000):
+                    return jsonify({"error": f"{field} exceeds maximum length"}), 400
+                setattr(job, field, val)
         if 'expiry' in data:
             try:
                 job.expiry = datetime.datetime.fromtimestamp(int(data['expiry']), tz=datetime.timezone.utc)
@@ -2195,6 +2230,9 @@ def update_job(task_id):
             if int_field in data:
                 val = data[int_field]
                 if isinstance(val, int) and val >= 1:
+                    caps = {'max_submissions': 100, 'max_retries': 10}
+                    if val > caps.get(int_field, 100):
+                        return jsonify({"error": f"{int_field} must be <= {caps[int_field]}"}), 400
                     setattr(job, int_field, val)
     elif job.status == 'funded':
         # When funded: only extend expiry
@@ -2374,11 +2412,17 @@ def dispute_job(task_id):
     reason = data.get('reason', '')
     if not reason:
         return jsonify({"error": "reason is required"}), 400
+    if len(reason) > 5000:
+        return jsonify({"error": "reason must be <= 5000 characters"}), 400
 
     # Only buyer or winner can dispute
     agent_id = g.current_agent_id
     if agent_id not in (job.buyer_id, job.winner_id):
         return jsonify({"error": "Only buyer or winner can dispute"}), 403
+
+    existing_dispute = Dispute.query.filter_by(task_id=task_id, filed_by=agent_id).first()
+    if existing_dispute:
+        return jsonify({"error": "You have already filed a dispute for this job"}), 409
 
     dispute = Dispute(
         task_id=task_id,

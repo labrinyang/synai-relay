@@ -62,7 +62,10 @@ class OracleService:
                     )
 
                 data = resp.json()
-                content = data['choices'][0]['message']['content'].strip()
+                try:
+                    content = data['choices'][0]['message']['content'].strip()
+                except (KeyError, IndexError, TypeError) as e:
+                    raise RuntimeError(f"LLM returned unexpected response structure: {e}")
 
                 if content.startswith('```'):
                     content = content.split('\n', 1)[1].rsplit('```', 1)[0].strip()

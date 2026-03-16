@@ -59,5 +59,14 @@ class Config:
 
     @classmethod
     def validate_production(cls):
-        """Startup check (no-op — guards removed)."""
-        pass
+        """Startup safety checks — warns about insecure defaults."""
+        warnings = []
+        if cls.SECRET_KEY == 'dev-secret-key-change-me':
+            warnings.append("FLASK_SECRET_KEY is using the default value — set a secure random key")
+        if 'sqlite' in (cls.SQLALCHEMY_DATABASE_URI or '').lower():
+            warnings.append("DATABASE_URL is SQLite — use PostgreSQL in production")
+        if not cls.OPERATIONS_WALLET_ADDRESS:
+            warnings.append("OPERATIONS_WALLET_ADDRESS is not set — on-chain features disabled")
+        for w in warnings:
+            import logging
+            logging.getLogger('relay.config').warning("PRODUCTION WARNING: %s", w)

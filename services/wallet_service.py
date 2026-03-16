@@ -321,9 +321,12 @@ class WalletService:
 
 # Singleton
 _wallet_service = None
+_wallet_service_lock = threading.Lock()
 
 def get_wallet_service() -> WalletService:
     global _wallet_service
     if _wallet_service is None:
-        _wallet_service = WalletService()
+        with _wallet_service_lock:
+            if _wallet_service is None:
+                _wallet_service = WalletService()
     return _wallet_service

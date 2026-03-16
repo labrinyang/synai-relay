@@ -122,38 +122,55 @@ Does this submission contain:
 Respond with exactly one JSON object:
 {{"blocked": true/false, "reason": "brief explanation"}}"""
 
-        try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0,
-                    "max_tokens": 200,
-                },
-                timeout=30,
-            )
-            data = resp.json()
-            content = data['choices'][0]['message']['content'].strip()
-            # Strip markdown code fences (GPT-4o often wraps JSON in ```json...```)
-            if content.startswith('```'):
-                content = re.sub(r'^```(?:json)?\s*', '', content)
-                content = re.sub(r'\s*```$', '', content)
-            result = json.loads(content)
-            if 'blocked' not in result or not isinstance(result['blocked'], bool):
-                import logging
-                logging.getLogger('relay.guard').warning(
-                    "LLM guard returned malformed response (missing/invalid 'blocked' key): %s", content[:200]
+        import time
+        logger = self._logger
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                resp = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0,
+                        "max_tokens": 200,
+                    },
+                    timeout=30,
                 )
-                return {"blocked": True, "reason": "Guard LLM returned malformed response (fail-closed)", "layer": "llm"}
-            result['layer'] = 'llm'
-            return result
-        except Exception as e:
-            # H2: Fail-closed — block on guard error
-            import logging
-            logging.getLogger('relay.guard').error("LLM guard scan failed: %s", e)
-            return {"blocked": True, "reason": "Guard check failed (fail-closed)", "layer": "llm"}
+                if resp.status_code in (429, 502, 503) and attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                if not resp.ok:
+                    raise RuntimeError(f"Guard LLM API error: {resp.status_code}")
+                data = resp.json()
+                try:
+                    content = data['choices'][0]['message']['content'].strip()
+                except (KeyError, IndexError, TypeError) as e:
+                    logger.warning("Guard LLM returned unexpected response: %s", e)
+                    return {"blocked": True, "reason": f"Guard check failed: malformed LLM response", "layer": "llm"}
+                # Strip markdown code fences (GPT-4o often wraps JSON in ```json...```)
+                if content.startswith('```'):
+                    content = re.sub(r'^```(?:json)?\s*', '', content)
+                    content = re.sub(r'\s*```$', '', content)
+                result = json.loads(content)
+                if 'blocked' not in result or not isinstance(result['blocked'], bool):
+                    logger.warning(
+                        "LLM guard returned malformed response (missing/invalid 'blocked' key): %s", content[:200]
+                    )
+                    return {"blocked": True, "reason": "Guard LLM returned malformed response (fail-closed)", "layer": "llm"}
+                result['layer'] = 'llm'
+                return result
+            except requests.exceptions.ConnectionError:
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                logger.error("LLM guard connection failed after %d retries", max_retries)
+                return {"blocked": True, "reason": "Guard check failed (fail-closed)", "layer": "llm"}
+            except Exception as e:
+                # H2: Fail-closed — block on guard error
+                logger.error("LLM guard scan failed: %s", e)
+                return {"blocked": True, "reason": "Guard check failed (fail-closed)", "layer": "llm"}
 
     def check_rubric(self, rubric: str) -> dict:
         """P1-2 fix (M-O03): Scan rubric text for injection patterns.

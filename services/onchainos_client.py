@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time as _time
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -42,29 +43,61 @@ class OnchainOSClient:
             "Content-Type": "application/json",
         }
 
-    def post(self, path: str, data: dict) -> dict:
-        body = json.dumps(data)
-        headers = self._headers("POST", path, body)
-        url = self._base_url + path
-        resp = requests.post(url, headers=headers, data=body, timeout=30)
-        resp.raise_for_status()
-        result = resp.json()
-        if result.get("code") != "0":
-            raise RuntimeError(
-                f"OnchainOS error: code={result.get('code')} msg={result.get('msg')}")
-        return result
+    def _request(self, method: str, path: str, body: str = "",
+                 params: dict = None) -> dict:
+        """Execute HTTP request with retry on transient failures."""
+        max_retries = 2
+        last_error = None
 
-    def get(self, path: str, params: dict = None) -> dict:
+        # Build full signing path (includes query string for GET)
         query = ""
         if params:
             query = "?" + urllib.parse.urlencode(params)
-        full_path = path + query
-        headers = self._headers("GET", full_path)
-        url = self._base_url + full_path
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        result = resp.json()
-        if result.get("code") != "0":
-            raise RuntimeError(
-                f"OnchainOS error: code={result.get('code')} msg={result.get('msg')}")
-        return result
+        sign_path = path + query
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Re-sign on each attempt (timestamp must be fresh)
+                headers = self._headers(method.upper(), sign_path, body)
+                url = f"{self._base_url}{sign_path}"
+
+                if method.upper() == "POST":
+                    resp = requests.post(url, headers=headers, data=body,
+                                         timeout=30)
+                else:
+                    resp = requests.get(url, headers=headers, timeout=30)
+
+                if resp.status_code in (429, 502, 503) and attempt < max_retries:
+                    logger.warning("OnchainOS %s %s returned %s, retrying "
+                                   "(attempt %d/%d)", method.upper(), path,
+                                   resp.status_code, attempt + 1, max_retries)
+                    _time.sleep(2 ** attempt)
+                    continue
+
+                resp.raise_for_status()
+                result = resp.json()
+                if result.get("code") != "0":
+                    raise RuntimeError(
+                        f"OnchainOS error: code={result.get('code')} "
+                        f"msg={result.get('msg')}")
+                return result
+
+            except requests.exceptions.ConnectionError as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning("OnchainOS %s %s connection error, "
+                                   "retrying (attempt %d/%d): %s",
+                                   method.upper(), path, attempt + 1,
+                                   max_retries, e)
+                    _time.sleep(2 ** attempt)
+                    continue
+                raise
+
+        raise last_error  # pragma: no cover
+
+    def post(self, path: str, data: dict) -> dict:
+        body = json.dumps(data)
+        return self._request("POST", path, body=body)
+
+    def get(self, path: str, params: dict = None) -> dict:
+        return self._request("GET", path, params=params)

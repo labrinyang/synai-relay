@@ -29,6 +29,10 @@ ENV/
 *.db
 *.sqlite3
 
+# SQLite WAL files
+*.db-shm
+*.db-wal
+
 # Environment Variables
 .env
 .flaskenv
@@ -56,3 +60,11 @@ run-agent-lifecycle.sh
 
 # Simulation
 scripts/sim/
+
+# Key/cert files
+*.key
+*.pem
+*.crt
+*.cert
+*.p12
+*.pfx
