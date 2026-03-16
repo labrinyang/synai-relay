@@ -311,7 +311,10 @@ def _invalidate_dashboard_cache(response):
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
     logger.exception("Unhandled exception: %s", e)
-    db.session.rollback()
+    try:
+        db.session.rollback()
+    except Exception:
+        pass
     return jsonify({"error": "Internal server error"}), 500
 
 # Thread pool for oracle evaluations with timeout support (G07)
@@ -1166,7 +1169,7 @@ def update_agent(agent_id):
 
     if 'name' in data:
         name = data['name']
-        if not isinstance(name, str) or len(name) < 1 or len(name) > 200:
+        if not isinstance(name, str) or len(name) < 1 or len(name) > 100:
             return jsonify({"error": "name must be 1-200 characters"}), 400
         agent.name = name
 
@@ -1352,6 +1355,8 @@ def _create_job(override_status=None, deposit_tx_hash=None,
     if rubric and len(rubric) > 10000:
         return jsonify({"error": "rubric must be <= 10000 characters"}), 400
     artifact_type = data.get('artifact_type', 'GENERAL')
+    if not isinstance(artifact_type, str) or len(artifact_type) > 20:
+        return None, (jsonify({"error": "artifact_type must be a string of 20 characters or less"}), 400)
 
     expiry = None
     raw_expiry = data.get('expiry')
@@ -1453,11 +1458,11 @@ def _list_jobs():
     sort_order = request.args.get('sort_order', 'desc')
 
     try:
-        limit = int(request.args.get('limit', 50))
+        limit = min(max(1, int(request.args.get('limit', 50))), 200)
     except (ValueError, TypeError):
         limit = 50
     try:
-        offset = int(request.args.get('offset', 0))
+        offset = max(0, int(request.args.get('offset', 0)))
     except (ValueError, TypeError):
         offset = 0
 
@@ -2223,9 +2228,12 @@ def update_job(task_id):
                 setattr(job, field, val)
         if 'expiry' in data:
             try:
-                job.expiry = datetime.datetime.fromtimestamp(int(data['expiry']), tz=datetime.timezone.utc)
+                new_expiry = datetime.datetime.fromtimestamp(int(data['expiry']), tz=datetime.timezone.utc)
             except (ValueError, TypeError, OSError):
                 return jsonify({"error": "Invalid expiry timestamp"}), 400
+            if new_expiry <= datetime.datetime.now(datetime.timezone.utc):
+                return jsonify({"error": "expiry must be in the future"}), 400
+            job.expiry = new_expiry
         for int_field in ('max_submissions', 'max_retries'):
             if int_field in data:
                 val = data[int_field]

@@ -45,8 +45,9 @@ contracts/cache/
 # OS
 .DS_Store
 
-# Docs — track analysis/deliverable docs, ignore internal design docs
+# Docs — ignore internal design docs, track review docs
 docs/
+!docs/reviews/
 
 # Logs
 *.log
