@@ -179,16 +179,18 @@ def _init_x402():
         logger.info("x402 disabled or SDK not available")
         return
 
-    # Coinbase facilitator (Base)
-    try:
-        coinbase_fac = HTTPFacilitatorClientSync(
-            {"url": Config.X402_COINBASE_FACILITATOR_URL})
-        coinbase_server = x402ResourceServerSync(coinbase_fac)
-        coinbase_server.register("eip155:8453", ExactEvmServerScheme())
-        _x402_servers[8453] = coinbase_server
-        logger.info("x402: Coinbase facilitator registered for Base (8453)")
-    except Exception as e:
-        logger.warning("x402: Failed to init Coinbase facilitator: %s", e)
+    # Coinbase facilitator (Base) — requires CDP API keys for mainnet
+    # TODO: re-enable once CDP API keys are configured
+    # try:
+    #     coinbase_fac = HTTPFacilitatorClientSync(
+    #         {"url": Config.X402_COINBASE_FACILITATOR_URL})
+    #     coinbase_server = x402ResourceServerSync(coinbase_fac)
+    #     coinbase_server.register("eip155:8453", ExactEvmServerScheme())
+    #     coinbase_server.initialize()
+    #     _x402_servers[8453] = coinbase_server
+    #     logger.info("x402: Coinbase facilitator registered for Base (8453)")
+    # except Exception as e:
+    #     logger.warning("x402: Failed to init Coinbase facilitator: %s", e)
 
     # OKX facilitator (X Layer) — only if OnchainOS credentials configured
     if Config.ONCHAINOS_API_KEY:
@@ -202,6 +204,7 @@ def _init_x402():
             )
             okx_server = x402ResourceServerSync(okx_fac)
             okx_server.register("eip155:196", ExactEvmServerScheme())
+            okx_server.initialize()
             _x402_servers[196] = okx_server
             logger.info("x402: OKX facilitator registered for X Layer (196)")
 
@@ -1240,11 +1243,15 @@ def create_job_endpoint():
                       or request.headers.get(X_PAYMENT_HEADER))
 
     if not payment_header:
-        # No payment: return 402 with requirements
+        # No payment: return 402 with requirements (only chains with active facilitators)
+        x402_adapters = [
+            a for a in (_chain_registry.adapters() if _chain_registry else [])
+            if a.chain_id() in _x402_servers
+        ]
         requirements = build_requirements(
             price,
             Config.OPERATIONS_WALLET_ADDRESS or '',
-            _chain_registry.adapters() if _chain_registry else [],
+            x402_adapters,
         )
         payment_required = PaymentRequired(accepts=requirements)
         resp = jsonify({
@@ -1900,10 +1907,14 @@ def get_submission(submission_id):
 
             # Solution view payments go 100% to worker — platform earns from
             # the 20% job escrow fee instead. This incentivizes quality submissions.
+            x402_adapters = [
+                a for a in (_chain_registry.adapters() if _chain_registry else [])
+                if a.chain_id() in _x402_servers
+            ]
             requirements = build_requirements(
                 sol_price,
                 author.wallet_address,
-                _chain_registry.adapters() if _chain_registry else [],
+                x402_adapters,
             )
             payment_required = PaymentRequired(accepts=requirements)
             resp_data = _submission_to_dict(sub, viewer_id, show_content=False)

@@ -50,7 +50,7 @@ class Config:
     # x402
     X402_ENABLED = os.environ.get('X402_ENABLED', 'true').lower() == 'true'
     X402_COINBASE_FACILITATOR_URL = os.environ.get(
-        'X402_COINBASE_FACILITATOR_URL', 'https://x402.org/facilitator')
+        'X402_COINBASE_FACILITATOR_URL', 'https://api.cdp.coinbase.com/platform/v2/x402')
     X402_OKX_FACILITATOR_URL = os.environ.get(
         'X402_OKX_FACILITATOR_URL', 'https://web3.okx.com/api/v6/x402')
 

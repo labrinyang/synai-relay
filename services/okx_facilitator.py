@@ -22,11 +22,25 @@ class OKXFacilitatorClient:
                  project_id: str = ""):
         self._client = OnchainOSClient(api_key, secret_key, passphrase, project_id)
 
+    @staticmethod
+    def _okx_payload(payload) -> dict:
+        """Transform x402 SDK PaymentPayload into OKX's expected format.
+
+        OKX expects: {x402Version, scheme, payload: {signature, authorization}}
+        SDK produces: {x402Version, payload, accepted, resource, extensions}
+        """
+        dumped = payload.model_dump(by_alias=True)
+        return {
+            "x402Version": dumped.get("x402Version", 1),
+            "scheme": payload.accepted.scheme,
+            "payload": dumped["payload"],
+        }
+
     def verify(self, payload, requirements) -> VerifyResponse:
         resp = self._client.post("/api/v6/x402/verify", {
-            "x402Version": "1",
+            "x402Version": 1,
             "chainIndex": _network_to_chain_index(requirements.network),
-            "paymentPayload": payload.model_dump(),
+            "paymentPayload": self._okx_payload(payload),
             "paymentRequirements": {
                 "scheme": requirements.scheme,
                 "maxAmountRequired": requirements.amount,
@@ -45,9 +59,9 @@ class OKXFacilitatorClient:
 
     def settle(self, payload, requirements) -> SettleResponse:
         resp = self._client.post("/api/v6/x402/settle", {
-            "x402Version": "1",
+            "x402Version": 1,
             "chainIndex": _network_to_chain_index(requirements.network),
-            "paymentPayload": payload.model_dump(),
+            "paymentPayload": self._okx_payload(payload),
             "paymentRequirements": {
                 "scheme": requirements.scheme,
                 "maxAmountRequired": requirements.amount,
@@ -58,32 +72,30 @@ class OKXFacilitatorClient:
         data = resp["data"][0]
         # OKX settle response uses "errorCode"/"failReason" for machine-readable
         # codes and "errorMsg" for human-readable text.
+        # txHash can be None if settlement failed — default to empty string.
         return SettleResponse(
             success=data.get("success", False),
-            transaction=data.get("txHash", ""),
+            transaction=data.get("txHash") or "",
             network=f"eip155:{data.get('chainIndex', _network_to_chain_index(requirements.network))}",
             payer=data.get("payer"),
-            error_reason=data.get("errorCode", data.get("failReason", "")),
-            error_message=data.get("errorMsg", ""),
+            error_reason=data.get("errorCode") or data.get("failReason") or "",
+            error_message=data.get("errorMsg") or "",
         )
 
     def get_supported(self) -> SupportedResponse:
         resp = self._client.get("/api/v6/x402/supported")
-        data = resp["data"][0]
+        # OKX returns each supported kind as a flat item in data[],
+        # e.g. [{"x402Version":"1","chainIndex":"196","scheme":"exact"}]
         kinds = [
             SupportedKind(
-                x402_version=int(k.get("x402Version", 1)),
-                scheme=k["scheme"],
-                network=k["network"],
-                extra=k.get("extra"),
+                x402_version=int(item.get("x402Version", 1)),
+                scheme=item["scheme"],
+                network=f"eip155:{item['chainIndex']}",
+                extra=item.get("extra"),
             )
-            for k in data.get("kinds", [])
+            for item in resp.get("data", [])
         ]
-        return SupportedResponse(
-            kinds=kinds,
-            extensions=data.get("extensions", []),
-            signers=data.get("signers", {}),
-        )
+        return SupportedResponse(kinds=kinds)
 
     def close(self):
         pass
