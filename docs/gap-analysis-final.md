@@ -105,6 +105,22 @@ For the **MVP agent lifecycle** (this project's scope), we focus on gaps that pr
 **Deferred / Out-of-scope**:
 - Per-task smart contract escrow (Phase 2 architecture)
 - Full task queue migration (Celery/RQ)
-- Multi-chain support
+- ~~Multi-chain support~~ ← **Implemented (Mar 2026)**: x402 + ChainAdapter + Base L2 + X Layer
 - Batch operations
 - Metrics/monitoring infrastructure
+
+---
+
+## Implementation Status (Updated 2026-03-16)
+
+**All P0 (G01–G07): ✅ DONE**
+**All P1 (G08–G24): ✅ DONE** (G12, G15, G18 partially — see `docs/reviews/2026-03-16-project-status.md`)
+
+Additional work completed beyond original scope:
+- x402 payment protocol integration (one-step escrow + pay-to-view marketplace)
+- Multi-chain architecture (ChainAdapter + BaseAdapter + XLayerAdapter + ChainRegistry)
+- OnchainOS integration (OKX API client, HMAC auth, retry logic)
+- 2 full code reviews → 28 security/quality issues fixed
+- 293 tests passing
+
+See `docs/reviews/2026-03-16-project-status.md` for full status.
