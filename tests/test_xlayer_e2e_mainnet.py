@@ -45,7 +45,7 @@ PAYOUT_AMOUNT = Decimal('0.10')
 REFUND_AMOUNT = Decimal('0.01')
 
 # Buyer (arc_solver)
-BUYER_KEY = '***REDACTED_BUYER_KEY***'
+BUYER_KEY = os.environ.get('TEST_BUYER_WALLET_KEY', '')
 BUYER_ADDR = '0xf808390B22F56a47ddEE15053Eb10A9674aDe0F4'
 
 # Worker (byte.runner)

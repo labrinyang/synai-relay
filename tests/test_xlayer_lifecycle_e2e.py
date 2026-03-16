@@ -38,11 +38,11 @@ CHAIN_ID = 196
 FEE_BPS = 2000
 
 # Buyer (arc_solver) — sends deposits
-BUYER_KEY = '***REDACTED_BUYER_KEY***'
+BUYER_KEY = os.environ.get('TEST_BUYER_WALLET_KEY', '')
 BUYER_ADDR = '0xf808390B22F56a47ddEE15053Eb10A9674aDe0F4'
 
 # Worker (byte.runner) — receives payouts
-WORKER_KEY = '***REDACTED_WORKER_KEY***'
+WORKER_KEY = os.environ.get('TEST_WORKER_WALLET_KEY', '')
 WORKER_ADDR = '0xbAE26E65D1C1246D7B7f2574980C1d93C31Eae6F'
 
 # OPS wallet (from .env)

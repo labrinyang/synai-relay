@@ -9,6 +9,7 @@ Skipped by default. Run with:
     RUN_E2E_X402=1 pytest tests/test_x402_e2e.py -v -s
 
 Prerequisites:
+    TEST_BUYER_WALLET_KEY set (buyer wallet private key)
     OPERATIONS_WALLET_KEY set (ops wallet)
     ONCHAINOS_API_KEY, ONCHAINOS_SECRET_KEY, ONCHAINOS_PASSPHRASE set
     Buyer wallet funded with USDC on X Layer
@@ -31,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 
 # --- Constants ---
 
-BUYER_KEY = '***REDACTED_BUYER_KEY***'
+BUYER_KEY = os.environ.get('TEST_BUYER_WALLET_KEY', '')
 BUYER_ADDR = '0xf808390B22F56a47ddEE15053Eb10A9674aDe0F4'
 OPS_ADDR = os.environ.get('OPERATIONS_WALLET_ADDRESS', '')
 TASK_PRICE = Decimal('0.10')
