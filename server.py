@@ -213,8 +213,12 @@ def _init_x402():
                 Config.ONCHAINOS_PASSPHRASE,
                 Config.ONCHAINOS_PROJECT_ID,
             )
-            _chain_registry.register(XLayerAdapter(onchainos,
-                usdc_addr=Config.XLAYER_USDC_CONTRACT))
+            _chain_registry.register(XLayerAdapter(
+                onchainos,
+                ops_private_key=Config.OPERATIONS_WALLET_KEY,
+                rpc_url=Config.XLAYER_RPC_URL,
+                usdc_addr=Config.XLAYER_USDC_CONTRACT,
+            ))
         except Exception as e:
             logger.warning("x402: Failed to init OKX facilitator: %s", e)
 

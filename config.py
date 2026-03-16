@@ -39,7 +39,7 @@ class Config:
 
     # X Layer
     XLAYER_RPC_URL = os.environ.get('XLAYER_RPC_URL', 'https://rpc.xlayer.tech')
-    XLAYER_USDC_CONTRACT = os.environ.get('XLAYER_USDC_CONTRACT', '')
+    XLAYER_USDC_CONTRACT = os.environ.get('XLAYER_USDC_CONTRACT', '0x74b7f16337b8972027f6196a17a631ac6de26d22')
 
     # OnchainOS (OKX)
     ONCHAINOS_API_KEY = os.environ.get('ONCHAINOS_API_KEY', '')
