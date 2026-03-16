@@ -1,6 +1,6 @@
 """X Layer adapter — hybrid OnchainOS (reads/broadcast) + web3.py (tx building/signing)."""
 import logging
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from eth_account import Account
 from web3 import Web3
@@ -77,6 +77,9 @@ class XLayerAdapter(ChainAdapter):
 
     def verify_deposit(self, tx_hash: str, expected_amount: Decimal) -> DepositResult:
         """Verify a USDC deposit on X Layer via OnchainOS transaction query."""
+        if not self._account:
+            return DepositResult(valid=False, error="No ops wallet configured — cannot verify deposits")
+
         try:
             result = self._client.get(
                 '/api/v6/dex/post-transaction/transaction-detail-by-txhash',
@@ -100,7 +103,7 @@ class XLayerAdapter(ChainAdapter):
             )
 
         # Find USDC transfer to ops wallet
-        ops = self._account.address.lower() if self._account else ''
+        ops = self._account.address.lower()
         for transfer in tx_data.get('tokenTransferDetails', []):
             token_addr = transfer.get('tokenContractAddress', '').lower()
             to_addr = transfer.get('to', '').lower()
@@ -127,7 +130,9 @@ class XLayerAdapter(ChainAdapter):
             return PayoutResult(error=f"Invalid fee_bps: {fee_bps}")
 
         fee_rate = Decimal(fee_bps) / Decimal(10_000)
-        worker_share = amount * (Decimal(1) - fee_rate)
+        worker_share = (amount * (Decimal(1) - fee_rate)).quantize(
+            Decimal('0.000001'), rounding=ROUND_DOWN
+        )
 
         try:
             raw_tx = self._build_and_sign_transfer(to_address, worker_share)

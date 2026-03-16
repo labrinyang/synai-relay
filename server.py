@@ -213,6 +213,8 @@ def _init_x402():
                 Config.ONCHAINOS_PASSPHRASE,
                 Config.ONCHAINOS_PROJECT_ID,
             )
+            if not Config.OPERATIONS_WALLET_KEY:
+                logger.warning("x402: OPERATIONS_WALLET_KEY not set — XLayerAdapter will be read-only (no payout/refund)")
             _chain_registry.register(XLayerAdapter(
                 onchainos,
                 ops_private_key=Config.OPERATIONS_WALLET_KEY,

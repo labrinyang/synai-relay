@@ -303,16 +303,13 @@ class TestXLayerAdapter:
         assert adapter.ops_address() == ''
 
     def test_verify_deposit_without_key(self):
-        """verify_deposit should still work (reads only need OnchainOS client)."""
+        """verify_deposit should fail early without ops key."""
         from decimal import Decimal
         mock_client = MagicMock()
-        mock_client.get.return_value = {
-            'data': [{'txStatus': '2', 'tokenTransferDetails': []}]
-        }
         adapter = XLayerAdapter(mock_client)
         result = adapter.verify_deposit("0x" + "ab" * 32, Decimal("50"))
         assert result.valid is False
-        assert "No USDC transfer" in result.error
+        assert "No ops wallet configured" in result.error
 
     def test_payout_without_key(self):
         """payout should fail gracefully without ops key."""
