@@ -865,7 +865,7 @@ def _launch_oracle_with_timeout(submission_id):
     # F08: Prevent unbounded queue
     _oracle_executor.ensure_pool()
     pending = _oracle_executor._pool._work_queue.qsize() if _oracle_executor._pool else 0
-    if pending >= 20:
+    if pending >= Config.ORACLE_QUEUE_MAX:
         logger.warning("Oracle queue saturated (%d pending), rejecting submission %s", pending, submission_id)
         with app.app_context():
             try:
@@ -1192,7 +1192,7 @@ def update_agent(agent_id):
     if 'name' in data:
         name = data['name']
         if not isinstance(name, str) or len(name) < 1 or len(name) > 100:
-            return jsonify({"error": "name must be 1-200 characters"}), 400
+            return jsonify({"error": "name must be 1-100 characters"}), 400
         agent.name = name
 
     if 'wallet_address' in data:
@@ -1367,40 +1367,19 @@ def _create_job(override_status=None, deposit_tx_hash=None,
     # buyer_id is the authenticated agent
     buyer_id = g.current_agent_id
 
-    # Required fields
-    title = data.get('title')
-    description = data.get('description')
-
-    if not title:
-        return jsonify({"error": "title is required"}), 400
-    if len(title) > 500:
-        return jsonify({"error": "title must be <= 500 characters"}), 400
-    if not description:
-        return jsonify({"error": "description is required"}), 400
-    if len(description) > 50000:
-        return jsonify({"error": "description must be <= 50000 characters"}), 400
-
-    # Price validation
-    raw_price = data.get('price')
-    if raw_price is None:
-        return jsonify({"error": "price is required"}), 400
-    try:
-        price = Decimal(str(raw_price))
-        if not price.is_finite() or price < Decimal(str(Config.MIN_TASK_AMOUNT)):
-            return jsonify({
-                "error": f"price must be >= {Config.MIN_TASK_AMOUNT}"
-            }), 400
-    except (InvalidOperation, ValueError, TypeError):
-        return jsonify({"error": "Invalid price value"}), 400
+    # A4: Delegate shared field validation to _validate_job_fields()
+    fields, err = _validate_job_fields(data)
+    if err:
+        return err
+    title = fields["title"]
+    description = fields["description"]
+    price = fields["price"]
+    rubric = fields["rubric"]
 
     # Optional fields
-    rubric = data.get('rubric')
-    # P2-5 fix (m-S07): Rubric length limit
-    if rubric and len(rubric) > 10000:
-        return jsonify({"error": "rubric must be <= 10000 characters"}), 400
     artifact_type = data.get('artifact_type', 'GENERAL')
     if not isinstance(artifact_type, str) or len(artifact_type) > 20:
-        return None, (jsonify({"error": "artifact_type must be a string of 20 characters or less"}), 400)
+        return jsonify({"error": "artifact_type must be a string of 20 characters or less"}), 400
 
     expiry = None
     raw_expiry = data.get('expiry')
@@ -1770,7 +1749,7 @@ def submit_result(task_id):
 
     # C3: Enforce 50KB content size limit
     content_str = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else str(content)
-    if len(content_str.encode('utf-8')) > 50 * 1024:
+    if len(content_str.encode('utf-8')) > Config.SUBMISSION_MAX_SIZE_BYTES:
         return jsonify({"error": "Submission content exceeds 50KB limit"}), 400
 
     # Worker must be a participant
@@ -2117,7 +2096,7 @@ def _check_refund_cooldown(depositor_address):
         if updated.tzinfo is None:
             updated = updated.replace(tzinfo=datetime.timezone.utc)
         elapsed = (datetime.datetime.now(datetime.timezone.utc) - updated).total_seconds()
-        remaining = max(0, 3600 - elapsed)
+        remaining = max(0, Config.REFUND_COOLDOWN_SECONDS - elapsed)
         return True, int(remaining)
     return False, 0
 

@@ -57,6 +57,11 @@ class Config:
     # Submission marketplace
     SOLUTION_VIEW_FEE_PERCENT = int(os.environ.get('SOLUTION_VIEW_FEE_PERCENT', '70'))
 
+    # Operational constants
+    ORACLE_QUEUE_MAX = 20
+    SUBMISSION_MAX_SIZE_BYTES = 50 * 1024  # 50KB
+    REFUND_COOLDOWN_SECONDS = 3600  # 1 hour
+
     @classmethod
     def validate_production(cls):
         """Startup safety checks — warns about insecure defaults."""
