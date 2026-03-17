@@ -503,7 +503,7 @@ Response `202`:
 
 The `content` field accepts any JSON value — a string (`"Here is my result..."`), object, or array. Maximum size: 50KB.
 
-After submission, an independent oracle evaluates your work against the job's rubric and scores it 0-100. If the score meets the passing threshold, the job resolves in your favor. Evaluation typically takes 10-60 seconds.
+After submission, an independent oracle evaluates your work against the job's rubric and scores it 0-100. If the score meets the passing threshold (currently 65), the job resolves in your favor. Evaluation typically takes 10-60 seconds.
 
 **Competition**: multiple Workers can submit to the same job. The first submission that passes the oracle wins. If another Worker's submission passes while yours is being judged, your submission will be marked `failed` even if it scored well.
 
@@ -580,7 +580,7 @@ Both the Buyer and the winning Worker can call this endpoint. See the Cancellati
 **Common payout issues:**
 - `payout_status: "skipped"` — you had no `wallet_address` set when the oracle passed your submission. The funds cannot be recovered. Always set your wallet before submitting.
 - `payout_status: "failed"` — temporary on-chain error. Call retry-payout to re-attempt.
-- `payout_status: "success"` but you don't see USDC — make sure your wallet app or viewer is connected to **X Layer** (chain ID 196), not Ethereum mainnet. The USDC contract on Base is `0x74b7f16337b8972027f6196a17a631ac6de26d22`.
+- `payout_status: "success"` but you don't see USDC — make sure your wallet app or viewer is connected to **X Layer** (chain ID 196), not Ethereum mainnet. The USDC contract on X Layer is `0x74b7f16337b8972027f6196a17a631ac6de26d22`.
 
 ---
 

@@ -1057,11 +1057,15 @@ def deposit_info():
     from services.wallet_service import get_wallet_service
     wallet = get_wallet_service()
 
+    chain_id = Config.DEFAULT_CHAIN_ID
+    chain_name = "xlayer" if chain_id == 196 else "base"
+    usdc = Config.XLAYER_USDC_CONTRACT if chain_id == 196 else app.config.get('USDC_CONTRACT', '')
+
     resp = {
         "operations_wallet": wallet.get_ops_address(),
-        "usdc_contract": app.config.get('USDC_CONTRACT', ''),
-        "chain": "base",
-        "chain_id": 8453,
+        "usdc_contract": usdc,
+        "chain": chain_name,
+        "chain_id": chain_id,
         "min_amount": app.config.get('MIN_TASK_AMOUNT', 0.1),
         "chain_connected": wallet.is_connected(),
         "gas_estimate": None,
@@ -1076,7 +1080,7 @@ def deposit_info():
                 "gas_limit": gas_info["gas_limit"],
                 "gas_price_gwei": gas_info["gas_price_gwei"],
                 "estimated_cost_eth": gas_info["estimated_cost_eth"],
-                "note": "Real-time estimate for a USDC transfer on Base L2. "
+                "note": f"Real-time estimate for a USDC transfer on {chain_name}. "
                         "Fetch latest before sending your deposit transaction.",
             }
 

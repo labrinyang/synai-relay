@@ -35,7 +35,7 @@ class Config:
     OPERATOR_SIGNATURE_MAX_AGE = int(os.environ.get('OPERATOR_SIGNATURE_MAX_AGE', '300'))  # seconds
 
     # Multi-chain
-    DEFAULT_CHAIN_ID = int(os.environ.get('DEFAULT_CHAIN_ID', '8453'))
+    DEFAULT_CHAIN_ID = int(os.environ.get('DEFAULT_CHAIN_ID', '196'))
 
     # X Layer
     XLAYER_RPC_URL = os.environ.get('XLAYER_RPC_URL', 'https://rpc.xlayer.tech')
