@@ -170,9 +170,8 @@ Respond with exactly one JSON object:
 
 Quality scoring rules:
 - quality_score = weighted average of dimension scores (accuracy 30%, depth 25%, craft 20%, originality 15%, practical_value 10%).
-- quality_score CANNOT exceed completeness_score from Step 4 (an incomplete submission cannot be high quality).
-- quality_score CANNOT exceed structural_score from Step 3 + 10 (a poorly structured submission caps quality).
-- You MUST identify at least 1 weakness regardless of quality level."""
+- You MUST identify at least 1 weakness regardless of quality level.
+- Judge quality on its own merits — do not cap the score based on other steps. A submission can have excellent quality even with minor structural or completeness gaps."""
 
 
 # ── Step 6: Consistency Audit (NEW) ─────────────────────────────────
@@ -210,7 +209,7 @@ If no issues found in a category, use an empty array []. consistency_score: 100 
 
 # ── Step 7: Devil's Advocate ────────────────────────────────────────
 
-STEP7_DEVILS_ADVOCATE = """You are the Devil's Advocate in Step 7 of 8. Your SOLE purpose is to argue AGAINST accepting this submission. You are adversarial by design.
+STEP7_DEVILS_ADVOCATE = """You are a balanced Critical Reviewer in Step 7 of 8. Your role is to identify genuine issues that previous steps may have missed — but ONLY real, evidence-backed problems.
 
 ## Task Specification
 Title: {title}
@@ -231,28 +230,27 @@ Step 6 (Consistency Audit): {step6_output}
 
 ## Your Mission
 
-You represent the interests of the task requester who is PAYING for this work. They deserve excellence. Find every reason this submission falls short.
+Provide a fair critical review. Identify genuine problems, but do NOT penalize for theoretical concerns or stylistic preferences. Focus on issues that would actually affect the task requester's ability to USE this submission.
 
-Mandatory analysis areas:
-1. **Unaddressed Consistency Findings**: The Consistency Audit (Step 6) found issues. Are they being taken seriously enough? Amplify any that previous steps underweighted.
-2. **Hidden Weaknesses**: What problems did Steps 3-5 miss? Look for subtle errors, unstated assumptions, edge cases, potential failures.
-3. **Standard Gaps**: Compare this submission to what an expert-level response would contain. What is missing?
-4. **Overrated Strengths**: Which strengths from Step 5 are actually weaker than claimed? Challenge them with specific counterarguments.
-5. **Risk Assessment**: If the task requester used this submission as-is, what could go wrong?
+Analysis areas:
+1. **Genuine Errors**: Are there factual errors, bugs, or incorrect logic? (Only flag if you can cite specific evidence.)
+2. **Missing Requirements**: Are any explicitly stated requirements unmet? (Cross-reference the task description.)
+3. **Practical Concerns**: If used as-is, would this submission cause real problems? (Not hypothetical edge cases.)
 
-For EACH argument against acceptance, assign:
-- A severity: critical (fundamentally flawed), major (significant gap), moderate (notable deficiency), minor (nitpick)
-- A proposed penalty: How many points to deduct? (critical: -15 to -25, major: -8 to -15, moderate: -3 to -8, minor: -1 to -3)
+For EACH argument, assign:
+- severity: critical (fundamentally broken), major (significant real gap), moderate (notable but not blocking), minor (stylistic or theoretical)
+- proposed_penalty: critical=-8 to -12, major=-4 to -8, moderate=-2 to -4, minor=0 to -1
 
 Rules:
-- You MUST find at least 2 arguments against acceptance. Perfect submissions do not exist.
-- Do NOT fabricate issues that genuinely do not exist. Every argument must cite specific evidence.
-- If Step 6 found contradictions, false_claims, or logical_gaps, you MUST address each one.
+- Only flag issues backed by SPECIFIC evidence from the submission.
+- Do NOT penalize for: stylistic choices, theoretical edge cases unlikely in practice, missing features not in the requirements, or comparisons to "ideal" solutions.
+- If the submission genuinely addresses all requirements and works correctly, it is acceptable to find 0 arguments. Not every submission has critical flaws.
+- If Step 6 found real contradictions or false_claims, address them. If Step 6 found nothing, say so.
 
 Respond with exactly one JSON object:
 {{"arguments_against": [{{"argument": "...", "evidence": "...", "severity": "critical/major/moderate/minor", "proposed_penalty": -1}}], "overrated_strengths": [{{"claimed_strength": "...", "counterargument": "..."}}], "risk_assessment": "2-3 sentences", "total_proposed_penalty": -1, "severity_summary": "critical/major/moderate/minor", "devils_summary": "2-3 sentence summary"}}
 
-severity_summary = worst severity found among all arguments."""
+severity_summary = worst severity found among all arguments. If no arguments, severity_summary = "none"."""
 
 
 # ── Step 8: Penalty Calculator (NEW) ────────────────────────────────
@@ -270,15 +268,18 @@ Consistency Score (Step 6): {consistency_score}
 
 ## Rules for Penalty Application
 
-For EACH argument from the Devil's Advocate:
-1. Evaluate whether the argument is valid (based on evidence cited).
-2. If VALID: Apply the proposed penalty (you may reduce it by up to 30% if somewhat overstated, but never to zero).
-3. If INVALID (fabricated or misunderstanding): Apply a minimum penalty of -1 (surface ambiguity exists).
-4. State your reasoning for each decision.
+For EACH argument from the Critical Reviewer:
+1. Evaluate whether the argument is valid (based on SPECIFIC evidence cited).
+2. If VALID and well-evidenced: Apply the proposed penalty (you may reduce it by up to 50% if overstated).
+3. If OVERSTATED (real issue but exaggerated severity): Apply at most 50% of proposed penalty.
+4. If INVALID (fabricated, theoretical, or misunderstanding): Apply 0 penalty. Do not penalize for non-issues.
+5. State your reasoning for each decision.
+
+IMPORTANT: Total applied penalties CANNOT exceed -10. Even if individual penalties sum to more, cap at -10. The critical review should refine the score, not demolish it.
 
 Then calculate the adjusted score:
 - Base score = (completeness_score * 0.35) + (quality_score * 0.35) + (structural_score * 0.15) + (consistency_score * 0.15)
-- Adjusted score = base_score + total_applied_penalties
+- Adjusted score = base_score + total_applied_penalties (capped at -10)
 - Floor: 0. Ceiling: 100.
 
 Respond with exactly one JSON object:
