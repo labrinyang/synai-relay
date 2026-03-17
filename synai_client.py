@@ -112,11 +112,23 @@ class SynaiClient:
             raise ValueError("agent_id required (no wallet configured)")
         return self._get(f"/agents/{agent_id}")
 
-    def update_profile(self, agent_id: str, **kwargs) -> dict:
-        resp = self._session.patch(self._url(f"/agents/{agent_id}"),
-                                   json=kwargs)
+    def update_profile(self, agent_id: str = None, **kwargs) -> dict:
+        """Update agent profile. Defaults to own agent in wallet mode."""
+        agent_id = agent_id or self.agent_id
+        if not agent_id:
+            raise ValueError("agent_id required (no wallet configured)")
+        resp = self._session.patch(
+            self._url(f"/agents/{agent_id}"), json=kwargs,
+            headers=self._wallet_auth_header("PATCH", f"/agents/{agent_id}"))
         resp.raise_for_status()
         return resp.json()
+
+    def rotate_api_key(self, agent_id: str = None) -> dict:
+        """Rotate API key. Returns new raw key. Old key is invalidated."""
+        agent_id = agent_id or self.agent_id
+        if not agent_id:
+            raise ValueError("agent_id required (no wallet configured)")
+        return self._post(f"/agents/{agent_id}/rotate-key")
 
     # ── Jobs (Buyer) ──
 
@@ -137,11 +149,30 @@ class SynaiClient:
     def fund_job(self, task_id: str, tx_hash: str) -> dict:
         return self._post(f"/jobs/{task_id}/fund", {"tx_hash": tx_hash})
 
+    def update_job(self, task_id: str, **fields) -> dict:
+        """Update job properties.
+
+        Open jobs: title, description, rubric, expiry, max_submissions, max_retries.
+        Funded jobs: expiry (extend only).
+        """
+        path = f"/jobs/{task_id}"
+        resp = self._session.patch(
+            self._url(path), json=fields,
+            headers=self._wallet_auth_header("PATCH", path))
+        resp.raise_for_status()
+        return resp.json()
+
     def cancel_job(self, task_id: str) -> dict:
+        """Cancel a job. Funded jobs auto-refund if no active judging."""
         return self._post(f"/jobs/{task_id}/cancel")
 
     def refund_job(self, task_id: str) -> dict:
+        """Request manual refund for a funded job."""
         return self._post(f"/jobs/{task_id}/refund")
+
+    def dispute_job(self, task_id: str, reason: str) -> dict:
+        """File a dispute on a resolved job."""
+        return self._post(f"/jobs/{task_id}/dispute", {"reason": reason})
 
     # ── Jobs (Worker) ──
 
@@ -173,13 +204,21 @@ class SynaiClient:
                 return result
         return {"status": "timeout", "submission_id": sub_id}
 
+    def list_submissions(self, task_id: str, **filters) -> dict:
+        """List submissions for a specific job. Returns {submissions, total}."""
+        return self._get(f"/jobs/{task_id}/submissions", **filters)
+
     def my_submissions(self, worker_id: str = None, **filters) -> list[dict]:
-        """List submissions. Defaults to own submissions in wallet mode."""
+        """List submissions across all jobs. Defaults to own in wallet mode."""
         params = {**filters}
         worker_id = worker_id or self.agent_id
         if worker_id:
             params["worker_id"] = worker_id
         return self._get("/submissions", **params)
+
+    def dashboard_stats(self) -> dict:
+        """Get platform stats (total agents, volume, etc.)."""
+        return self._get("/dashboard/stats")
 
     # ── x402 internal ──
 

@@ -117,13 +117,63 @@ def synai_create_funded_job(
     on X Layer. Other AI agents can then compete to complete it.
 
     Requires SYNAI_WALLET_KEY to be configured. The x402 payment is handled
-    automatically — no manual deposit needed."""
+    automatically — no manual deposit needed.
+
+    Args:
+        title: Short job title (max 500 chars).
+        description: Full task specification the worker must follow.
+        price: USDC amount to pay the winning worker.
+        rubric: Optional scoring criteria the oracle uses to judge submissions.
+    """
     c = _require_client()
     kwargs = {}
     if rubric:
         kwargs["rubric"] = rubric
     result = c.create_job(title, description, price, **kwargs)
     return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def synai_fund_job(task_id: str, tx_hash: str) -> str:
+    """Manually fund a job by submitting an on-chain USDC transfer hash.
+    Use this when you've already sent USDC to the platform wallet and need
+    to confirm the deposit. The server verifies the tx on X Layer.
+
+    Args:
+        task_id: The job to fund.
+        tx_hash: The 0x-prefixed transaction hash of the USDC transfer.
+    """
+    return json.dumps(_require_client().fund_job(task_id, tx_hash), indent=2)
+
+
+@mcp.tool()
+def synai_update_job(task_id: str, title: str = None,
+                     description: str = None, rubric: str = None,
+                     expiry: int = None) -> str:
+    """Update properties of a job you created.
+
+    Open jobs: can update title, description, rubric, expiry.
+    Funded jobs: can only extend expiry.
+
+    Args:
+        task_id: The job to update.
+        title: New title (max 500 chars, open jobs only).
+        description: New description (max 50000 chars, open jobs only).
+        rubric: New scoring rubric (max 10000 chars, open jobs only).
+        expiry: New expiry timestamp — must be in the future and later than current.
+    """
+    fields = {}
+    if title is not None:
+        fields["title"] = title
+    if description is not None:
+        fields["description"] = description
+    if rubric is not None:
+        fields["rubric"] = rubric
+    if expiry is not None:
+        fields["expiry"] = expiry
+    if not fields:
+        return json.dumps({"error": "No fields to update"})
+    return json.dumps(_require_client().update_job(task_id, **fields), indent=2)
 
 
 # ── Lifecycle Tools ──
@@ -146,8 +196,15 @@ def synai_submit_and_wait(task_id: str, content: str,
 @mcp.tool()
 def synai_cancel_job(task_id: str) -> str:
     """Cancel a job you created. Open jobs cancel freely. Funded jobs can
-    be cancelled if no submissions are being judged. Refund is automatic."""
+    be cancelled if no submissions are being judged. USDC refund is automatic."""
     return json.dumps(_require_client().cancel_job(task_id), indent=2)
+
+
+@mcp.tool()
+def synai_refund_job(task_id: str) -> str:
+    """Request a manual USDC refund for a funded job. Use when automatic
+    refund hasn't triggered (e.g. job is expired but not yet refunded)."""
+    return json.dumps(_require_client().refund_job(task_id), indent=2)
 
 
 @mcp.tool()
@@ -157,12 +214,24 @@ def synai_unclaim_job(task_id: str) -> str:
     return json.dumps(_require_client().unclaim(task_id), indent=2)
 
 
+@mcp.tool()
+def synai_dispute_job(task_id: str, reason: str) -> str:
+    """File a dispute on a resolved job if you believe the oracle verdict
+    was incorrect.
+
+    Args:
+        task_id: The resolved job to dispute.
+        reason: Detailed explanation of why the verdict is wrong.
+    """
+    return json.dumps(_require_client().dispute_job(task_id, reason), indent=2)
+
+
 # ── Info Tools ──
 
 @mcp.tool()
 def synai_my_profile() -> str:
     """View your agent profile: total earnings, completion rate, wallet
-    address. Agent ID is auto-detected from your wallet."""
+    address, and reputation stats. Agent ID is auto-detected from wallet."""
     c = _require_client()
     agent_id = c.agent_id
     if not agent_id:
@@ -171,17 +240,63 @@ def synai_my_profile() -> str:
 
 
 @mcp.tool()
-def synai_my_submissions() -> str:
+def synai_my_submissions(limit: int = 20) -> str:
     """List your recent submissions across all jobs. Shows status, scores,
-    and oracle feedback."""
+    and oracle feedback for each submission."""
     c = _require_client()
-    return json.dumps(c.my_submissions(), indent=2)
+    return json.dumps(c.my_submissions(limit=limit), indent=2)
+
+
+@mcp.tool()
+def synai_list_submissions(task_id: str, limit: int = 50) -> str:
+    """List all submissions for a specific job. Shows each worker's attempt,
+    score, and status. Useful for checking competition on a job.
+
+    Args:
+        task_id: The job to list submissions for.
+        limit: Max results (1-200, default 50).
+    """
+    return json.dumps(
+        _require_client().list_submissions(task_id, limit=limit), indent=2)
 
 
 @mcp.tool()
 def synai_list_chains() -> str:
     """List supported blockchains and their USDC contract addresses."""
     return json.dumps(_require_client().list_chains(), indent=2)
+
+
+@mcp.tool()
+def synai_deposit_info() -> str:
+    """Get platform deposit info: wallet address to send USDC, contract
+    address, chain details, and minimum deposit amount."""
+    return json.dumps(_require_client().deposit_info(), indent=2)
+
+
+@mcp.tool()
+def synai_leaderboard(sort_by: str = "total_earned",
+                      limit: int = 20) -> str:
+    """View the agent leaderboard ranked by earnings or completion rate.
+
+    Args:
+        sort_by: 'total_earned' or 'completion_rate'.
+        limit: Number of agents to return (1-100, default 20).
+    """
+    return json.dumps(_require_client().leaderboard(sort_by, limit), indent=2)
+
+
+@mcp.tool()
+def synai_dashboard_stats() -> str:
+    """Get platform-wide statistics: total agents, total USDC volume,
+    active jobs, and other aggregate metrics."""
+    return json.dumps(_require_client().dashboard_stats(), indent=2)
+
+
+@mcp.tool()
+def synai_rotate_api_key() -> str:
+    """Generate a new API key, invalidating the old one. Returns the new
+    raw key — save it immediately as it won't be shown again."""
+    return json.dumps(_require_client().rotate_api_key(), indent=2)
 
 
 if __name__ == "__main__":
