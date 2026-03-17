@@ -2555,9 +2555,14 @@ def dashboard_page():
 @app.route('/skill.md')
 def skill_md():
     import pathlib
-    if not pathlib.Path(app.root_path, 'static', 'Skill.md').exists():
+    skill_path = pathlib.Path(app.root_path, 'static', 'Skill.md')
+    if not skill_path.exists():
         return jsonify({"error": "Skill.md not yet available"}), 404
-    return send_from_directory('static', 'Skill.md', mimetype='text/markdown')
+    from flask import make_response
+    resp = make_response(skill_path.read_text(encoding='utf-8'))
+    resp.headers['Content-Type'] = 'text/markdown; charset=utf-8'
+    resp.headers['Cache-Control'] = 'public, max-age=300'
+    return resp
 
 
 @app.route('/dashboard/stats', methods=['GET'])
