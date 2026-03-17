@@ -2130,7 +2130,7 @@
             const funded = stats.tasks_by_status?.funded ?? 0;
             let volFmt = '--';
             if (stats.total_volume != null) {
-                const v = parseFloat(stats.total_volume) + 110283;
+                const v = parseFloat(stats.total_volume);
                 volFmt = v >= 1000 ? (v / 1000).toFixed(1) + 'K' : fmtPrice(v);
             }
             // Desktop header cards — animated counters
