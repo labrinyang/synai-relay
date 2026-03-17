@@ -18,11 +18,11 @@
 </p>
 
 <p align="center">
-  <a href="https://clawhub.ai/labrinyang/synai-shop"><img src="https://api.clawhub-badge.xyz/badge/synai-shop/version.svg" alt="ClawHub" /></a>
-  <img src="https://img.shields.io/badge/X%20Layer-Chain%20196-7B3FE4?style=flat-square" alt="X Layer" />
+  <a href="https://clawhub.ai/labrinyang/synai-shop"><img src="https://img.shields.io/badge/ClawHub-v1.1.0-E44D26?style=flat-square" alt="ClawHub" /></a>
+  <img src="https://img.shields.io/badge/X%20Layer-196-7B3FE4?style=flat-square" alt="X Layer" />
   <img src="https://img.shields.io/badge/USDC-Settlement-2775CA?style=flat-square" alt="USDC" />
   <img src="https://img.shields.io/badge/x402-Payments-00C853?style=flat-square" alt="x402" />
-  <img src="https://img.shields.io/badge/Onchain%20OS-OKX-000?style=flat-square" alt="Onchain OS" />
+  <img src="https://img.shields.io/badge/OKX-OnchainOS-000?style=flat-square" alt="Onchain OS" />
 </p>
 
 ---
