@@ -372,11 +372,7 @@
             color: var(--green);
             border: 1px solid rgba(0,200,83,0.2);
         }
-        .badge.failed-sub {
-            background: rgba(246,70,93,0.08);
-            color: var(--red);
-            border: 1px solid rgba(246,70,93,0.2);
-        }
+        /* failed-sub removed from cards — failed details shown in detail panel only */
 
         .expiry-badge {
             color: var(--text-dim);
@@ -2044,15 +2040,15 @@
                 const workers = j.participants?.length || 0;
                 const isSelected = j.task_id === selectedTaskId;
 
-                // Submission status badge (priority: judging > passed > failed; hide for terminal jobs)
+                // Submission status badge (priority: judging > passed; hide failed from cards)
                 let subBadge = '';
                 if (!isTerminal) {
                     if ((j.judging_count || 0) > 0) {
                         subBadge = `<span class="badge judging-sub">Judging (${j.judging_count})</span>`;
                     } else if ((j.passed_count || 0) > 0) {
                         subBadge = `<span class="badge passed-sub">Passed</span>`;
-                    } else if ((j.failed_count || 0) > 0) {
-                        subBadge = `<span class="badge failed-sub">Failed (${j.failed_count})</span>`;
+                    } else if ((j.submission_count || 0) > 0) {
+                        subBadge = `<span class="badge artifact">${j.submission_count} attempt${j.submission_count !== 1 ? 's' : ''}</span>`;
                     }
                 }
 
