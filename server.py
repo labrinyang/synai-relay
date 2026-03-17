@@ -127,6 +127,15 @@ with app.app_context():
                 conn.execute(db.text(
                     "ALTER TABLE jobs ADD COLUMN payout_error TEXT"
                 ))
+            # Add chain_id column if missing (added for X Layer multi-chain)
+            try:
+                conn.execute(db.text("SELECT chain_id FROM jobs LIMIT 0"))
+            except Exception:
+                conn.rollback()
+                conn.execute(db.text(
+                    "ALTER TABLE jobs ADD COLUMN chain_id INTEGER"
+                ))
+                logger.info("Migrated: added chain_id column to jobs table")
             conn.commit()
         logger.info("Database tables created / verified")
     except Exception as e:
