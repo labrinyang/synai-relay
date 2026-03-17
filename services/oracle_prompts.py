@@ -275,12 +275,12 @@ For EACH argument from the Critical Reviewer:
 4. If INVALID (fabricated, theoretical, or misunderstanding): Apply 0 penalty. Do not penalize for non-issues.
 5. State your reasoning for each decision.
 
-IMPORTANT: Total applied penalties CANNOT exceed -10. Even if individual penalties sum to more, cap at -10. The critical review should refine the score, not demolish it.
-
 Then calculate the adjusted score:
 - Base score = (completeness_score * 0.35) + (quality_score * 0.35) + (structural_score * 0.15) + (consistency_score * 0.15)
-- Adjusted score = base_score + total_applied_penalties (capped at -10)
+- Adjusted score = base_score + total_applied_penalties
 - Floor: 0. Ceiling: 100.
+
+No artificial cap on total penalties — if the submission has genuine critical flaws, the score should reflect that. But remember: invalid arguments = 0 penalty, and overstated arguments get halved. Only well-evidenced, real issues should move the score.
 
 Respond with exactly one JSON object:
 {{"penalty_decisions": [{{"argument_index": 0, "argument_summary": "...", "validity": "valid/invalid/overstated", "proposed_penalty": -1, "applied_penalty": -1, "reasoning": "..."}}], "base_score": 0-100, "total_applied_penalties": -1, "adjusted_score": 0-100}}"""
