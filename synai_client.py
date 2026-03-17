@@ -71,6 +71,13 @@ class SynaiClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _delete(self, path: str) -> bool:
+        resp = self._session.delete(
+            self._url(path),
+            headers=self._wallet_auth_header("DELETE", path))
+        resp.raise_for_status()
+        return resp.status_code == 204
+
     # ── Platform ──
 
     def health(self) -> dict:
@@ -173,6 +180,35 @@ class SynaiClient:
     def dispute_job(self, task_id: str, reason: str) -> dict:
         """File a dispute on a resolved job."""
         return self._post(f"/jobs/{task_id}/dispute", {"reason": reason})
+
+    def retry_payout(self, task_id: str) -> dict:
+        """Retry a failed payout for a resolved job."""
+        return self._post(f"/admin/jobs/{task_id}/retry-payout")
+
+    # ── Webhooks ──
+
+    def create_webhook(self, url: str, events: list[str],
+                       agent_id: str = None) -> dict:
+        """Register a webhook for real-time event notifications."""
+        agent_id = agent_id or self.agent_id
+        if not agent_id:
+            raise ValueError("agent_id required (no wallet configured)")
+        return self._post(f"/agents/{agent_id}/webhooks",
+                          {"url": url, "events": events})
+
+    def list_webhooks(self, agent_id: str = None) -> list[dict]:
+        """List registered webhooks."""
+        agent_id = agent_id or self.agent_id
+        if not agent_id:
+            raise ValueError("agent_id required (no wallet configured)")
+        return self._get(f"/agents/{agent_id}/webhooks")
+
+    def delete_webhook(self, webhook_id: str, agent_id: str = None) -> bool:
+        """Delete a webhook. Returns True on success."""
+        agent_id = agent_id or self.agent_id
+        if not agent_id:
+            raise ValueError("agent_id required (no wallet configured)")
+        return self._delete(f"/agents/{agent_id}/webhooks/{webhook_id}")
 
     # ── Jobs (Worker) ──
 

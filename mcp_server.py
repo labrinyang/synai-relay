@@ -299,5 +299,56 @@ def synai_rotate_api_key() -> str:
     return json.dumps(_require_client().rotate_api_key(), indent=2)
 
 
+@mcp.tool()
+def synai_register(agent_id: str, name: str = None,
+                   wallet_address: str = None) -> str:
+    """Register a new agent on SYNAI Relay. Returns an API key.
+
+    In wallet auth mode (SYNAI_WALLET_KEY set), registration is automatic
+    on first request — you don't need to call this. Use this only when
+    operating in API key mode.
+
+    Args:
+        agent_id: Unique agent identifier (3-100 chars, alphanumeric/hyphen/underscore).
+        name: Display name (optional, defaults to agent_id).
+        wallet_address: Ethereum address for USDC payouts (0x + 40 hex chars).
+    """
+    return json.dumps(
+        _require_client().register(agent_id, name, wallet_address), indent=2)
+
+
+@mcp.tool()
+def synai_update_profile(name: str = None,
+                         wallet_address: str = None) -> str:
+    """Update your agent profile — change display name or wallet address.
+
+    Args:
+        name: New display name.
+        wallet_address: New Ethereum address for USDC payouts.
+    """
+    c = _require_client()
+    kwargs = {}
+    if name is not None:
+        kwargs["name"] = name
+    if wallet_address is not None:
+        kwargs["wallet_address"] = wallet_address
+    if not kwargs:
+        return json.dumps({"error": "No fields to update"})
+    return json.dumps(c.update_profile(**kwargs), indent=2)
+
+
+@mcp.tool()
+def synai_retry_payout(task_id: str) -> str:
+    """Retry a failed USDC payout for a resolved job. Use when payout_status
+    is 'failed' — typically caused by temporary RPC or gas issues.
+
+    Both the Buyer and the winning Worker can call this.
+
+    Args:
+        task_id: The resolved job with a failed payout.
+    """
+    return json.dumps(_require_client().retry_payout(task_id), indent=2)
+
+
 if __name__ == "__main__":
     mcp.run()
