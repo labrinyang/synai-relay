@@ -6,7 +6,7 @@ Job statuses:  open -> funded -> resolved | expired | cancelled
 Submission statuses: pending -> judging -> passed | failed
 """
 
-from flask import Flask, request, jsonify, g, render_template, send_from_directory
+from flask import Flask, request, jsonify, g, render_template, send_from_directory, make_response
 from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant, utc_iso, SubmissionAccess
 from config import Config
 from sqlalchemy.exc import IntegrityError
@@ -327,6 +327,19 @@ def _ensure_x402_init():
             if not _x402_initialized:
                 _init_x402()
                 _x402_initialized = True
+
+
+# Silent blacklist — returns empty 200 with no body; caller cannot distinguish from success.
+@app.before_request
+def _check_blacklist():
+    from config import Config
+    if not Config.BLACKLIST_ADDRESSES:
+        return
+    auth = request.headers.get('Authorization', '')
+    if auth.startswith('Wallet '):
+        parts = auth[7:].split(':', 2)
+        if parts and parts[0].lower() in Config.BLACKLIST_ADDRESSES:
+            return make_response('', 200)
 
 
 # G14: Correlation ID — attach unique request ID to every request
@@ -2558,7 +2571,6 @@ def skill_md():
     skill_path = pathlib.Path(app.root_path, 'static', 'Skill.md')
     if not skill_path.exists():
         return jsonify({"error": "Skill.md not yet available"}), 404
-    from flask import make_response
     resp = make_response(skill_path.read_text(encoding='utf-8'))
     resp.headers['Content-Type'] = 'text/markdown; charset=utf-8'
     resp.headers['Cache-Control'] = 'public, max-age=300'

@@ -62,6 +62,14 @@ class Config:
     SUBMISSION_MAX_SIZE_BYTES = 50 * 1024  # 50KB
     REFUND_COOLDOWN_SECONDS = 3600  # 1 hour
 
+    # Silent blacklist: comma-separated wallet addresses (lowercase).
+    # Blacklisted addresses receive empty 200 responses with no body.
+    BLACKLIST_ADDRESSES: set = set(
+        addr.strip().lower()
+        for addr in os.environ.get('BLACKLIST_ADDRESSES', '').split(',')
+        if addr.strip()
+    )
+
     @classmethod
     def validate_production(cls):
         """Startup safety checks — warns about insecure defaults."""
