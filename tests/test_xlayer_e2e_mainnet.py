@@ -200,14 +200,21 @@ class TestXLayerE2EMainnet:
         tx_hash = _state.get('deposit_tx')
         assert tx_hash, "No deposit tx from prior test"
 
-        # OnchainOS may need time to index the tx
+        # OnchainOS may need time to index the tx — retry on transient errors
+        # "no transaction data" = tx not indexed yet
+        # "no usdc transfer" = tx indexed but token transfers not parsed yet
         result = None
-        for attempt in range(5):
-            time.sleep(3)
+        transient_errors = ('pending', 'no transaction data', 'no usdc transfer')
+        for attempt in range(10):
+            time.sleep(5)
             result = adapter.verify_deposit(tx_hash, DEPOSIT_AMOUNT)
-            if result.valid or 'pending' not in (result.error or '').lower():
+            if result.valid:
                 break
-            print(f"  Attempt {attempt + 1}: {result.error}")
+            err_lower = (result.error or '').lower()
+            if any(t in err_lower for t in transient_errors):
+                print(f"  Attempt {attempt + 1}: {result.error} (retrying...)")
+                continue
+            break  # non-transient error, stop retrying
 
         print(f"  verify_deposit result: valid={result.valid}, amount={result.amount}")
         assert result.valid, f"verify_deposit failed: {result.error}"

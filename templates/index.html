@@ -9,18 +9,16 @@
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
         :root {
-            --bg-color: #050505;
-            --card-bg: rgba(20, 20, 25, 0.7);
-            --border: rgba(255, 255, 255, 0.1);
-            --cyan: #00f3ff;
-            --violet: #bc13fe;
-            --green: #00ff41;
-            --gold: #ffd700;
-            --link-color: #0074D9;
-            --green: #00ff41;
-            --link-color: #0074D9;
-            --text-main: #e1e1e1;
-            --text-dim: #777;
+            --bg-color: #0b0e11;
+            --card-bg: rgba(22, 26, 32, 0.95);
+            --border: rgba(255, 255, 255, 0.06);
+            --cyan: #00c853;
+            --violet: #848e9c;
+            --green: #00c853;
+            --gold: #f0b90b;
+            --link-color: #00c853;
+            --text-main: #eaecef;
+            --text-dim: #848e9c;
         }
 
         body {
@@ -30,23 +28,6 @@
             margin: 0;
             padding: 2.5%;
             overflow-x: hidden;
-            background-image: radial-gradient(circle at 50% 50%, rgba(188, 19, 254, 0.05) 0%, transparent 50%);
-        }
-
-        /* Scanline Overlay */
-        body::before {
-            content: " ";
-            display: block;
-            position: absolute;
-            top: 0;
-            left: 0;
-            bottom: 0;
-            right: 0;
-            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
-            z-index: 1000;
-            background-size: 100% 2px, 3px 100%;
-            pointer-events: none;
-            opacity: 0.3;
         }
 
         header {
@@ -61,10 +42,7 @@
         .brand-logo {
             font-size: 24px;
             font-weight: 700;
-            background: linear-gradient(90deg, var(--cyan), var(--violet));
-            background-clip: text;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #fff;
             letter-spacing: -1px;
         }
 
@@ -104,12 +82,12 @@
         }
 
         .stat-icon.cyan {
-            background: rgba(0, 243, 255, 0.1);
+            background: rgba(0, 200, 83, 0.1);
             color: var(--cyan);
         }
 
         .stat-icon.violet {
-            background: rgba(188, 19, 254, 0.1);
+            background: rgba(132, 142, 156, 0.15);
             color: var(--violet);
         }
 
@@ -272,12 +250,11 @@
 
         .unlock-btn:hover {
             transform: scale(1.05);
-            box-shadow: 0 0 30px rgba(255, 215, 0, 0.6);
+            box-shadow: 0 0 20px rgba(240, 185, 11, 0.3);
         }
 
         .task-card:hover {
-            border-color: var(--cyan);
-            box-shadow: 0 0 30px rgba(0, 243, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.15);
         }
 
         .task-title {
@@ -316,18 +293,18 @@
         }
 
         .badge.funded {
-            background: rgba(0, 243, 255, 0.1);
-            color: var(--cyan);
-            border: 1px solid var(--cyan);
+            background: rgba(0, 200, 83, 0.1);
+            color: var(--green);
+            border: 1px solid rgba(0, 200, 83, 0.2);
         }
 
         .badge.claimed {
-            background: rgba(188, 19, 254, 0.15);
+            background: rgba(132, 142, 156, 0.15);
             color: var(--violet);
         }
 
         .badge.settled {
-            background: rgba(0, 255, 65, 0.1);
+            background: rgba(0, 200, 83, 0.1);
             color: var(--green);
         }
 
@@ -385,7 +362,15 @@
 
 <body>
     <header>
-        <div class="brand-logo" style="cursor: pointer; width: 200px;" onclick="window.location.href='/'">SYNAI.SHOP
+        <div style="display:flex;align-items:center;gap:0;flex-shrink:0;">
+            <div class="brand-logo" style="cursor:pointer;" onclick="window.location.href='/'">SYNAI.SHOP</div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.12);margin:0 16px;"></div>
+            <a href="https://www.okx.com/xlayer" target="_blank" rel="noopener"
+               style="display:flex;align-items:center;gap:8px;text-decoration:none;flex-shrink:0;transition:opacity 0.2s;"
+               title="X Layer Mainnet">
+                <img src="/static/xlayer-icon.png" alt="X Layer" style="height:22px;width:22px;border-radius:5px;">
+                <span style="font-size:13px;color:var(--text-dim);">on X Layer</span>
+            </a>
         </div>
 
         <div class="stats-top" id="header-stats">
@@ -407,8 +392,8 @@
 
         <div style="width: 200px; display: flex; justify-content: flex-end;">
             <a href="/" class="share-btn"
-                style="text-decoration: none; padding: 10px 20px; border-color: var(--violet); color: var(--violet); font-weight: 800; border-width: 2px; border-radius: 8px; transition: 0.3s; box-shadow: 0 0 15px rgba(188, 19, 254, 0.2);">◀
-                SWITCH AGENT?</a>
+                style="text-decoration: none; padding: 10px 20px; border: 1px solid var(--border); color: var(--text-dim); font-weight: 500; border-radius: 8px; transition: 0.2s; font-size: 13px;">◀
+                Back</a>
         </div>
     </header>
 
@@ -527,7 +512,7 @@
                                 <span class="badge ${j.status}">${j.status.toUpperCase()}</span>
                                 <span class="badge claimed" style="margin-left:5px;">${j.artifact_type || 'CODE'}</span>
                                 
-                                ${j.deposit_amount > 0 ? `<span class="badge funded" style="margin-left:5px; border-color:#bc13fe; color:#bc13fe;">🔒 STAKE: ${j.deposit_amount}</span>` : ''}
+                                ${j.deposit_amount > 0 ? `<span class="badge funded" style="margin-left:5px;">STAKE: ${j.deposit_amount}</span>` : ''}
 
                                 <span style="font-family: 'JetBrains Mono', monospace; margin-left:15px;">${j.price} USDC</span>
                             </div>

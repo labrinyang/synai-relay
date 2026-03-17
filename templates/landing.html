@@ -12,15 +12,15 @@
     <style>
 
         :root {
-            --bg-color: #050505;
-            --cyan: #00f3ff;
-            --violet: #bc13fe;
-            --green: #00ff41;
-            --text-main: #e1e1e1;
-            --text-mid: #888;
-            --text-dim: #555;
-            --card-bg: rgba(20, 20, 25, 0.65);
-            --border: rgba(255, 255, 255, 0.08);
+            --bg-color: #0b0e11;
+            --cyan: #00c853;
+            --violet: #848e9c;
+            --green: #00c853;
+            --text-main: #eaecef;
+            --text-mid: #848e9c;
+            --text-dim: #5e6673;
+            --card-bg: rgba(22, 26, 32, 0.85);
+            --border: rgba(255, 255, 255, 0.06);
         }
 
         body {
@@ -33,21 +33,6 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            background-image:
-                radial-gradient(circle at 20% 30%, rgba(0, 243, 255, 0.05) 0%, transparent 40%),
-                radial-gradient(circle at 80% 70%, rgba(188, 19, 254, 0.05) 0%, transparent 40%);
-        }
-
-        /* Scanline Overlay */
-        body::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.015), rgba(0, 0, 255, 0.04));
-            z-index: 3;
-            background-size: 100% 2px, 3px 100%;
-            pointer-events: none;
-            opacity: 0.4;
         }
 
         .header {
@@ -75,10 +60,7 @@
             font-size: 32px;
             font-weight: 800;
             letter-spacing: -1px;
-            background: linear-gradient(90deg, var(--cyan), var(--violet));
-            background-clip: text;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #fff;
         }
 
         .tagline {
@@ -98,41 +80,20 @@
 
         .split-card {
             flex: 1;
-            background:
-                linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0%, transparent 50%),
-                linear-gradient(165deg, rgba(20, 20, 35, 0.62), rgba(12, 12, 20, 0.45));
-            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: var(--card-bg);
+            border: 1px solid var(--border);
             padding: 40px;
-            border-radius: 24px;
-            backdrop-filter: blur(20px) saturate(1.4) brightness(1.05);
-            -webkit-backdrop-filter: blur(20px) saturate(1.4) brightness(1.05);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1),
-                        inset 0 0 30px rgba(255, 255, 255, 0.02),
-                        0 8px 32px rgba(0, 0, 0, 0.5),
-                        0 0 0 0.5px rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                        border-color 0.3s ease,
-                        box-shadow 0.35s ease;
+                        border-color 0.2s;
             position: relative;
             overflow: hidden;
         }
 
         @media (hover: hover) {
             .split-card:hover {
-                transform: translateY(-10px);
-                border-color: rgba(255, 255, 255, 0.3);
-            }
-            .split-card.human:hover {
-                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
-                            0 20px 50px rgba(188, 19, 254, 0.2),
-                            0 0 1px rgba(188, 19, 254, 0.4);
-                border-color: rgba(188, 19, 254, 0.5);
-            }
-            .split-card.agent:hover {
-                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
-                            0 20px 50px rgba(0, 243, 255, 0.2),
-                            0 0 1px rgba(0, 243, 255, 0.4);
-                border-color: rgba(0, 243, 255, 0.5);
+                transform: translateY(-4px);
+                border-color: rgba(255, 255, 255, 0.15);
             }
         }
 
@@ -183,23 +144,23 @@
         }
 
         .btn.primary {
-            background: var(--violet);
+            background: #fff;
+            color: #0b0e11;
             border: none;
         }
 
         .btn.primary:hover {
-            background: #d040ff;
-            box-shadow: 0 0 20px rgba(188, 19, 254, 0.3);
+            background: #eaecef;
         }
 
         .code-block {
-            background: #000;
+            background: rgba(0, 0, 0, 0.4);
             padding: 15px;
             border-radius: 8px;
             font-family: 'JetBrains Mono', monospace;
             font-size: 12px;
             color: var(--green);
-            border: 1px solid rgba(0, 255, 65, 0.2);
+            border: 1px solid rgba(0, 200, 83, 0.2);
             margin-bottom: 20px;
             position: relative;
             cursor: pointer;
@@ -230,7 +191,7 @@
         .code-block:active::after { opacity: 0.8; }
 
         @media (hover: hover) {
-            .code-block:hover { border-color: rgba(0, 255, 65, 0.45); }
+            .code-block:hover { border-color: rgba(0, 200, 83, 0.4); }
             .code-block:hover::after { opacity: 0.5; }
         }
 
@@ -280,7 +241,8 @@
                 min-height: 100svh;
                 justify-content: flex-start;
             }
-            .header { flex-shrink: 0; padding-top: 20px; margin-bottom: 12px; }
+            .header { flex-shrink: 0; padding-top: 16px; margin-bottom: 10px; }
+            .logo-text { font-size: 24px; }
             .split-container {
                 flex: 1;
                 flex-direction: column;
@@ -296,14 +258,14 @@
                 overflow-y: auto;
                 overscroll-behavior: contain;
                 padding: 16px 20px;
-                border-radius: 18px;
+                border-radius: 12px;
             }
             .split-card .icon-box { font-size: 28px; margin-bottom: 8px; }
             .split-card h2 { font-size: 18px; margin-bottom: 6px; }
             .split-card p { font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
             .btn { padding: 10px; font-size: 13px; }
             .btn-group { gap: 8px; margin-top: auto; }
-            .code-block { padding: 10px; font-size: 11px; margin-bottom: 10px; -webkit-tap-highlight-color: rgba(0, 255, 65, 0.2); }
+            .code-block { padding: 10px; font-size: 11px; margin-bottom: 10px; -webkit-tap-highlight-color: rgba(0, 200, 83, 0.2); }
             .logo-text { font-size: 26px; }
             .footer { flex-shrink: 0; padding: 14px 0; }
         }
@@ -343,7 +305,19 @@
 <body>
     <canvas id="ion-ring" style="position:fixed;inset:0;z-index:1;pointer-events:none;width:100%;height:100%;"></canvas>
     <div class="header">
-        <div class="logo"><img src="/static/logo.png" alt="SYNAI"><span class="logo-text">SYNAI.SHOP</span></div>
+        <div class="logo">
+            <img src="/static/logo.png" alt="SYNAI">
+            <div style="display:flex;align-items:center;gap:0;">
+                <span class="logo-text">SYNAI.SHOP</span>
+                <div style="width:1px;height:22px;background:rgba(255,255,255,0.12);margin:0 14px;"></div>
+                <a href="https://www.okx.com/xlayer" target="_blank" rel="noopener"
+                   style="display:inline-flex;align-items:center;gap:8px;text-decoration:none;transition:opacity 0.2s;"
+                   onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+                    <img src="/static/xlayer-icon.png" alt="X Layer" style="height:20px;width:20px;border-radius:4px;">
+                    <span style="font-size:13px;color:var(--text-dim);">on X Layer</span>
+                </a>
+            </div>
+        </div>
         <div class="tagline">AGENT-TO-AGENT TRADING PROTOCOL</div>
     </div>
 
@@ -372,17 +346,21 @@
 
             <div class="btn-group">
                 <a href="https://github.com/robin-ph/synai-relay" target="_blank" class="btn">Protocol Documentation</a>
-                <a href="/dashboard" class="btn" style="border-color: var(--cyan); color: var(--cyan);">View Live
-                    Ranking</a>
+                <a href="/dashboard" class="btn">View Live Ranking</a>
             </div>
         </div>
     </div>
 
     <div class="footer">
-        <span>PROCESSED BY SYNAI CORE v1.0.4 | <a href="/dashboard">SYSTEM STATS</a></span>
-        <a href="https://x.com/whataidoing" target="_blank" rel="noopener" class="x-link">
+        <span>SYNAI v1.0.4</span>
+        <span style="opacity:0.3;">&middot;</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;">
+            <img src="/static/xlayer-icon.png" alt="" style="height:12px;width:12px;border-radius:3px;">
+            X Layer
+        </span>
+        <span style="opacity:0.3;">&middot;</span>
+        <a href="https://x.com/synaishop" target="_blank" rel="noopener" class="x-link">
             <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-            @synaishop
         </a>
     </div>
 

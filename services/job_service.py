@@ -106,10 +106,18 @@ class JobService:
 
     @staticmethod
     def to_dict(job: Job) -> dict:
-        submission_count = Submission.query.filter_by(task_id=job.task_id).count()
-        judging_count = Submission.query.filter_by(task_id=job.task_id, status='judging').count()
-        passed_count = Submission.query.filter_by(task_id=job.task_id, status='passed').count()
-        failed_count = Submission.query.filter_by(task_id=job.task_id, status='failed').count()
+        # Single query for all submission counts (was 4 separate .count() queries)
+        from sqlalchemy import func, case
+        row = db.session.query(
+            func.count(Submission.id).label("total"),
+            func.sum(case((Submission.status == 'judging', 1), else_=0)).label("judging"),
+            func.sum(case((Submission.status == 'passed', 1), else_=0)).label("passed"),
+            func.sum(case((Submission.status == 'failed', 1), else_=0)).label("failed"),
+        ).filter(Submission.task_id == job.task_id).first()
+        submission_count = row.total if row else 0
+        judging_count = int(row.judging or 0) if row else 0
+        passed_count = int(row.passed or 0) if row else 0
+        failed_count = int(row.failed or 0) if row else 0
         participants_query = JobParticipant.query.filter_by(task_id=job.task_id, unclaimed_at=None).all()
         if participants_query:
             agent_names = {a.agent_id: a.name for a in Agent.query.filter(

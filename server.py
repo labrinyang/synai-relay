@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify, g, render_template, send_from_directo
 from models import db, Owner, Agent, Job, Submission, Webhook, IdempotencyKey, Dispute, JobParticipant, utc_iso, SubmissionAccess
 from config import Config
 from sqlalchemy.exc import IntegrityError
-from services.auth_service import generate_api_key, require_auth, require_operator, require_buyer, verify_api_key
+from services.auth_service import generate_api_key, require_auth, require_operator, require_buyer, verify_api_key, authenticate_request, get_or_create_agent_by_wallet
 from services.rate_limiter import rate_limit, get_submit_limiter
 import re
 
@@ -195,27 +195,25 @@ def _init_x402():
     # OKX facilitator (X Layer) — only if OnchainOS credentials configured
     if Config.ONCHAINOS_API_KEY:
         try:
-            from services.okx_facilitator import OKXFacilitatorClient
-            okx_fac = OKXFacilitatorClient(
-                api_key=Config.ONCHAINOS_API_KEY,
-                secret_key=Config.ONCHAINOS_SECRET_KEY,
-                passphrase=Config.ONCHAINOS_PASSPHRASE,
-                project_id=Config.ONCHAINOS_PROJECT_ID,
-            )
-            okx_server = x402ResourceServerSync(okx_fac)
-            okx_server.register("eip155:196", ExactEvmServerScheme())
-            okx_server.initialize()
-            _x402_servers[196] = okx_server
-            logger.info("x402: OKX facilitator registered for X Layer (196)")
-
-            from services.xlayer_adapter import XLayerAdapter
             from services.onchainos_client import OnchainOSClient
+            from services.okx_facilitator import OKXFacilitatorClient
+            from services.xlayer_adapter import XLayerAdapter
+
+            # S1: single OnchainOSClient shared by facilitator and adapter
             onchainos = OnchainOSClient(
                 Config.ONCHAINOS_API_KEY,
                 Config.ONCHAINOS_SECRET_KEY,
                 Config.ONCHAINOS_PASSPHRASE,
                 Config.ONCHAINOS_PROJECT_ID,
             )
+
+            okx_fac = OKXFacilitatorClient(onchainos_client=onchainos)
+            okx_server = x402ResourceServerSync(okx_fac)
+            okx_server.register("eip155:196", ExactEvmServerScheme())
+            okx_server.initialize()
+            _x402_servers[196] = okx_server
+            logger.info("x402: OKX facilitator registered for X Layer (196)")
+
             if not Config.OPERATIONS_WALLET_KEY:
                 logger.warning("x402: OPERATIONS_WALLET_KEY not set — XLayerAdapter will be read-only (no payout/refund)")
             _chain_registry.register(XLayerAdapter(
@@ -235,6 +233,14 @@ def _get_x402_server(network: str):
     if not server:
         raise ValueError(f"No x402 facilitator for chain {chain_id}")
     return server
+
+
+def _x402_enabled_adapters() -> list:
+    """Return chain adapters that have an active x402 facilitator."""
+    return [
+        a for a in (_chain_registry.adapters() if _chain_registry else [])
+        if a.chain_id() in _x402_servers
+    ]
 
 
 def _validate_job_fields(data: dict):
@@ -934,14 +940,12 @@ def save_idempotency(response_tuple):
 
 
 def _get_viewer_id() -> str:
-    """Extract agent_id from Bearer token if present, without requiring auth."""
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-        agent = verify_api_key(token)
-        if agent:
-            return agent.agent_id
-    return None
+    """Extract agent_id from auth header if present, without requiring auth.
+
+    Supports both Bearer API key and Wallet signature.
+    """
+    agent = authenticate_request()
+    return agent.agent_id if agent else None
 
 
 # ---------------------------------------------------------------------------
@@ -999,13 +1003,18 @@ def _check_submission_access(sub, job, viewer_id):
 
 def _submission_to_dict(sub: Submission, viewer_id: str = None,
                         public_content: bool = False,
-                        show_content: bool = None) -> dict:
-    """Serialize submission. Uses _check_submission_access for visibility."""
+                        show_content: bool = None,
+                        job: Job = None) -> dict:
+    """Serialize submission. Uses _check_submission_access for visibility.
+
+    Pass `job` to avoid per-row DB lookup when called in a loop.
+    """
     if show_content is None:
         if public_content:
             show_content = True
         else:
-            job = db.session.get(Job, sub.task_id)
+            if job is None:
+                job = db.session.get(Job, sub.task_id)
             access = _check_submission_access(sub, job, viewer_id)
             show_content = (access is True)
 
@@ -1224,10 +1233,14 @@ def list_jobs_endpoint():
 
 
 @app.route('/jobs', methods=['POST'])
-@require_auth
 @rate_limit()
 def create_job_endpoint():
     if not (app.config.get('X402_ENABLED', False) and _X402_SDK_AVAILABLE):
+        # No x402 — require API key or wallet auth
+        agent = authenticate_request()
+        if not agent:
+            return jsonify({"error": "Missing or invalid Authorization header"}), 401
+        g.current_agent_id = agent.agent_id
         return _create_job()
 
     data = request.get_json(silent=True) or {}
@@ -1244,14 +1257,10 @@ def create_job_endpoint():
 
     if not payment_header:
         # No payment: return 402 with requirements (only chains with active facilitators)
-        x402_adapters = [
-            a for a in (_chain_registry.adapters() if _chain_registry else [])
-            if a.chain_id() in _x402_servers
-        ]
         requirements = build_requirements(
             price,
             Config.OPERATIONS_WALLET_ADDRESS or '',
-            x402_adapters,
+            _x402_enabled_adapters(),
         )
         payment_required = PaymentRequired(accepts=requirements)
         resp = jsonify({
@@ -1278,7 +1287,7 @@ def create_job_endpoint():
             "expected": expected_atomic,
             "actual": payload.accepted.amount,
         }), 402
-    if payload.accepted.pay_to != expected_pay_to:
+    if payload.accepted.pay_to.lower() != expected_pay_to.lower():
         return jsonify({
             "error": "Payment recipient mismatch",
         }), 402
@@ -1307,18 +1316,36 @@ def create_job_endpoint():
         logger.error("x402 settlement succeeded but payer address missing — cannot track depositor")
         return jsonify({"error": "Settlement missing payer address"}), 500
 
+    # Pure x402: payer wallet = buyer identity (no API key needed)
+    buyer_agent = get_or_create_agent_by_wallet(settle_result.payer)
+    g.current_agent_id = buyer_agent.agent_id
+
     # Settlement succeeded — create job as funded
+    # CRITICAL: if _create_job() fails after this point, USDC is already on-chain.
+    # Log enough info for manual reconciliation.
     chain_id = parse_chain_id(settle_result.network)
     sol_price = price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
 
-    resp = _create_job(
-        override_status='funded',
-        deposit_tx_hash=settle_result.transaction,
-        depositor_address=settle_result.payer,
-        chain_id=chain_id,
-        deposit_amount=price,
-        solution_price=sol_price,
-    )
+    try:
+        resp = _create_job(
+            override_status='funded',
+            deposit_tx_hash=settle_result.transaction,
+            depositor_address=settle_result.payer,
+            chain_id=chain_id,
+            deposit_amount=price,
+            solution_price=sol_price,
+        )
+    except Exception as e:
+        logger.critical(
+            "x402 ORPHAN PAYMENT: settlement succeeded but job creation failed! "
+            "tx=%s payer=%s amount=%s chain=%s error=%s",
+            settle_result.transaction, settle_result.payer, price, chain_id, e)
+        db.session.rollback()
+        return jsonify({
+            "error": "Internal error after payment — contact support",
+            "tx_hash": settle_result.transaction,
+        }), 500
+
     # x402 spec: include settlement receipt in response
     if isinstance(resp, tuple):
         response_obj = resp[0]
@@ -1643,7 +1670,11 @@ def claim_job(task_id):
     # Add to participants (new claim)
     jp = JobParticipant(task_id=task_id, worker_id=worker_id)
     db.session.add(jp)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Worker already claimed this task"}), 409
 
     result = {
         "status": "claimed",
@@ -1814,7 +1845,7 @@ def list_submissions(task_id):
     subs = query.offset(offset).limit(limit).all()
 
     return jsonify({
-        "submissions": [_submission_to_dict(s, viewer_id=viewer_id, public_content=public) for s in subs],
+        "submissions": [_submission_to_dict(s, viewer_id=viewer_id, public_content=public, job=job) for s in subs],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -1841,7 +1872,18 @@ def get_submission(submission_id):
         payment_header = (request.headers.get(PAYMENT_SIGNATURE_HEADER)
                           or request.headers.get(X_PAYMENT_HEADER))
 
-        if payment_header:
+        # Compute effective solution price — if <= 0, grant free access
+        sol_price = job.solution_price or Decimal(0)
+        if sol_price <= 0:
+            sol_price = job.price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
+        if sol_price <= 0:
+            # No price set — grant free access, skip x402
+            access = True
+
+        # Pre-fetch submission author (used by both payment and 402 branches)
+        author = db.session.get(Agent, sub.worker_id) if access is None else None
+
+        if access is None and payment_header:
             if not viewer_id:
                 return jsonify({"error": "Authentication required for x402 payment"}), 401
 
@@ -1850,7 +1892,6 @@ def get_submission(submission_id):
             except Exception as e:
                 return jsonify({"error": f"Invalid payment header: {e}"}), 400
 
-            sol_price = job.solution_price or Decimal(0)
             expected_atomic = str(int(sol_price * Decimal(10 ** 6)))
             if payload.accepted.amount != expected_atomic:
                 return jsonify({
@@ -1858,6 +1899,11 @@ def get_submission(submission_id):
                     "expected": expected_atomic,
                     "actual": payload.accepted.amount,
                 }), 402
+
+            # Validate recipient — payment must go to the submission author
+            expected_pay_to = author.wallet_address if author else ''
+            if not expected_pay_to or payload.accepted.pay_to.lower() != expected_pay_to.lower():
+                return jsonify({"error": "Payment recipient mismatch"}), 402
 
             try:
                 server = _get_x402_server(payload.accepted.network)
@@ -1885,6 +1931,16 @@ def get_submission(submission_id):
                     db.session.commit()
                 except IntegrityError:
                     db.session.rollback()
+                except Exception as e:
+                    logger.critical(
+                        "x402 ORPHAN PAYMENT (submission access): settlement succeeded "
+                        "but DB write failed! tx=%s viewer=%s sub=%s amount=%s error=%s",
+                        settle.transaction, viewer_id, sub.id, sol_price, e)
+                    db.session.rollback()
+                    return jsonify({
+                        "error": "Internal error after payment — contact support",
+                        "tx_hash": settle.transaction,
+                    }), 500
                 access = True
                 settle_receipt = encode_payment_response_header(settle)
             else:
@@ -1893,28 +1949,19 @@ def get_submission(submission_id):
                     "reason": settle.error_reason,
                 }), 402
 
-        else:
+        elif access is None:
             # No payment header — return 402 with requirements
-            author = db.session.get(Agent, sub.worker_id)
             if not author or not author.wallet_address:
                 return jsonify({
                     "error": "Solution author has no wallet configured; viewing unavailable",
                 }), 409
 
-            sol_price = job.solution_price or Decimal(0)
-            if sol_price <= 0:
-                sol_price = job.price * Decimal(Config.SOLUTION_VIEW_FEE_PERCENT) / Decimal(100)
-
             # Solution view payments go 100% to worker — platform earns from
             # the 20% job escrow fee instead. This incentivizes quality submissions.
-            x402_adapters = [
-                a for a in (_chain_registry.adapters() if _chain_registry else [])
-                if a.chain_id() in _x402_servers
-            ]
             requirements = build_requirements(
                 sol_price,
                 author.wallet_address,
-                x402_adapters,
+                _x402_enabled_adapters(),
             )
             payment_required = PaymentRequired(accepts=requirements)
             resp_data = _submission_to_dict(sub, viewer_id, show_content=False)
@@ -1960,8 +2007,12 @@ def list_all_submissions():
     total = query.count()
     subs = query.offset(offset).limit(limit).all()
 
+    # Batch-fetch jobs to avoid N+1 in _submission_to_dict
+    task_ids = list({s.task_id for s in subs})
+    jobs_by_id = {j.task_id: j for j in Job.query.filter(Job.task_id.in_(task_ids)).all()} if task_ids else {}
+
     return jsonify({
-        "submissions": [_submission_to_dict(s, viewer_id=viewer_id) for s in subs],
+        "submissions": [_submission_to_dict(s, viewer_id=viewer_id, job=jobs_by_id.get(s.task_id)) for s in subs],
         "total": total,
         "limit": limit,
         "offset": offset,

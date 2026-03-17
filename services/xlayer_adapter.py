@@ -1,5 +1,6 @@
 """X Layer adapter — hybrid OnchainOS (reads/broadcast) + web3.py (tx building/signing)."""
 import logging
+import threading
 from decimal import ROUND_DOWN, Decimal
 
 from eth_account import Account
@@ -32,6 +33,7 @@ class XLayerAdapter(ChainAdapter):
         self._client = onchainos_client
         self._usdc_addr = Web3.to_checksum_address(usdc_addr) if usdc_addr else ''
         self._rpc_url = rpc_url
+        self._nonce_lock = threading.Lock()
 
         # Web3 + account setup (optional — only needed for payout/refund)
         if ops_private_key:
@@ -73,6 +75,10 @@ class XLayerAdapter(ChainAdapter):
     def ops_address(self) -> str:
         return self._account.address if self._account else ''
 
+    def max_timeout_seconds(self) -> int:
+        # OKX settle requires validBefore > now+60s; 300s gives safe margin
+        return 300
+
     # -- Core operations --
 
     def verify_deposit(self, tx_hash: str, expected_amount: Decimal) -> DepositResult:
@@ -80,7 +86,13 @@ class XLayerAdapter(ChainAdapter):
         if not self._account:
             return DepositResult(valid=False, error="No ops wallet configured — cannot verify deposits")
 
+        # Normalize tx_hash to include 0x prefix
+        if not tx_hash.startswith('0x'):
+            tx_hash = '0x' + tx_hash
+
         try:
+            # Note: official docs show /api/v5/wallet/... but the v6/dex path
+            # works and is consistent with other v6 endpoints we use.
             result = self._client.get(
                 '/api/v6/dex/post-transaction/transaction-detail-by-txhash',
                 params={'chainIndex': '196', 'txHash': tx_hash}
@@ -95,16 +107,21 @@ class XLayerAdapter(ChainAdapter):
             return DepositResult(valid=False, error="No transaction data returned")
         tx_data = data[0]
 
-        # Check tx status ("1"=pending, "2"=success, "3"=fail)
-        if tx_data.get('txStatus') != '2':
+        # Check tx status — OKX returns "2"/"success" for confirmed
+        tx_status = str(tx_data.get('txStatus', '')).lower()
+        if tx_status not in ('2', 'success'):
             return DepositResult(
                 valid=False,
                 error=f"tx status: {tx_data.get('txStatus')}"
             )
 
         # Find USDC transfer to ops wallet
+        logger.debug("verify_deposit tx_data keys: %s", list(tx_data.keys()))
         ops = self._account.address.lower()
-        for transfer in tx_data.get('tokenTransferDetails', []):
+        transfers = tx_data.get('tokenTransferDetails', [])
+        if not transfers:
+            logger.warning("verify_deposit: no tokenTransferDetails in response, keys=%s", list(tx_data.keys()))
+        for transfer in transfers:
             token_addr = transfer.get('tokenContractAddress', '').lower()
             to_addr = transfer.get('to', '').lower()
             if token_addr == self._usdc_addr.lower() and to_addr == ops:
@@ -135,8 +152,7 @@ class XLayerAdapter(ChainAdapter):
         )
 
         try:
-            raw_tx = self._build_and_sign_transfer(to_address, worker_share)
-            tx_hash = self._broadcast(raw_tx)
+            tx_hash = self._send_usdc(to_address, worker_share)
             return PayoutResult(payout_tx=tx_hash)
         except Exception as e:
             logger.error("XLayer payout failed: %s", e)
@@ -145,8 +161,7 @@ class XLayerAdapter(ChainAdapter):
     def refund(self, to_address: str, amount: Decimal) -> RefundResult:
         """Refund full escrow amount back to buyer."""
         try:
-            raw_tx = self._build_and_sign_transfer(to_address, amount)
-            tx_hash = self._broadcast(raw_tx)
+            tx_hash = self._send_usdc(to_address, amount)
             return RefundResult(tx_hash=tx_hash)
         except Exception as e:
             logger.error("XLayer refund failed: %s", e)
@@ -154,24 +169,29 @@ class XLayerAdapter(ChainAdapter):
 
     # -- Private helpers --
 
-    def _build_and_sign_transfer(self, to_address: str, amount: Decimal) -> str:
-        """Build, sign, and return 0x-prefixed raw hex of ERC-20 transfer tx."""
+    def _send_usdc(self, to_address: str, amount: Decimal) -> str:
+        """Build, sign, broadcast a USDC transfer. Returns tx hash.
+
+        The nonce lock covers the entire build→sign→broadcast sequence to
+        prevent concurrent txs from getting the same nonce.
+        """
         if not self._usdc or not self._account:
             raise RuntimeError("XLayerAdapter not configured for sending (missing key or USDC contract)")
 
         amount_atomic = int(amount * 10 ** USDC_DECIMALS)
         to_addr = Web3.to_checksum_address(to_address)
 
-        tx = self._usdc.functions.transfer(to_addr, amount_atomic).build_transaction({
-            'from': self._account.address,
-            'gas': 100_000,
-            'gasPrice': self._w3.eth.gas_price,
-            'nonce': self._w3.eth.get_transaction_count(self._account.address),
-            'chainId': 196,
-        })
-
-        signed = self._account.sign_transaction(tx)
-        return '0x' + signed.raw_transaction.hex()
+        with self._nonce_lock:
+            tx = self._usdc.functions.transfer(to_addr, amount_atomic).build_transaction({
+                'from': self._account.address,
+                'gas': 100_000,
+                'gasPrice': self._w3.eth.gas_price,
+                'nonce': self._w3.eth.get_transaction_count(self._account.address),
+                'chainId': 196,
+            })
+            signed = self._account.sign_transaction(tx)
+            raw_hex = '0x' + signed.raw_transaction.hex()
+            return self._broadcast(raw_hex)
 
     def _broadcast(self, signed_tx_hex: str) -> str:
         """Broadcast via OnchainOS, fallback to direct RPC."""
@@ -184,7 +204,12 @@ class XLayerAdapter(ChainAdapter):
                     'address': self._account.address,
                 }
             )
-            return result['data'][0].get('txHash', result['data'][0]['orderId'])
+            tx_hash = result['data'][0].get('txHash') or ''
+            if not tx_hash:
+                order_id = result['data'][0].get('orderId', '')
+                logger.warning("OnchainOS broadcast returned orderId instead of txHash: %s", order_id)
+                return order_id
+            return tx_hash
         except Exception as e:
             logger.warning("OnchainOS broadcast failed (%s), falling back to direct RPC", e)
             raw_bytes = bytes.fromhex(

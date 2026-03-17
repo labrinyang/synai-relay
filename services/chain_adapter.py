@@ -66,6 +66,14 @@ class ChainAdapter(ABC):
     def payout(self, to_address: str, amount: Decimal, fee_bps: int) -> PayoutResult:
         ...
 
+    def max_timeout_seconds(self) -> int:
+        """Max EIP-3009 authorization window in seconds.
+
+        OKX settle requires validBefore > now+60s, so X Layer needs ≥300.
+        Base (Coinbase) can use a tighter window.  Override per-chain.
+        """
+        return 60
+
     @abstractmethod
     def refund(self, to_address: str, amount: Decimal) -> RefundResult:
         ...

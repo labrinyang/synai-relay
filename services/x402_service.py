@@ -51,7 +51,7 @@ def build_requirements(amount_usdc: Decimal, pay_to: str,
             asset=adapter.usdc_address(),
             amount=amount_atomic,
             pay_to=pay_to,
-            max_timeout_seconds=300,
+            max_timeout_seconds=adapter.max_timeout_seconds(),
             extra=extra,
         ))
     return requirements

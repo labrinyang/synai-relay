@@ -67,7 +67,7 @@ class OnchainOSClient:
                 else:
                     resp = requests.get(url, headers=headers, timeout=30)
 
-                if resp.status_code in (429, 502, 503) and attempt < max_retries:
+                if resp.status_code in (429, 500, 502, 503) and attempt < max_retries:
                     logger.warning("OnchainOS %s %s returned %s, retrying "
                                    "(attempt %d/%d)", method.upper(), path,
                                    resp.status_code, attempt + 1, max_retries)

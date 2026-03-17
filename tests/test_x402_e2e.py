@@ -191,6 +191,8 @@ class TestX402XLayer:
 
     def test_01_402_offers_xlayer(self, setup):
         """Verify the 402 response offers X Layer."""
+        if 'api_key' not in _state:
+            pytest.skip("Registration test did not run — api_key not set")
         if not os.environ.get('ONCHAINOS_API_KEY'):
             pytest.skip("OnchainOS credentials not set")
 
@@ -214,6 +216,8 @@ class TestX402XLayer:
 
     def test_02_create_funded_job(self, setup, x402_client):
         """Full x402 flow: 402 -> sign EIP-3009 -> verify -> settle -> funded."""
+        if 'api_key' not in _state:
+            pytest.skip("Registration test did not run — api_key not set")
         if not os.environ.get('ONCHAINOS_API_KEY'):
             pytest.skip("OnchainOS credentials not set")
 

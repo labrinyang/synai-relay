@@ -944,6 +944,7 @@ class TestWebhookService:
 
         with patch('services.webhook_service.http_requests.post', side_effect=[mock_resp_fail, mock_resp_ok]) as mock_post, \
              patch('services.webhook_service.is_safe_webhook_url', return_value=True), \
+             patch('services.webhook_service._shutdown_ref', None), \
              patch('services.webhook_service.time.sleep'):
 
             _deliver_webhook('https://example.com/hook', 'secret123', payload)
@@ -975,6 +976,7 @@ class TestWebhookService:
 
         with patch('services.webhook_service.http_requests.post', return_value=mock_resp_fail), \
              patch('services.webhook_service.is_safe_webhook_url', return_value=True), \
+             patch('services.webhook_service._shutdown_ref', None), \
              patch('services.webhook_service.time.sleep'):
             _deliver_webhook('https://example.com/hook', 's', payload, webhook_id=wh_id)
 
@@ -1007,7 +1009,8 @@ class TestWebhookService:
         payload = {"event": "job.resolved", "task_id": "t1", "data": {}, "timestamp": "2025-01-01T00:00:00Z"}
 
         with patch('services.webhook_service.http_requests.post', return_value=mock_resp_ok), \
-             patch('services.webhook_service.is_safe_webhook_url', return_value=True):
+             patch('services.webhook_service.is_safe_webhook_url', return_value=True), \
+             patch('services.webhook_service._shutdown_ref', None):
             _deliver_webhook('https://example.com/hook', 's', payload, webhook_id=wh_id)
 
         db.session.expire_all()
@@ -1039,6 +1042,7 @@ class TestWebhookService:
 
         with patch('services.webhook_service.http_requests.post', return_value=mock_resp_fail), \
              patch('services.webhook_service.is_safe_webhook_url', return_value=True), \
+             patch('services.webhook_service._shutdown_ref', None), \
              patch('services.webhook_service.time.sleep'):
             _deliver_webhook('https://example.com/hook', 's', payload, webhook_id=wh_id)
 
