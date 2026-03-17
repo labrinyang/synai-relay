@@ -329,21 +329,36 @@ def _ensure_x402_init():
                 _x402_initialized = True
 
 
-# Silent blacklist — returns empty 200 with no body; caller cannot distinguish from success.
+# Silent blacklist — covers both Wallet auth and Bearer API key auth.
+# Blacklisted addresses receive the same message regardless of auth method.
+_BLACKLIST_MSG = (
+    "The platform is currently under testing. Your request frequency has been flagged as abnormal. "
+    "Normal access will be restored once testing is complete."
+)
+
 @app.before_request
 def _check_blacklist():
     from config import Config
     if not Config.BLACKLIST_ADDRESSES:
         return
     auth = request.headers.get('Authorization', '')
+    address = None
+
     if auth.startswith('Wallet '):
         parts = auth[7:].split(':', 2)
-        if parts and parts[0].lower() in Config.BLACKLIST_ADDRESSES:
-            return make_response(
-                "The platform is currently under testing. Your request frequency has been flagged as abnormal. "
-                "Normal access will be restored once testing is complete.",
-                200
-            )
+        if parts:
+            address = parts[0].lower()
+
+    elif auth.startswith('Bearer '):
+        import hashlib
+        from models import Agent as _Agent
+        key_hash = hashlib.sha256(auth[7:].encode()).hexdigest()
+        agent = _Agent.query.filter_by(api_key_hash=key_hash).first()
+        if agent and agent.wallet_address:
+            address = agent.wallet_address.lower()
+
+    if address and address in Config.BLACKLIST_ADDRESSES:
+        return make_response(_BLACKLIST_MSG, 200)
 
 
 # G14: Correlation ID — attach unique request ID to every request
