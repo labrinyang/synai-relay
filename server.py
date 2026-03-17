@@ -76,6 +76,34 @@ app = Flask(__name__)
 app.config.from_object(Config)
 db.init_app(app)
 
+# Gzip compression — reduces /jobs 268KB→89KB, dashboard 98KB→~20KB
+try:
+    from flask_compress import Compress
+    Compress(app)
+    logger.info("Response compression enabled (flask-compress)")
+except ImportError:
+    # Fallback: manual gzip via after_request
+    import gzip as _gzip
+    from io import BytesIO as _BytesIO
+
+    @app.after_request
+    def _compress_response(response):
+        if (response.status_code < 200 or response.status_code >= 300
+                or response.direct_passthrough
+                or 'Content-Encoding' in response.headers
+                or 'gzip' not in request.headers.get('Accept-Encoding', '')
+                or len(response.get_data()) < 500):
+            return response
+        buf = _BytesIO()
+        with _gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as f:
+            f.write(response.get_data())
+        response.set_data(buf.getvalue())
+        response.headers['Content-Encoding'] = 'gzip'
+        response.headers['Content-Length'] = len(response.get_data())
+        response.headers['Vary'] = 'Accept-Encoding'
+        return response
+    logger.info("Response compression enabled (manual gzip fallback)")
+
 # Enable WAL mode for SQLite concurrent access (test process + running server)
 from sqlalchemy import event as sa_event
 from sqlalchemy.engine import Engine
